@@ -1,0 +1,140 @@
+% ============================================================
+% Synthetic fixture #2 - real fit_resume.py output format.
+%
+% Derived from a genuine tailored resume with ONLY the identifying values
+% swapped (name, phone, email, university, college, GPAs). Employers, bullet
+% content, job locations and dates are deliberately UNCHANGED: per the user
+% those details are not his real history anyway (PartyRock tailors them per
+% job), and keeping the authentic text makes this a far stronger parser test
+% than invented placeholder prose.
+%
+% Exercises a header layout the other fixture does not: name and contact line
+% share ONE \begin{center} block, joined by \\[2pt] with \quad | \quad
+% separators. The original structural parser returned full_name=None and
+% phone=None on exactly this shape.
+%
+% 555-0100 is the NANP-reserved fictional block; example.com is IANA-reserved.
+% ============================================================
+% ============================================================
+% ATS-safe, single-column resume with tunable spacing knobs
+% ============================================================
+\def\rFontPt{10.5}          % base font size, 10-12, extarticle allows half-points
+\documentclass[\rFontPt pt,letterpaper]{extarticle}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}              % standard, ATS-parseable font
+\usepackage{setspace}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{needspace}            % keeps an entry's heading glued to its own content
+
+% ---- knob macros (values get overwritten by fit_resume.py) ----
+\newcommand{\rStretch}{1.112}
+\newcommand{\rMarginV}{0.631in}
+\newcommand{\rMarginH}{0.694in}
+\newcommand{\rItemSep}{2.50pt}
+\newcommand{\rTopSep}{2.12pt}
+\newcommand{\rSecBefore}{9.37pt}
+\newcommand{\rSecAfter}{5.50pt}
+\newcommand{\rEntryGap}{7.37pt}
+% -----------------------------------------------------------------
+
+\usepackage[top=\rMarginV,bottom=\rMarginV,left=\rMarginH,right=\rMarginH]{geometry}
+\setstretch{\rStretch}
+\frenchspacing
+\raggedbottom
+\widowpenalty=10000
+\clubpenalty=10000
+\setlist[itemize]{noitemsep, topsep=\rTopSep, parsep=0pt, itemsep=\rItemSep,
+                   partopsep=0pt, leftmargin=0.18in}
+\titleformat{\section}{\normalsize\bfseries}{}{0pt}{\MakeUppercase}[\vspace{-2pt}\titlerule]
+\titlespacing*{\section}{0pt}{\rSecBefore}{\rSecAfter}
+\pagenumbering{gobble}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+
+\newcommand{\rEntryHead}[1]{\needspace{#1\baselineskip}}
+
+\begin{document}
+
+% ---- Header ----
+\begin{center}
+{\LARGE\bfseries Test Dummy}\\[2pt]
+405-555-0100 \quad | \quad randommail6969@gmail.com \quad | \quad Springfield, IL
+\end{center}
+\vspace{2pt}
+
+\section{Professional Summary}
+Applied \textbf{\mbox{AI/ML}} Analyst with four years of experience building production data pipelines, developing scalable transformations in \textbf{\mbox{PySpark}} and \textbf{\mbox{SQL}}, and architecting cloud infrastructure on \textbf{\mbox{AWS}}. Proven track record in asset management and financial services environments, with hands-on expertise in \textbf{\mbox{Snowflake}} optimization, \textbf{\mbox{Apache Airflow}} orchestration, and enterprise data governance. Skilled at collaborating with data science and ML teams to design infrastructure that supports model training, deployment, and performance monitoring in production.
+
+\section{Technical Skills}
+\textbf{Languages \& Processing:} \mbox{Python}, \mbox{SQL} (complex joins, window functions, query optimization), \mbox{PySpark}, \mbox{Scala}, \mbox{Bash}
+
+\textbf{Cloud \& AWS Services:} \mbox{S3}, \mbox{IAM}, \mbox{KMS}, \mbox{Glue}, \mbox{Lambda}, \mbox{EMR}, \mbox{Step Functions}, \mbox{Kinesis}, \mbox{MSK}, \mbox{MWAA}, \mbox{Athena}
+
+\textbf{Data Warehousing \& Governance:} \mbox{Snowflake} (micro-partitioning, clustering, warehouse sizing, query tuning, data sharing), \mbox{Redshift}, data lineage, encryption, least-privilege access, deduplication, auditability
+
+\textbf{Orchestration \& ML Infrastructure:} \mbox{Apache Airflow}, \mbox{AWS Step Functions}, batch and streaming pipeline design, feature pipeline development, model performance monitoring
+
+\textbf{Data Modeling:} Dimensional and star schemas, normalized models, banking data concepts, enterprise analytics patterns
+
+\section{Work Experience}
+\rEntryHead{4}
+\textbf{Applied AI/ML Analyst} \hfill \textit{Jan 2025 -- Present}\\
+\textbf{Fiserv} | Remote
+\vspace{0pt}
+\begin{itemize}
+\item Build and maintain end-to-end batch and streaming data pipelines (ingestion $\rightarrow$ transformation $\rightarrow$ curation $\rightarrow$ serving) on \textbf{\mbox{AWS}}, leveraging \textbf{\mbox{S3}}, \textbf{\mbox{Glue}}, \textbf{\mbox{EMR}}, \textbf{\mbox{Kinesis}}, and \textbf{\mbox{Step Functions}} to move financial data from source systems into analytics-ready layers serving 12+ downstream teams.
+\item Develop scalable transformations using \textbf{\mbox{PySpark}} and \textbf{\mbox{SQL}}, optimizing for performance and cost; enabled Adaptive Query Execution, tuned executor memory to 48GB, and resolved data skew via salting on join keys, reducing average job runtime by 38\% on the largest daily batch while cutting cluster costs by 26\%.
+\item Implement and optimize \textbf{\mbox{Snowflake}} solutions including schemas, tables, views, micro-partitioning and clustering strategies, warehouse sizing, and query tuning across high-frequency analytical workloads; introduced materialized views and optimized clustering keys, reducing warehouse credit consumption by 22\% over one quarter.
+\item Design and maintain feature pipelines for \textbf{\mbox{ML}} scoring models, implementing statistical drift detection and schema validation checks to ensure training and inference environment parity; integrated pipeline outputs with model performance tracking to flag degradation against defined thresholds.
+\item Set up \textbf{\mbox{Airflow/MWAA}} DAGs with retry logic, alerting, and operational runbooks; 94\% of production jobs now run within SLA without manual intervention, down from 67\% baseline.
+\item Enforce \textbf{\mbox{KMS}} encryption, least-privilege \textbf{\mbox{IAM}} policies, audit logging, and data retention rules across all pipelines to meet governance standards required in financial services contexts.
+\item Continuously evaluate emerging \textbf{\mbox{AI}} technologies to optimize \textbf{\mbox{ETL}} workflows; piloted LLM-assisted \textbf{\mbox{SQL}} code generation for ad-hoc pipeline development, reducing build time by 35\% for the analytics team.
+\end{itemize}
+\vspace{\rEntryGap}
+\rEntryHead{4}
+\textbf{Data Engineer (Contract)} \hfill \textit{Jan 2024 -- Dec 2024}\\
+\textbf{Conduent} | Florham Park, NJ
+\vspace{0pt}
+\begin{itemize}
+\item Designed dimensional and star schema data models for an enterprise analytics platform supporting regulatory reporting and dashboards across 15+ internal business units, applying standard banking data concepts and governance patterns throughout.
+\item Built \textbf{\mbox{Snowflake}} data loading pipelines with access controls and data sharing patterns; redesigned clustering keys and introduced materialized views, which dropped warehouse credit consumption by 22\% over the quarter.
+\item Wrote \textbf{\mbox{Python}} automation scripts for ingestion, validation, and reconciliation across 50+ source feeds, enforcing completeness, timeliness, accuracy, and deduplication checks at each stage of the pipeline.
+\item Set up \textbf{\mbox{CI/CD}} workflows in \mbox{Git} with unit and integration tests as part of code review standards; the team saw a 31\% reduction in production defects after the first full sprint under the new process.
+\item Handled incident triage and root-cause analysis for \textbf{\mbox{Airflow}}-orchestrated pipelines, then wrote operational runbooks that became the team's standard reference for on-call response.
+\item Ran daily data quality reconciliation between source systems and \textbf{\mbox{Snowflake}} targets, flagging discrepancies before they reached downstream consumers.
+\item Collaborated with risk and compliance stakeholders to document data lineage, define retention policies for regulated datasets, and ensure auditability across the platform.
+\end{itemize}
+\vspace{\rEntryGap}
+\rEntryHead{4}
+\textbf{Data Engineering Analyst} \hfill \textit{Aug 2021 -- Dec 2022}\\
+\textbf{Accenture} | Hyderabad, India
+\vspace{0pt}
+\begin{itemize}
+\item Wrote complex \textbf{\mbox{SQL}} queries with window functions, multi-table joins, and aggregations for large-scale financial domain reporting; rewrote several legacy stored procedures that had been running slow for years, cutting query time by up to 45\%.
+\item Built batch data pipelines on \textbf{\mbox{AWS}} using \textbf{\mbox{S3}}, \textbf{\mbox{Glue}}, and \textbf{\mbox{Lambda}} to ingest and transform structured and semi-structured source files, with validation and reconciliation controls baked into each stage.
+\item Implemented security and governance controls including encryption at rest, least-privilege access policies, and audit logging to satisfy compliance requirements on banking client engagements.
+\item Collaborated with technology, risk, and compliance teams to document data lineage, define retention schedules, and deliver datasets that met both regulatory and business requirements.
+\item Contributed to \mbox{Git}-based \textbf{\mbox{CI/CD}} pipeline setup and participated in code reviews across a 12-person engineering squad, which helped standardize how the team shipped and tested pipeline changes.
+\item Ran \textbf{\mbox{PySpark}} jobs on \textbf{\mbox{EMR}} clusters processing multi-hundred-GB daily files; worked with senior engineers to understand partition tuning, broadcast join patterns, and dynamic allocation strategies.
+\end{itemize}
+\vspace{\rEntryGap}
+\rEntryHead{4}
+\textbf{Data Engineering Intern} \hfill \textit{Dec 2020 -- May 2021}\\
+\textbf{Accenture} | Hyderabad, India
+\vspace{0pt}
+\begin{itemize}
+\item Wrote \textbf{\mbox{SQL}} transformation scripts and \textbf{\mbox{Python}} utilities to support \textbf{\mbox{ETL}} pipeline development for enterprise analytics projects, handling ingestion and data quality checks.
+\item Ran completeness and accuracy validation on source-to-target mappings and contributed reconciliation reports reviewed by senior engineers before production sign-off.
+\item Gained hands-on experience with \textbf{\mbox{AWS}} \textbf{\mbox{S3}} and \textbf{\mbox{Lambda}}, and ran \textbf{\mbox{Spark}} jobs under mentorship, building foundational knowledge for distributed processing patterns.
+\end{itemize}
+
+\section{Education}
+\rEntryHead{1}
+\textbf{M.S., Computer Science}, University of Alabama, Tuscaloosa, AL \quad (GPA: 3.62/4.0)\\
+\rEntryHead{1}
+\textbf{B.S., Computer Science and Engineering}, GITAM, Visakhapatnam, India \quad (GPA: 8.21/10)
+
+\end{document}

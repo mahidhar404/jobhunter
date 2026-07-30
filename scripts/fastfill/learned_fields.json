@@ -1,0 +1,311 @@
+{
+ "can you describe the data volume and latency requirements for the most challenging aspect of the data platform you developed?": {
+  "label_example": "Can you describe the data volume and latency requirements for the most challenging aspect of the data platform you developed?\n",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "Please refer to my resume for details on the data volume and latency requirements."
+ },
+ "can you explain the pros and cons of different types of data storage solutions; such as using postgres sql database, gcp big query, apache iceberg, etc.": {
+  "label_example": "Can you explain the pros and cons of different types of data storage solutions; such as using Postgres SQL Database, GCP Big Query, Apache Iceberg, etc.\n ",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "Postgres SQL is ideal for OLTP workloads, Big Query excels in analytics, and Apache Iceberg provides a flexible lakehouse format."
+ },
+ "could you provide an example of open-source data stack components that facilitated the implementation you mentioned above": {
+  "label_example": "Could you provide an example of open-source data stack components that facilitated the implementation you mentioned above\n ",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "I have experience with open-source data stack components like Apache Iceberg, Trino, Airflow, and Airbyte."
+ },
+ "current city?": {
+  "label_example": "Current City? ",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "Springfield"
+ },
+ "degree select one required": {
+  "label_example": "Degree Select One Required",
+  "platforms": [
+   "cvshealth.wd1.myworkdayjobs.com"
+  ],
+  "seen": 1,
+  "value": "M.S., Example Studies"
+ },
+ "gender select one": {
+  "label_example": "Gender Select One",
+  "platforms": [
+   "bmc.wd1.myworkdayjobs.com"
+  ],
+  "seen": 1,
+  "value": "Decline to self identify"
+ },
+ "how did you hear about us? select one required": {
+  "label_example": "How Did You Hear About Us? Select One Required",
+  "platforms": [
+   "markelcorp.wd5.myworkdayjobs.com"
+  ],
+  "seen": 1,
+  "value": "Internet job board"
+ },
+ "https://example.com...": {
+  "label_example": "https://example.com...",
+  "platforms": [
+   "jobs.ashbyhq.com"
+  ],
+  "seen": 2,
+  "value": "https://www.linkedin.com/in/test-dummy-000000000"
+ },
+ "linkedin profile": {
+  "label_example": "LinkedIn Profile",
+  "platforms": [
+   "job-boards.greenhouse.io",
+   "job-boards.eu.greenhouse.io"
+  ],
+  "seen": 12,
+  "value": "https://www.linkedin.com/in/test-dummy-000000000"
+ },
+ "linkedin url": {
+  "label_example": "LinkedIn URL",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "https://www.linkedin.com/in/test-dummy-000000000"
+ },
+ "phone device type select one required": {
+  "label_example": "Phone Device Type Select One Required",
+  "platforms": [
+   "philips.wd3.myworkdayjobs.com",
+   "markelcorp.wd5.myworkdayjobs.com",
+   "cengage.wd5.myworkdayjobs.com"
+  ],
+  "seen": 3,
+  "value": "Mobile"
+ },
+ "phone number": {
+  "label_example": "Phone number",
+  "platforms": [
+   "jobs.smartrecruiters.com"
+  ],
+  "seen": 1,
+  "value": "405-555-0100"
+ },
+ "please provide full mailing address": {
+  "label_example": "Please provide full mailing address ",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "100 Example Ave, Apt 1A, Springfield, IL 62701"
+ },
+ "please provide your current veteran status. select one required": {
+  "label_example": "Please provide your current Veteran status. Select One Required",
+  "platforms": [
+   "pfizer.wd1.myworkdayjobs.com"
+  ],
+  "seen": 1,
+  "value": "Decline to self identify"
+ },
+ "please provide your full legal birth name (as seen on government-issued id)": {
+  "label_example": "Please provide your full legal birth name (as seen on government-issued ID)",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "Test Dummy"
+ },
+ "please select the ethnicity which most accurately describes how you identify yourself. select one required": {
+  "label_example": "Please select the ethnicity which most accurately describes how you identify yourself. Select One Required",
+  "platforms": [
+   "pfizer.wd1.myworkdayjobs.com"
+  ],
+  "seen": 1,
+  "value": "Decline to self identify"
+ },
+ "please select your gender. select one required": {
+  "label_example": "Please select your gender. Select One Required",
+  "platforms": [
+   "pfizer.wd1.myworkdayjobs.com"
+  ],
+  "seen": 1,
+  "value": "Decline to self identify"
+ },
+ "please share 1) you current city and country of residence and 2) if you are open to relocating to london, uk for this position.": {
+  "label_example": "Please share 1) you current city and country of residence and 2) if you are open to relocating to London, UK for this position.",
+  "platforms": [
+   "job-boards.eu.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "Currently in Springfield, United States. Yes, willing to relocate to London."
+ },
+ "please share your salary expectations": {
+  "label_example": "Please share your salary expectations:",
+  "platforms": [
+   "job-boards.eu.greenhouse.io"
+  ],
+  "seen": 2,
+  "value": "$120,000"
+ },
+ "portfolio url (github, tableau, etc.)": {
+  "label_example": "Portfolio URL (Github, Tableau, etc.)",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "https://github.com/test-dummy-account"
+ },
+ "race select one": {
+  "label_example": "Race Select One",
+  "platforms": [
+   "bmc.wd1.myworkdayjobs.com"
+  ],
+  "seen": 1,
+  "value": "Decline to self identify"
+ },
+ "select country calling code: romania": {
+  "label_example": "Select country calling code: Romania",
+  "platforms": [
+   "kalibrate.recruitee.com"
+  ],
+  "seen": 7,
+  "value": "United States"
+ },
+ "state new jersey": {
+  "label_example": "State New Jersey",
+  "platforms": [
+   "markelcorp.wd5.myworkdayjobs.com"
+  ],
+  "seen": 1,
+  "value": "Illinois"
+ },
+ "state new jersey required": {
+  "label_example": "State New Jersey Required",
+  "platforms": [
+   "philips.wd3.myworkdayjobs.com",
+   "tihinsurance.wd1.myworkdayjobs.com",
+   "cengage.wd5.myworkdayjobs.com"
+  ],
+  "seen": 3,
+  "value": "Illinois"
+ },
+ "state select one": {
+  "label_example": "State Select One",
+  "platforms": [
+   "markelcorp.wd5.myworkdayjobs.com"
+  ],
+  "seen": 1,
+  "value": "NJ"
+ },
+ "state select one required": {
+  "label_example": "State Select One Required",
+  "platforms": [
+   "cvshealth.wd1.myworkdayjobs.com"
+  ],
+  "seen": 1,
+  "value": "IL"
+ },
+ "veteran status select one": {
+  "label_example": "Veteran Status Select One",
+  "platforms": [
+   "bmc.wd1.myworkdayjobs.com"
+  ],
+  "seen": 1,
+  "value": "Decline to self identify"
+ },
+ "what are your salary expectations? please state a range.": {
+  "label_example": "What are your salary expectations? Please state a range.",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "$120,000"
+ },
+ "what are your salary requirements?": {
+  "label_example": "What are your salary requirements?",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 2,
+  "value": "$120,000"
+ },
+ "what is your current or more recent job title?": {
+  "label_example": "What is your current or more recent job title?",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 2,
+  "value": "Applied AI/ML Analyst"
+ },
+ "what is your notice period/when is the earliest you could start?": {
+  "label_example": "What is your notice period/when is the earliest you could start?",
+  "platforms": [
+   "job-boards.eu.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "Immediately available"
+ },
+ "what's your earliest start date?": {
+  "label_example": "What's your earliest start date?",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "Immediately available"
+ },
+ "who is your current or most recent employer?": {
+  "label_example": "Who is your current or most recent employer?",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 2,
+  "value": "Fiserv"
+ },
+ "why anthropic?": {
+  "label_example": "Why Anthropic?",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "I am excited about the opportunity to contribute to AI safety and to work with a team dedicated to building reliable AI systems."
+ },
+ "will you now or in the future require sponsorship?": {
+  "label_example": "Will you now or in the future require sponsorship?",
+  "platforms": [
+   "job-boards.greenhouse.io"
+  ],
+  "seen": 1,
+  "value": "No"
+ },
+ "yes required": {
+  "label_example": " Yes Required",
+  "platforms": [
+   "cengage.wd5.myworkdayjobs.com"
+  ],
+  "seen": 1,
+  "value": "No"
+ },
+ "your email address": {
+  "label_example": "Your email address",
+  "platforms": [
+   "kalibrate.recruitee.com"
+  ],
+  "seen": 7,
+  "value": "randommail6969+1@gmail.com"
+ },
+ "zip code": {
+  "label_example": "ZIP Code",
+  "platforms": [
+   "ahu-technologies-inc.careerplug.com"
+  ],
+  "seen": 1,
+  "value": "62701"
+ }
+}

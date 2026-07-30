@@ -1,0 +1,54 @@
+# Secrets & personal data (stay local / untracked)
+credentials.json
+profile.json
+profile.json.bak*
+skyvern_runtime/.env
+skyvern_runtime/.secrets.env
+skyvern_runtime/.env.*
+skyvern_runtime/credential_vault/
+
+# Large / regenerable runtime data
+jobs.json
+jobs.json.bak*
+jobs.json.lock
+listings/
+logs/
+application_tracker.xlsx
+application_tracker.xlsx.lock
+partyrock_chrome_profile/
+resumes/
+
+# Python / local envs
+.venv/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Skyvern runtime noise
+skyvern_runtime/venv/
+skyvern_runtime/*.log
+skyvern_runtime/videos/
+skyvern_runtime/downloads/
+skyvern_runtime/trusted_uploads/
+skyvern_runtime/pgdata/
+skyvern_runtime/postgres_data/
+skyvern_runtime/archived_logs/
+skyvern_runtime/har/
+skyvern_runtime/log/
+skyvern_runtime/temp/
+skyvern_runtime/real_job_results/
+skyvern_runtime/*.marker
+
+# Dashboard runtime logs
+dashboard/*.log
+dashboard/__pycache__/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Workspace agent state
+.openclaw/
+openclaw-workspace-state.json

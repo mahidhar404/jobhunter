@@ -1,0 +1,336 @@
+[
+  {
+    "job": "adhoc",
+    "url": "https://tsys.wd1.myworkdayjobs.com/TSYS/job/ALPHARETTA-GEORGIA/AI-Engineer_R0071834",
+    "alias_n": 2,
+    "account_collision": false,
+    "pages_walked": 5,
+    "total_fields": 19,
+    "classified": 15,
+    "filled": 14,
+    "unclassified": 4,
+    "no_value": 1,
+    "deferred_layer2": 0,
+    "did_not_stick": 0,
+    "no_matching_option": 0,
+    "fill_error": 0,
+    "type_mismatch": 0,
+    "type_mismatch_detail": [],
+    "filled_by_type": {
+      "EMAIL": 1,
+      "PASSWORD": 1,
+      "PASSWORD_CONFIRM": 1,
+      "TERMS_CONSENT": 1,
+      "RESUME_UPLOAD": 1,
+      "NAME_FIRST": 2,
+      "NAME_LAST": 2,
+      "ADDRESS_LINE1": 1,
+      "ADDRESS_CITY": 1,
+      "PHONE": 3
+    },
+    "unclassified_detail": [
+      "Enter website. This input is for robots only, do not enter if you're h",
+      "I have a preferred name",
+      "Yes",
+      "I have a preferred name"
+    ],
+    "buttons_seen": [
+      {
+        "label": "English",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Sign In",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Search for Jobs",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "main menu",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Autofill with Resume",
+        "kind": "RESUME_ENTRY",
+        "disabled": false
+      },
+      {
+        "label": "Apply Manually",
+        "kind": "ENTRY",
+        "disabled": false
+      },
+      {
+        "label": "Use My Last Application",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "English",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Sign In",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Search for Jobs",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "main menu",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Back to Job Posting",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Create Account",
+        "kind": "ADVANCE",
+        "disabled": false
+      },
+      {
+        "label": "Sign In",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Forgot your password?",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "English",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Settings",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "randommail6969+2@gmail.com",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Search for Jobs",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Candidate Home",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "main menu",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Back to Job Posting",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Continue",
+        "kind": "ADVANCE",
+        "disabled": false
+      },
+      {
+        "label": "English",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Settings",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "randommail6969+2@gmail.com",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Search for Jobs",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Candidate Home",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "main menu",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Back to Job Posting",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Select One",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "United States of America",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Select One",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Back",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Save and Continue",
+        "kind": "ADVANCE",
+        "disabled": false
+      },
+      {
+        "label": "English",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Settings",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "randommail6969+2@gmail.com",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Search for Jobs",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Candidate Home",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "main menu",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Back to Job Posting",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Errors Found",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Error-How Did You Hear About Us?",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Error-Have you previously worked for Global Payments, TSYS, ",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Error-State",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Error-Phone Device Type",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Select One",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "United States of America",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Select One",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Select One",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Back",
+        "kind": "UNKNOWN",
+        "disabled": false
+      },
+      {
+        "label": "Save and Continue",
+        "kind": "ADVANCE",
+        "disabled": false
+      }
+    ],
+    "final_buttons_refused": [],
+    "cookies_declined": "decline",
+    "terms_accepted": [
+      "Check the box to confirm you wish to move forward with creating an account with Global Pay"
+    ],
+    "marketing_declined": 0,
+    "click_failure_diag": null,
+    "no_value_detail": [
+      "ADDRESS_ZIP: Postal Code"
+    ],
+    "deferred_detail": [],
+    "stopped_because": "no progress - same fields after click",
+    "elapsed_s": 30.9,
+    "advance_transition_log": [
+      {
+        "label": "Create Account",
+        "changed": true
+      },
+      {
+        "label": "Continue",
+        "changed": true
+      },
+      {
+        "label": "Save and Continue",
+        "changed": true
+      },
+      {
+        "label": "Save and Continue",
+        "changed": false
+      }
+    ]
+  }
+]

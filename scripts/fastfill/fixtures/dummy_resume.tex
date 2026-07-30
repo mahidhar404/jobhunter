@@ -1,0 +1,71 @@
+% Synthetic resume fixture for testing resume_parser.py.
+%
+% Structurally identical to what PartyRock emits (same \begin{center} header,
+% same \textbf{TITLE} \hfill \textit{dates} / \textbf{COMPANY} | location entry
+% shape, same section names), so the parser is exercised realistically - but
+% every value is fictional. Tests must never need a real resume to run.
+%
+% Identity matches DUMMY_PROFILE in field_map.py so both halves agree.
+% 555-0100 is the NANP-reserved fictional block; example.com is IANA-reserved.
+
+\documentclass[11pt,letterpaper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=0.75in]{geometry}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{needspace}
+\pagenumbering{gobble}
+\setlength{\parindent}{0pt}
+
+\begin{document}
+
+\begin{center}
+\Large \textbf{Test Dummy}
+\end{center}
+
+\begin{center}
+405-555-0100 | Springfield, IL | randommail6969@gmail.com
+\end{center}
+
+\needspace{5\baselineskip}
+\section*{Professional Summary}
+
+Example engineer with 3 years of fictional experience used solely to exercise
+the resume parser. Contains no real employment or education history.
+
+\needspace{5\baselineskip}
+\section*{Technical Skills}
+
+\textbf{Languages \& Frameworks:} \mbox{Python}, \mbox{SQL}, \mbox{FastAPI}
+
+\needspace{5\baselineskip}
+\section*{Work Experience}
+
+\needspace{4\baselineskip}
+\textbf{Senior Example Engineer} \hfill \textit{March 2025 -- Present}
+
+\textbf{Example Corporation} | Remote
+
+\begin{itemize}
+\item Placeholder bullet describing fictional work on an example system.
+\item Second placeholder bullet with a made-up metric of 42\%.
+\end{itemize}
+
+\needspace{4\baselineskip}
+\textbf{Example Engineer} \hfill \textit{June 2022 -- February 2025}
+
+\textbf{Sample Industries LLC} | Springfield, IL
+
+\begin{itemize}
+\item Placeholder bullet for a prior fictional role.
+\end{itemize}
+
+\needspace{5\baselineskip}
+\section*{Education}
+
+\textbf{M.S., Example Studies}, Example State University, Springfield, IL (GPA: 3.10/4.0), May 2019
+
+\textbf{B.S., Example Studies}, Example State University, Springfield, IL (GPA: 3.00/4.0), May 2017
+
+\end{document}

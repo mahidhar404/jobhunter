@@ -1,0 +1,156 @@
+{
+  "_comment": "Pool of placeholder mailing addresses for application forms that require a street address. Each entry has a 'metro' tag grouping real nearby cities together. Agent: when a form needs an address, find entries whose 'metro' matches the job posting's metro area (or whose 'state' matches if no metro match), pick one whose city is NOT the exact job posting city, and use its line1/city/state/zip as-is. These are privacy placeholders, not the user's real address - do not invent your own, don't reuse the same pick across jobs, and don't persist a choice into profile.json.",
+  "addresses": [
+    {"metro": "Bay Area", "line1": "410 Fremont Ave, Apt 3B", "city": "Sunnyvale", "state": "CA", "zip": "94087"},
+    {"metro": "Bay Area", "line1": "88 Castro St, Unit 5", "city": "Mountain View", "state": "CA", "zip": "94041"},
+    {"metro": "Bay Area", "line1": "230 University Ave, Apt 2C", "city": "Palo Alto", "state": "CA", "zip": "94301"},
+    {"metro": "Bay Area", "line1": "150 Fremont Blvd, Unit 7", "city": "Fremont", "state": "CA", "zip": "94538"},
+    {"metro": "Bay Area", "line1": "56 First St, Apt 4A", "city": "San Jose", "state": "CA", "zip": "95113"},
+    {"metro": "Bay Area", "line1": "620 El Camino Real, Unit 3", "city": "Redwood City", "state": "CA", "zip": "94063"},
+    {"metro": "Bay Area", "line1": "77 Broadway, Apt 6D", "city": "Oakland", "state": "CA", "zip": "94607"},
+    {"metro": "Bay Area", "line1": "320 Mission St, Unit 9", "city": "San Francisco", "state": "CA", "zip": "94105"},
+
+    {"metro": "Seattle Metro", "line1": "88 Harbor St, Apt 4B", "city": "Bellevue", "state": "WA", "zip": "98004"},
+    {"metro": "Seattle Metro", "line1": "230 Lake St, Unit 2", "city": "Kirkland", "state": "WA", "zip": "98033"},
+    {"metro": "Seattle Metro", "line1": "410 Central Way, Apt 5A", "city": "Redmond", "state": "WA", "zip": "98052"},
+    {"metro": "Seattle Metro", "line1": "150 Pacific Ave, Unit 6", "city": "Tacoma", "state": "WA", "zip": "98402"},
+    {"metro": "Seattle Metro", "line1": "56 Alaskan Way, Apt 3C", "city": "Seattle", "state": "WA", "zip": "98101"},
+
+    {"metro": "Austin Metro", "line1": "742 Maple Ave, Apt 3B", "city": "Austin", "state": "TX", "zip": "78701"},
+    {"metro": "Austin Metro", "line1": "88 Congress Ave, Unit 4", "city": "Round Rock", "state": "TX", "zip": "78664"},
+    {"metro": "Austin Metro", "line1": "230 Main St, Apt 2A", "city": "Cedar Park", "state": "TX", "zip": "78613"},
+    {"metro": "Austin Metro", "line1": "410 Parmer Ln, Unit 7", "city": "Pflugerville", "state": "TX", "zip": "78660"},
+
+    {"metro": "DFW Metro", "line1": "215 Oak Street, Unit 12", "city": "Dallas", "state": "TX", "zip": "75201"},
+    {"metro": "DFW Metro", "line1": "88 Main St, Apt 5C", "city": "Plano", "state": "TX", "zip": "75023"},
+    {"metro": "DFW Metro", "line1": "320 Legacy Dr, Unit 3", "city": "Frisco", "state": "TX", "zip": "75034"},
+    {"metro": "DFW Metro", "line1": "410 Rufe Snow Dr, Apt 4B", "city": "Fort Worth", "state": "TX", "zip": "76107"},
+
+    {"metro": "Houston Metro", "line1": "88 Riverside Dr, Apt 4A", "city": "Houston", "state": "TX", "zip": "77002"},
+    {"metro": "Houston Metro", "line1": "230 Town Center Blvd, Unit 6", "city": "Sugar Land", "state": "TX", "zip": "77479"},
+    {"metro": "Houston Metro", "line1": "410 Cypress Creek Pkwy, Apt 2C", "city": "Spring", "state": "TX", "zip": "77373"},
+
+    {"metro": "NYC Metro", "line1": "320 Chapel St, Apt 4B", "city": "New Haven", "state": "CT", "zip": "06510"},
+    {"metro": "NYC Metro", "line1": "77 Market St, Unit 4", "city": "Newark", "state": "NJ", "zip": "07102"},
+    {"metro": "NYC Metro", "line1": "19 Broad St, Apt 2A", "city": "Jersey City", "state": "NJ", "zip": "07302"},
+    {"metro": "NYC Metro", "line1": "150 State St, Unit 2", "city": "Yonkers", "state": "NY", "zip": "10701"},
+    {"metro": "NYC Metro", "line1": "410 5th Ave, Apt 3D", "city": "Brooklyn", "state": "NY", "zip": "11201"},
+    {"metro": "NYC Metro", "line1": "230 Northern Blvd, Unit 5", "city": "Queens", "state": "NY", "zip": "11101"},
+
+    {"metro": "Boston Metro", "line1": "230 Congress Ave, Apt 2B", "city": "Boston", "state": "MA", "zip": "02110"},
+    {"metro": "Boston Metro", "line1": "56 Elm St, Unit 3", "city": "Cambridge", "state": "MA", "zip": "02139"},
+    {"metro": "Boston Metro", "line1": "88 Main St, Apt 4C", "city": "Somerville", "state": "MA", "zip": "02143"},
+    {"metro": "Boston Metro", "line1": "410 Washington St, Unit 6", "city": "Quincy", "state": "MA", "zip": "02169"},
+
+    {"metro": "LA Metro", "line1": "620 Wilshire Blvd, Unit 7", "city": "Los Angeles", "state": "CA", "zip": "90017"},
+    {"metro": "LA Metro", "line1": "230 Colorado Blvd, Apt 4C", "city": "Pasadena", "state": "CA", "zip": "91101"},
+    {"metro": "LA Metro", "line1": "88 Main St, Unit 3", "city": "Santa Monica", "state": "CA", "zip": "90401"},
+    {"metro": "LA Metro", "line1": "410 5th Ave, Apt 2A", "city": "San Diego", "state": "CA", "zip": "92101"},
+    {"metro": "LA Metro", "line1": "320 Bristol St, Unit 5", "city": "Costa Mesa", "state": "CA", "zip": "92626"},
+    {"metro": "LA Metro", "line1": "150 Main St, Apt 6B", "city": "Irvine", "state": "CA", "zip": "92614"},
+
+    {"metro": "Chicago Metro", "line1": "410 Monroe St, Apt 9C", "city": "Chicago", "state": "IL", "zip": "60661"},
+    {"metro": "Chicago Metro", "line1": "88 Prairie Ave, Unit 4", "city": "Evanston", "state": "IL", "zip": "60201"},
+    {"metro": "Chicago Metro", "line1": "230 Roosevelt Rd, Apt 3B", "city": "Naperville", "state": "IL", "zip": "60540"},
+    {"metro": "Chicago Metro", "line1": "56 Waukegan Rd, Unit 2", "city": "Schaumburg", "state": "IL", "zip": "60173"},
+
+    {"metro": "Denver Metro", "line1": "455 Pine Ave, Unit 7", "city": "Denver", "state": "CO", "zip": "80202"},
+    {"metro": "Denver Metro", "line1": "1200 Cherry St, Apt 5D", "city": "Aurora", "state": "CO", "zip": "80012"},
+    {"metro": "Denver Metro", "line1": "88 Main St, Unit 3", "city": "Boulder", "state": "CO", "zip": "80302"},
+    {"metro": "Denver Metro", "line1": "230 S Broadway, Apt 2B", "city": "Englewood", "state": "CO", "zip": "80110"},
+
+    {"metro": "Atlanta Metro", "line1": "540 Peachtree St, Apt 2A", "city": "Atlanta", "state": "GA", "zip": "30303"},
+    {"metro": "Atlanta Metro", "line1": "88 Roswell Rd, Unit 4", "city": "Marietta", "state": "GA", "zip": "30060"},
+    {"metro": "Atlanta Metro", "line1": "230 Peachtree Pkwy, Apt 3C", "city": "Alpharetta", "state": "GA", "zip": "30004"},
+    {"metro": "Atlanta Metro", "line1": "410 Main St, Unit 5", "city": "Decatur", "state": "GA", "zip": "30030"},
+
+    {"metro": "DC Metro", "line1": "620 Independence Ave, Apt 2D", "city": "Washington", "state": "DC", "zip": "20003"},
+    {"metro": "DC Metro", "line1": "230 Wilson Blvd, Unit 7", "city": "Arlington", "state": "VA", "zip": "22201"},
+    {"metro": "DC Metro", "line1": "88 King St, Apt 4A", "city": "Alexandria", "state": "VA", "zip": "22314"},
+    {"metro": "DC Metro", "line1": "410 Rockville Pike, Unit 3", "city": "Rockville", "state": "MD", "zip": "20852"},
+    {"metro": "DC Metro", "line1": "150 Main St, Apt 2C", "city": "Bethesda", "state": "MD", "zip": "20814"},
+
+    {"metro": "Raleigh-Durham Metro", "line1": "48 Cedar Ridge Rd, Apt 4C", "city": "Raleigh", "state": "NC", "zip": "27601"},
+    {"metro": "Raleigh-Durham Metro", "line1": "230 Main St, Unit 5", "city": "Durham", "state": "NC", "zip": "27701"},
+    {"metro": "Raleigh-Durham Metro", "line1": "88 Franklin St, Apt 3B", "city": "Chapel Hill", "state": "NC", "zip": "27514"},
+    {"metro": "Raleigh-Durham Metro", "line1": "410 High St, Unit 6", "city": "Cary", "state": "NC", "zip": "27511"},
+
+    {"metro": "Phoenix Metro", "line1": "67 Birchwood Ln, Apt 1B", "city": "Phoenix", "state": "AZ", "zip": "85004"},
+    {"metro": "Phoenix Metro", "line1": "230 Main St, Unit 3", "city": "Scottsdale", "state": "AZ", "zip": "85251"},
+    {"metro": "Phoenix Metro", "line1": "88 Rural Rd, Apt 4C", "city": "Tempe", "state": "AZ", "zip": "85281"},
+    {"metro": "Phoenix Metro", "line1": "410 Southern Ave, Unit 5", "city": "Mesa", "state": "AZ", "zip": "85210"},
+
+    {"metro": "Minneapolis Metro", "line1": "88 Nicollet Mall, Unit 5", "city": "Minneapolis", "state": "MN", "zip": "55401"},
+    {"metro": "Minneapolis Metro", "line1": "310 Grand Ave, Apt 2A", "city": "St. Paul", "state": "MN", "zip": "55102"},
+    {"metro": "Minneapolis Metro", "line1": "230 Main St, Unit 4", "city": "Bloomington", "state": "MN", "zip": "55425"},
+
+    {"metro": "Charlotte Metro", "line1": "355 Franklin St, Unit 2", "city": "Charlotte", "state": "NC", "zip": "28202"},
+    {"metro": "Charlotte Metro", "line1": "88 Main St, Apt 3C", "city": "Concord", "state": "NC", "zip": "28025"},
+
+    {"metro": "Tampa Metro", "line1": "620 Bayshore Rd, Apt 3D", "city": "Tampa", "state": "FL", "zip": "33602"},
+    {"metro": "Tampa Metro", "line1": "88 Main St, Unit 5", "city": "St. Petersburg", "state": "FL", "zip": "33701"},
+    {"metro": "Tampa Metro", "line1": "230 Kennedy Blvd, Apt 2B", "city": "Clearwater", "state": "FL", "zip": "33755"},
+
+    {"metro": "Miami Metro", "line1": "199 Palm Ave, Apt 7B", "city": "Miami", "state": "FL", "zip": "33130"},
+    {"metro": "Miami Metro", "line1": "88 Las Olas Blvd, Unit 4", "city": "Fort Lauderdale", "state": "FL", "zip": "33301"},
+    {"metro": "Miami Metro", "line1": "230 Clematis St, Apt 3C", "city": "West Palm Beach", "state": "FL", "zip": "33401"},
+
+    {"metro": "Portland Metro", "line1": "150 Sunset Blvd, Apt 6A", "city": "Portland", "state": "OR", "zip": "97201"},
+    {"metro": "Portland Metro", "line1": "410 Willow Way, Unit 3", "city": "Beaverton", "state": "OR", "zip": "97005"},
+    {"metro": "Portland Metro", "line1": "88 Main St, Apt 2C", "city": "Hillsboro", "state": "OR", "zip": "97124"},
+
+    {"metro": "Detroit Metro", "line1": "17 Woodward Ave, Unit 12", "city": "Detroit", "state": "MI", "zip": "48226"},
+    {"metro": "Detroit Metro", "line1": "540 State St, Apt 6D", "city": "Ann Arbor", "state": "MI", "zip": "48104"},
+    {"metro": "Detroit Metro", "line1": "88 Main St, Unit 5", "city": "Royal Oak", "state": "MI", "zip": "48067"},
+
+    {"metro": "Columbus Metro", "line1": "780 High St, Unit 8", "city": "Columbus", "state": "OH", "zip": "43215"},
+    {"metro": "Columbus Metro", "line1": "88 Main St, Apt 3A", "city": "Dublin", "state": "OH", "zip": "43016"},
+
+    {"metro": "Salt Lake Metro", "line1": "410 Main St, Unit 6", "city": "Salt Lake City", "state": "UT", "zip": "84101"},
+    {"metro": "Salt Lake Metro", "line1": "88 State St, Apt 2B", "city": "Sandy", "state": "UT", "zip": "84070"},
+
+    {"metro": "Las Vegas Metro", "line1": "150 Fremont St, Unit 2", "city": "Las Vegas", "state": "NV", "zip": "89101"},
+    {"metro": "Las Vegas Metro", "line1": "88 Eastern Ave, Apt 3C", "city": "Henderson", "state": "NV", "zip": "89011"},
+
+    {"metro": "St. Louis Metro", "line1": "199 Market St, Unit 9", "city": "St. Louis", "state": "MO", "zip": "63101"},
+    {"metro": "St. Louis Metro", "line1": "88 Main St, Apt 4B", "city": "Clayton", "state": "MO", "zip": "63105"},
+
+    {"metro": "Kansas City Metro", "line1": "77 Broadway, Apt 4C", "city": "Kansas City", "state": "MO", "zip": "64105"},
+    {"metro": "Kansas City Metro", "line1": "230 Main St, Unit 3", "city": "Overland Park", "state": "KS", "zip": "66210"},
+
+    {"metro": "Philadelphia Metro", "line1": "410 Chestnut St, Unit 9", "city": "Philadelphia", "state": "PA", "zip": "19106"},
+    {"metro": "Philadelphia Metro", "line1": "88 King St, Apt 4B", "city": "Wilmington", "state": "DE", "zip": "19801"},
+    {"metro": "Philadelphia Metro", "line1": "230 Main St, Unit 5", "city": "Camden", "state": "NJ", "zip": "08103"},
+
+    {"metro": "Pittsburgh Metro", "line1": "88 Forbes Ave, Apt 5B", "city": "Pittsburgh", "state": "PA", "zip": "15222"},
+
+    {"metro": "Nashville Metro", "line1": "230 Market St, Apt 1D", "city": "Nashville", "state": "TN", "zip": "37201"},
+    {"metro": "Nashville Metro", "line1": "88 Main St, Unit 3", "city": "Franklin", "state": "TN", "zip": "37064"},
+
+    {"metro": "Sacramento Metro", "line1": "320 Broadway, Apt 3B", "city": "Sacramento", "state": "CA", "zip": "95814"},
+
+    {"metro": "San Antonio Metro", "line1": "310 Elm Street, Apt 2C", "city": "San Antonio", "state": "TX", "zip": "78205"},
+
+    {"metro": "Baltimore Metro", "line1": "77 Light St, Unit 6", "city": "Baltimore", "state": "MD", "zip": "21202"},
+
+    {"metro": "Cleveland Metro", "line1": "329 Superior Ave, Apt 5B", "city": "Cleveland", "state": "OH", "zip": "44113"},
+
+    {"metro": "Cincinnati Metro", "line1": "56 Fountain Sq, Unit 2", "city": "Cincinnati", "state": "OH", "zip": "45202"},
+
+    {"metro": "Indianapolis Metro", "line1": "230 Meridian St, Apt 3B", "city": "Indianapolis", "state": "IN", "zip": "46204"},
+
+    {"metro": "Milwaukee Metro", "line1": "88 Wisconsin Ave, Unit 4", "city": "Milwaukee", "state": "WI", "zip": "53202"},
+
+    {"metro": "Orlando Metro", "line1": "77 Ocean Dr, Unit 5", "city": "Orlando", "state": "FL", "zip": "32801"},
+
+    {"metro": "Richmond Metro", "line1": "620 Independence Ave, Apt 2D", "city": "Richmond", "state": "VA", "zip": "23219"},
+
+    {"metro": "Norfolk Metro", "line1": "230 Main St, Unit 7", "city": "Norfolk", "state": "VA", "zip": "23510"},
+
+    {"metro": "Honolulu Metro", "line1": "620 Kalanianaole Hwy, Apt 2B", "city": "Honolulu", "state": "HI", "zip": "96815"},
+
+    {"metro": "Boise Metro", "line1": "230 1st Ave, Apt 3C", "city": "Boise", "state": "ID", "zip": "83702"},
+
+    {"metro": "Reno Metro", "line1": "56 Sierra Ave, Apt 4D", "city": "Reno", "state": "NV", "zip": "89501"}
+  ]
+}
