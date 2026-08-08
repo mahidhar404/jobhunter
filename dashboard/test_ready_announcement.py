@@ -23,6 +23,7 @@ class _FakeHandler:
     """Drives the real handler method without standing up an HTTP server."""
 
     _job = srv.Handler._job
+    _locked_job = srv.Handler._locked_job
     _handle_claim_ready_announcement = srv.Handler._handle_claim_ready_announcement
 
     def __init__(self):

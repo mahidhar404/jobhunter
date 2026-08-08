@@ -6536,6 +6536,121 @@ async def apply_selector_pack_anywhere(
     return filled, target
 
 
+def _unclassified_skip_quietly(label: str, field: dict) -> bool:
+    """True when an unclassified field should be skipped without a leftover.
+
+    Optional social URLs, conditional follow-ups, bare Yes/No radios, and
+    "Type your response" prompts are never invented — skip quietly (not a
+    leftover). Extracted verbatim from ``fill_from_extract`` (behavior-preserving).
+    """
+    # Optional social URLs — never invent; skip quietly (not a leftover)
+    if re.search(r"twitter|\bx\b[\s_-]*url|instagram|tiktok|facebook", label, re.I):
+        return True
+    # Conditional follow-ups / extract noise — skip quietly
+    if re.search(r"partnership[\s_-]*program", label, re.I):
+        return True
+    if label.strip().lower() in ("yes", "no") and str(
+        field.get("type") or ""
+    ).lower() in ("radio_group", "radio", "checkbox_group", "checkbox"):
+        return True
+    if re.search(r"^type\s+your\s+response$", label.strip(), re.I):
+        return True
+    return False
+
+
+def _sponsorship_radio_candidates(
+    options: list[dict], default_cands: list[str]
+) -> list[str]:
+    """Candidate values for a SPONSORSHIP radio group.
+
+    Lever can encode "do you require sponsorship?" as a citizenship-status
+    radio list. "No" has no matching option there; using the old generic Citizen
+    alias silently invented a status. Only use the explicit fictional dummy
+    status when those are the available choices. Extracted verbatim from
+    ``fill_from_extract`` (behavior-preserving).
+    """
+    option_text = " ".join(
+        str(opt.get("label") or opt.get("value") or "")
+        for opt in options
+    ).lower()
+    has_status_options = bool(
+        re.search(r"\bcitizen\b|permanent\s+resident|\bopt\b", option_text)
+    )
+    has_direct_no = bool(
+        re.search(
+            r"\bno\b|do\s+not\s+require|don'?t\s+require|"
+            r"will\s+not\s+require|no\s+sponsorship",
+            option_text,
+        )
+    )
+    dummy_status = str(
+        (DUMMY_PROFILE.get("work_authorization") or {}).get("status") or ""
+    ).strip()
+    if has_status_options and not has_direct_no and dummy_status:
+        return [dummy_status]
+    return default_cands
+
+
+# Types allowed to fill more than once per page (a second control is legitimate:
+# e.g. resume+cover, prior-employer + relatives, preferred first name, work-auth
+# legal-yes + sponsorship-yes). Others skip once their type is already filled.
+_ALLOW_MULTI_FILL_TYPES = (
+    RESUME_UPLOAD,
+    TERMS_CONSENT,
+    HOW_HEARD,
+    NOTICE_PERIOD,
+    RELOCATION,
+    PORTFOLIO,
+    INTEREST,
+    WORKED_HERE_BEFORE,  # prior employer + relatives (two GH selects)
+    NAME_FIRST,  # Preferred First Name after legal first
+    MARKETING_CONSENT,
+    # Tax Relief / many GH boards: legal auth Yes + "without need for
+    # visa sponsorship" Yes are both WORK_AUTH — skipping the second
+    # left Select… (vision paraphrased as SPONSORSHIP FAIL_BLANK).
+    WORK_AUTH,
+    SPONSORSHIP,
+    "BACKGROUND_CHECK",
+    "AGE_18",
+    "COMMUTE",
+)
+
+
+def _skip_already_filled_type(
+    ftype: str, label: str, filled_types: set[str]
+) -> bool:
+    """True when this field's type is already filled and must be skipped.
+
+    Allow-multi types (resume/cover, HOW_HEARD other-specify, preferred first
+    name, etc.) may fill twice. Extracted verbatim from ``fill_from_extract``
+    (behavior-preserving).
+    """
+    if ftype in filled_types and ftype not in _ALLOW_MULTI_FILL_TYPES:
+        # Allow a second HOW_HEARD "If Other, specify" text box after dropdown
+        if not (ftype == HOW_HEARD and re.search(r"other|specify", label, re.I)):
+            # Preferred first name is a second NAME_FIRST — still fill
+            if not (
+                ftype == NAME_FIRST and re.search(r"preferred", label, re.I)
+            ):
+                return True
+    return False
+
+
+def _radio_group_name(field: dict, sel: str) -> str:
+    """Resolve the shared radio ``name=`` for a choice group.
+
+    Prefers the extracted field name; else parses ``[name="…"]`` out of the
+    selector (e.g. ``input[name="cards[…][field0]"][value=…]``). Extracted
+    verbatim from ``fill_from_extract`` (behavior-preserving).
+    """
+    group_name = str(field.get("name") or "").strip()
+    if not group_name and sel:
+        m_name = re.search(r"\[name=(?:\"([^\"]+)\"|'([^']+)')\]", sel)
+        if m_name:
+            group_name = m_name.group(1) or m_name.group(2) or ""
+    return group_name
+
+
 async def fill_from_extract(
     page,
     values: dict,
@@ -6591,21 +6706,9 @@ async def fill_from_extract(
 
         learned_val = lookup_learned(label)
         if not ftype:
-            # Optional social URLs — never invent; skip quietly (not a leftover)
-            if re.search(
-                r"twitter|\bx\b[\s_-]*url|instagram|tiktok|facebook",
-                label,
-                re.I,
-            ):
-                continue
-            # Conditional follow-ups / extract noise — skip quietly
-            if re.search(r"partnership[\s_-]*program", label, re.I):
-                continue
-            if label.strip().lower() in ("yes", "no") and str(
-                field.get("type") or ""
-            ).lower() in ("radio_group", "radio", "checkbox_group", "checkbox"):
-                continue
-            if re.search(r"^type\s+your\s+response$", label.strip(), re.I):
+            # Optional social URLs / conditional follow-ups / bare Yes-No /
+            # "Type your response" — never invent; skip quietly (not a leftover).
+            if _unclassified_skip_quietly(label, field):
                 continue
             # Learned allow-list: policy facts for labels Layer 0/1 missed.
             if not learned_val:
@@ -6678,37 +6781,8 @@ async def fill_from_extract(
                     }
                 )
                 continue
-            if ftype in filled_types and ftype not in (
-                RESUME_UPLOAD,
-                TERMS_CONSENT,
-                HOW_HEARD,
-                NOTICE_PERIOD,
-                RELOCATION,
-                PORTFOLIO,
-                INTEREST,
-                WORKED_HERE_BEFORE,  # prior employer + relatives (two GH selects)
-                NAME_FIRST,  # Preferred First Name after legal first
-                MARKETING_CONSENT,
-                # Tax Relief / many GH boards: legal auth Yes + "without need for
-                # visa sponsorship" Yes are both WORK_AUTH — skipping the second
-                # left Select… (vision paraphrased as SPONSORSHIP FAIL_BLANK).
-                WORK_AUTH,
-                SPONSORSHIP,
-                "BACKGROUND_CHECK",
-                "AGE_18",
-                "COMMUTE",
-            ):
-                # Allow a second HOW_HEARD "If Other, specify" text box after dropdown
-                if not (
-                    ftype == HOW_HEARD
-                    and re.search(r"other|specify", label, re.I)
-                ):
-                    # Preferred first name is a second NAME_FIRST — still fill
-                    if not (
-                        ftype == NAME_FIRST
-                        and re.search(r"preferred", label, re.I)
-                    ):
-                        continue
+            if _skip_already_filled_type(ftype, label, filled_types):
+                continue
             # (HOW_HEARD already in allow-multi set above; keep other-specify note)
 
             if ftype == RESUME_UPLOAD:
@@ -7075,36 +7149,8 @@ async def fill_from_extract(
                 options = field.get("options") or []
                 cands = aliases_for(ftype, str(val))
                 if ftype == "SPONSORSHIP":
-                    # Lever can encode "do you require sponsorship?" as a
-                    # citizenship-status radio list. "No" has no matching
-                    # option there; using the old generic Citizen alias silently
-                    # invented a status. Only use the explicit fictional dummy
-                    # status when those are the available choices.
-                    option_text = " ".join(
-                        str(opt.get("label") or opt.get("value") or "")
-                        for opt in options
-                    ).lower()
-                    has_status_options = bool(
-                        re.search(r"\bcitizen\b|permanent\s+resident|\bopt\b", option_text)
-                    )
-                    has_direct_no = bool(
-                        re.search(
-                            r"\bno\b|do\s+not\s+require|don'?t\s+require|"
-                            r"will\s+not\s+require|no\s+sponsorship",
-                            option_text,
-                        )
-                    )
-                    dummy_status = str(
-                        (DUMMY_PROFILE.get("work_authorization") or {}).get("status") or ""
-                    ).strip()
-                    if has_status_options and not has_direct_no and dummy_status:
-                        cands = [dummy_status]
-                group_name = str(field.get("name") or "").strip()
-                if not group_name and sel:
-                    # Extract name= from selector like input[name="cards[…][field0]"][value=…]
-                    m_name = re.search(r"\[name=(?:\"([^\"]+)\"|'([^']+)')\]", sel)
-                    if m_name:
-                        group_name = m_name.group(1) or m_name.group(2) or ""
+                    cands = _sponsorship_radio_candidates(options, cands)
+                group_name = _radio_group_name(field, sel)
 
                 async def _click_and_verify_radio(
                     opt_loc, display: str, osel: str = ""

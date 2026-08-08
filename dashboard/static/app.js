@@ -284,87 +284,72 @@ function salaryBlob(text, title, description) {
   return [text, title, description].filter(Boolean).map(x => String(x || "")).join(" ");
 }
 
-function extractSalary(text, title, description) {
-  const blob = salaryBlob(text, title, description);
+// Shared scanner for the strict + fallback salary extractors. Each spec runs
+// one regex over `blob` and, for every match that survives the shared
+// hourly/funding-noise filters, builds a {min,max,period} pair via
+// `amounts(m)` → salaryPairFromAmounts. Per-spec knobs preserve the small
+// behavioral differences between the two extractors:
+//   - gate(m): extra guard run *before* the noise filters (strict range only)
+//   - skipInSpan: skip matches that fall inside an already-recorded range span
+//   - trackSpan: "always" | "ifMax" — record this match's span (used to
+//     suppress overlapping single-dollar matches after ranges).
+// Candidate ordering is preserved, so the ranged-first result is identical.
+function extractSalaryScan(blob, specs) {
   if (!blob.trim()) return null;
   const candidates = [];
   const rangeSpans = [];
   let m;
-  SALARY_LABEL_RE.lastIndex = 0;
-  while ((m = SALARY_LABEL_RE.exec(blob)) !== null) {
-    if (salaryIsHourly(blob, m.index, m.index + m[0].length)) continue;
-    if (salaryIsFundingNoise(blob, m.index, m.index + m[0].length)) continue;
-    const pair = salaryPairFromAmounts(m[1], m[2]);
-    if (pair) {
-      candidates.push(pair);
-      if (m[2]) rangeSpans.push([m.index, m.index + m[0].length]);
+  for (const { re, amounts, gate, skipInSpan, trackSpan } of specs) {
+    re.lastIndex = 0;
+    while ((m = re.exec(blob)) !== null) {
+      const start = m.index;
+      const end = m.index + m[0].length;
+      if (skipInSpan && rangeSpans.some(([rs, rEnd]) => rs <= start && start < rEnd)) continue;
+      if (gate && !gate(m)) continue;
+      if (salaryIsHourly(blob, start, end)) continue;
+      if (salaryIsFundingNoise(blob, start, end)) continue;
+      const [aRaw, bRaw] = amounts(m);
+      const pair = salaryPairFromAmounts(aRaw, bRaw);
+      if (pair) {
+        candidates.push(pair);
+        if (trackSpan === "always" || (trackSpan === "ifMax" && bRaw)) {
+          rangeSpans.push([start, end]);
+        }
+      }
     }
-  }
-  SALARY_RANGE_RE.lastIndex = 0;
-  while ((m = SALARY_RANGE_RE.exec(blob)) !== null) {
-    const aRaw = m[1];
-    const bRaw = m[2];
-    const hasCur = /(?:\$|USD)/i.test(aRaw) || /(?:\$|USD)/i.test(bRaw);
-    const bothKOrPlain = /(?:[kK]|\d{5,7})/.test(aRaw) && /(?:[kK]|\d{5,7})/.test(bRaw);
-    if (!(hasCur || bothKOrPlain)) continue;
-    if (salaryIsHourly(blob, m.index, m.index + m[0].length)) continue;
-    if (salaryIsFundingNoise(blob, m.index, m.index + m[0].length)) continue;
-    const pair = salaryPairFromAmounts(aRaw, bRaw);
-    if (pair) {
-      candidates.push(pair);
-      rangeSpans.push([m.index, m.index + m[0].length]);
-    }
-  }
-  SALARY_DOLLAR_SINGLE_RE.lastIndex = 0;
-  while ((m = SALARY_DOLLAR_SINGLE_RE.exec(blob)) !== null) {
-    if (rangeSpans.some(([rs, re]) => rs <= m.index && m.index < re)) continue;
-    if (salaryIsHourly(blob, m.index, m.index + m[0].length)) continue;
-    if (salaryIsFundingNoise(blob, m.index, m.index + m[0].length)) continue;
-    const pair = salaryPairFromAmounts(m[1], null);
-    if (pair) candidates.push(pair);
   }
   if (!candidates.length) return null;
   const ranged = candidates.filter(c => c.max != null);
   return ranged.length ? ranged[0] : candidates[0];
 }
 
+function extractSalary(text, title, description) {
+  return extractSalaryScan(salaryBlob(text, title, description), [
+    { re: SALARY_LABEL_RE, amounts: (m) => [m[1], m[2]], trackSpan: "ifMax" },
+    {
+      re: SALARY_RANGE_RE,
+      amounts: (m) => [m[1], m[2]],
+      trackSpan: "always",
+      gate: (m) => {
+        const aRaw = m[1];
+        const bRaw = m[2];
+        const hasCur = /(?:\$|USD)/i.test(aRaw) || /(?:\$|USD)/i.test(bRaw);
+        const bothKOrPlain = /(?:[kK]|\d{5,7})/.test(aRaw) && /(?:[kK]|\d{5,7})/.test(bRaw);
+        return hasCur || bothKOrPlain;
+      },
+    },
+    { re: SALARY_DOLLAR_SINGLE_RE, amounts: (m) => [m[1], null], skipInSpan: true },
+  ]);
+}
+
 function extractSalaryFallback(text, title, description) {
   if (extractSalary(text, title, description) != null) return null;
-  const blob = salaryBlob(text, title, description);
-  if (!blob.trim()) return null;
-  const candidates = [];
-  let m;
-  SALARY_FALLBACK_NEAR_KW_RE.lastIndex = 0;
-  while ((m = SALARY_FALLBACK_NEAR_KW_RE.exec(blob)) !== null) {
-    if (salaryIsHourly(blob, m.index, m.index + m[0].length)) continue;
-    if (salaryIsFundingNoise(blob, m.index, m.index + m[0].length)) continue;
-    const pair = salaryPairFromAmounts(m[1] || m[3], m[2] || m[4]);
-    if (pair) candidates.push(pair);
-  }
-  SALARY_FALLBACK_UP_TO_RE.lastIndex = 0;
-  while ((m = SALARY_FALLBACK_UP_TO_RE.exec(blob)) !== null) {
-    if (salaryIsHourly(blob, m.index, m.index + m[0].length)) continue;
-    if (salaryIsFundingNoise(blob, m.index, m.index + m[0].length)) continue;
-    const pair = salaryPairFromAmounts(m[1], null);
-    if (pair) candidates.push(pair);
-  }
-  SALARY_FALLBACK_FROM_RE.lastIndex = 0;
-  while ((m = SALARY_FALLBACK_FROM_RE.exec(blob)) !== null) {
-    if (salaryIsHourly(blob, m.index, m.index + m[0].length)) continue;
-    if (salaryIsFundingNoise(blob, m.index, m.index + m[0].length)) continue;
-    const pair = salaryPairFromAmounts(m[1], null);
-    if (pair) candidates.push(pair);
-  }
-  SALARY_FALLBACK_BARE_K_RANGE_RE.lastIndex = 0;
-  while ((m = SALARY_FALLBACK_BARE_K_RANGE_RE.exec(blob)) !== null) {
-    if (salaryIsHourly(blob, m.index, m.index + m[0].length)) continue;
-    if (salaryIsFundingNoise(blob, m.index, m.index + m[0].length)) continue;
-    const pair = salaryPairFromAmounts(m[1], m[2]);
-    if (pair) candidates.push(pair);
-  }
-  if (!candidates.length) return null;
-  const ranged = candidates.filter(c => c.max != null);
-  return ranged.length ? ranged[0] : candidates[0];
+  return extractSalaryScan(salaryBlob(text, title, description), [
+    { re: SALARY_FALLBACK_NEAR_KW_RE, amounts: (m) => [m[1] || m[3], m[2] || m[4]] },
+    { re: SALARY_FALLBACK_UP_TO_RE, amounts: (m) => [m[1], null] },
+    { re: SALARY_FALLBACK_FROM_RE, amounts: (m) => [m[1], null] },
+    { re: SALARY_FALLBACK_BARE_K_RANGE_RE, amounts: (m) => [m[1], m[2]] },
+  ]);
 }
 
 function foldAccents(s) {
@@ -511,16 +496,21 @@ function jobRequiresClearance(job) {
   });
 }
 
-function extractMinRequiredYoe(text, title, description) {
+// Shared body for the strict + fallback YOE extractors: identical logic that
+// differs only by the range regex and the single-value regex set. `rangeRe`
+// seeds min-years-from-ranges (and their spans); each regex in `singleRes` is
+// then scanned for a single min value outside those spans. Tenure phrases are
+// always skipped. Kept in lock-step with the Python policy module.
+function extractMinRequiredYoeWith(text, title, description, rangeRe, singleRes) {
   let blob = [text, title, description].filter(Boolean).map(x => String(x || "")).join(" ");
   if (!blob.trim()) return null;
   blob = blob.replace(/\\\+/g, "+").replace(/\\-/g, "-");
+  const isTenure = (start) => YOE_TENURE_BEFORE_RE.test(blob.slice(Math.max(0, start - 64), start));
   const mins = [];
   const rangeSpans = [];
-  const isTenure = (start) => YOE_TENURE_BEFORE_RE.test(blob.slice(Math.max(0, start - 64), start));
-  YOE_RANGE_RE.lastIndex = 0;
   let m;
-  while ((m = YOE_RANGE_RE.exec(blob)) !== null) {
+  rangeRe.lastIndex = 0;
+  while ((m = rangeRe.exec(blob)) !== null) {
     if (isTenure(m.index)) continue;
     const lo = parseInt(m[1], 10);
     const hi = parseInt(m[2], 10);
@@ -528,7 +518,7 @@ function extractMinRequiredYoe(text, title, description) {
     rangeSpans.push([m.index, m.index + m[0].length]);
   }
   const inRangeSpan = (start) => rangeSpans.some(([rs, re]) => rs <= start && start < re);
-  for (const rx of [YOE_MIN_PLUS_RE, YOE_YEARS_PLUS_RE, YOE_YEARS_EXPERIENCE_RE, YOE_LABEL_RE, YOE_PLAIN_YEARS_EXP_RE]) {
+  for (const rx of singleRes) {
     rx.lastIndex = 0;
     while ((m = rx.exec(blob)) !== null) {
       if (inRangeSpan(m.index)) continue;
@@ -541,25 +531,15 @@ function extractMinRequiredYoe(text, title, description) {
   return sane.length ? Math.max(...sane) : null;
 }
 
+function extractMinRequiredYoe(text, title, description) {
+  return extractMinRequiredYoeWith(text, title, description, YOE_RANGE_RE, [
+    YOE_MIN_PLUS_RE, YOE_YEARS_PLUS_RE, YOE_YEARS_EXPERIENCE_RE, YOE_LABEL_RE, YOE_PLAIN_YEARS_EXP_RE,
+  ]);
+}
+
 function extractMinRequiredYoeFallback(text, title, description) {
   if (extractMinRequiredYoe(text, title, description) != null) return null;
-  let blob = [text, title, description].filter(Boolean).map(x => String(x || "")).join(" ");
-  if (!blob.trim()) return null;
-  blob = blob.replace(/\\\+/g, "+").replace(/\\-/g, "-");
-  const isTenure = (start) => YOE_TENURE_BEFORE_RE.test(blob.slice(Math.max(0, start - 64), start));
-  const mins = [];
-  const rangeSpans = [];
-  let m;
-  YOE_FALLBACK_RANGE_RE.lastIndex = 0;
-  while ((m = YOE_FALLBACK_RANGE_RE.exec(blob)) !== null) {
-    if (isTenure(m.index)) continue;
-    const lo = parseInt(m[1], 10);
-    const hi = parseInt(m[2], 10);
-    mins.push(Math.min(lo, hi));
-    rangeSpans.push([m.index, m.index + m[0].length]);
-  }
-  const inRangeSpan = (start) => rangeSpans.some(([rs, re]) => rs <= start && start < re);
-  for (const rx of [
+  return extractMinRequiredYoeWith(text, title, description, YOE_FALLBACK_RANGE_RE, [
     YOE_FALLBACK_YEARS_OF_WORDS_EXP_RE,
     YOE_FALLBACK_YEARS_APOS_RE,
     YOE_FALLBACK_YEARS_NEAR_EXP_RE,
@@ -571,17 +551,7 @@ function extractMinRequiredYoeFallback(text, title, description) {
     YOE_FALLBACK_IN_ROLE_RE,
     YOE_FALLBACK_WORKING_AS_RE,
     YOE_FALLBACK_YEARS_IN_FIELD_RE,
-  ]) {
-    rx.lastIndex = 0;
-    while ((m = rx.exec(blob)) !== null) {
-      if (inRangeSpan(m.index)) continue;
-      if (isTenure(m.index)) continue;
-      mins.push(parseInt(m[1], 10));
-    }
-  }
-  if (!mins.length) return null;
-  const sane = mins.filter(n => n > 0 && n <= 40);
-  return sane.length ? Math.max(...sane) : null;
+  ]);
 }
 
 function requiresExcessiveExperience({ title, description, text } = {}) {
@@ -595,29 +565,35 @@ function requiresUsCitizenOrGreencard({ title, description, text } = {}) {
   return CITIZENSHIP_OR_GC_REQUIREMENT_RE.test(blob);
 }
 
-function detectWorkMode({ title, location, description } = {}) {
+// Shared body for the strict + fallback work-mode detectors: only the regex
+// set differs between the two. Kept in lock-step with the Python policy module.
+function detectWorkModeWith({ title, location, description } = {}, { hybridRe, remoteRe, onsiteRe }) {
   const blob = [title, location, description].map(x => x || "").join(" ");
   if (!blob.trim()) return "unknown";
-  if (WORK_MODE_HYBRID_RE.test(blob)) return "hybrid";
-  const remote = WORK_MODE_REMOTE_RE.test(blob);
-  const onsite = WORK_MODE_ONSITE_RE.test(blob);
+  if (hybridRe.test(blob)) return "hybrid";
+  const remote = remoteRe.test(blob);
+  const onsite = onsiteRe.test(blob);
   if (remote && onsite) return "unknown";
   if (remote) return "remote";
   if (onsite) return "onsite";
   return "unknown";
 }
 
-function detectWorkModeFallback({ title, location, description } = {}) {
-  if (detectWorkMode({ title, location, description }) !== "unknown") return "unknown";
-  const blob = [title, location, description].map(x => x || "").join(" ");
-  if (!blob.trim()) return "unknown";
-  if (WORK_MODE_FALLBACK_HYBRID_RE.test(blob)) return "hybrid";
-  const remote = WORK_MODE_FALLBACK_REMOTE_RE.test(blob);
-  const onsite = WORK_MODE_FALLBACK_ONSITE_RE.test(blob);
-  if (remote && onsite) return "unknown";
-  if (remote) return "remote";
-  if (onsite) return "onsite";
-  return "unknown";
+function detectWorkMode(args = {}) {
+  return detectWorkModeWith(args, {
+    hybridRe: WORK_MODE_HYBRID_RE,
+    remoteRe: WORK_MODE_REMOTE_RE,
+    onsiteRe: WORK_MODE_ONSITE_RE,
+  });
+}
+
+function detectWorkModeFallback(args = {}) {
+  if (detectWorkMode(args) !== "unknown") return "unknown";
+  return detectWorkModeWith(args, {
+    hybridRe: WORK_MODE_FALLBACK_HYBRID_RE,
+    remoteRe: WORK_MODE_FALLBACK_REMOTE_RE,
+    onsiteRe: WORK_MODE_FALLBACK_ONSITE_RE,
+  });
 }
 
 /** Prefer expanded full JD from /description when cached; else preview. */
@@ -1167,17 +1143,13 @@ function selectedBuiltinDays() {
 async function saveBuiltinDaysSetting(value) {
   const days = Number(value);
   if (!BUILTIN_DAYS_OPTIONS.some(o => o.value === days)) return;
-  const res = await fetch("/api/discover/settings", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ builtin_days_since_updated: days }),
+  const { ok } = await apiPost("/api/discover/settings", { builtin_days_since_updated: days }, {
+    onError: (data) => {
+      alert(data.error || "Could not save Built In date period.");
+      renderDiscoverPopover(discoveryState);
+    },
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    alert(data.error || "Could not save Built In date period.");
-    renderDiscoverPopover(discoveryState);
-    return;
-  }
+  if (!ok) return;
   discoveryState = {...(discoveryState || {}), builtin_days_since_updated: days};
 }
 
@@ -1212,17 +1184,13 @@ async function toggleDiscoverRegion(region, checked) {
     for (const id of INDIA_ONLY_SOURCE_IDS) map[id] = true;
     saveDiscoverySourceSettings(map);
   }
-  const res = await fetch("/api/discover/settings", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ discover_us: us, discover_india: india }),
+  const { ok, data } = await apiPost("/api/discover/settings", { discover_us: us, discover_india: india }, {
+    onError: (d) => {
+      alert(d.error || "Could not save region settings.");
+      renderDiscoverPopover(discoveryState);
+    },
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    alert(data.error || "Could not save region settings.");
-    renderDiscoverPopover(discoveryState);
-    return;
-  }
+  if (!ok) return;
   discoveryState = {
     ...(discoveryState || {}),
     discover_us: data.discover_us !== undefined ? data.discover_us : us,
@@ -3036,11 +3004,7 @@ async function clearJobResume(jobId) {
   if (!confirm("Clear resume on file for this job?")) return;
   treatResumeOnFile.delete(jobId);
   saveTreatResumeOnFile();
-  const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/resume`, { method: "DELETE" });
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    alert(d.error || `Clear resume failed (${res.status})`);
-  }
+  await apiPost(`/api/jobs/${encodeURIComponent(jobId)}/resume`, undefined, { method: "DELETE", failLabel: "Clear resume" });
   resumePanelJobId = null;
   await poll();
 }
@@ -3310,21 +3274,62 @@ function bindOpsChrome() {
   });
 }
 
+/**
+ * Shared fetch helper for the action handlers. Encapsulates the repeated
+ *   fetch(...) → res.json().catch(() => ({})) → if (!res.ok) alert(...)
+ * dance. Returns { res, data, ok, status } so callers keep their own
+ * poll()/refresh/success side effects.
+ *
+ * Body handling (POST default): an object is JSON.stringify'd, a string is
+ * sent verbatim, and `undefined` sends no body (and no Content-Type) so
+ * bodyless DELETEs match their hand-written form byte-for-byte.
+ *
+ * On a non-ok response: `onError(data, res)` runs if provided; else, when
+ * `alertOnError` (default true), it alerts `data.error || failMsg ||
+ * "<failLabel> failed (<status>)"`. Pass `alertOnError: false` for handlers
+ * that surface errors their own way (feedback text, custom messages).
+ */
+async function apiPost(url, body, opts = {}) {
+  const {
+    onError,
+    failMsg,
+    failLabel,
+    alertOnError = true,
+    method = "POST",
+    headers,
+  } = opts;
+  const init = { method };
+  if (body !== undefined) {
+    init.headers = { "Content-Type": "application/json", ...(headers || {}) };
+    init.body = typeof body === "string" ? body : JSON.stringify(body);
+  } else if (headers) {
+    init.headers = headers;
+  }
+  const res = await fetch(url, init);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (typeof onError === "function") {
+      onError(data, res);
+    } else if (alertOnError) {
+      alert(
+        data.error
+        || failMsg
+        || (failLabel ? `${failLabel} failed (${res.status})` : `Request failed (${res.status})`)
+      );
+    }
+  }
+  return { res, data, ok: res.ok, status: res.status };
+}
+
 async function submitAnswer(jobId) {
   const answer = document.getElementById("answer").value.trim();
   if (!answer) return;
-  await fetch(`/api/jobs/${encodeURIComponent(jobId)}/answer`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ answer }),
-  });
+  await apiPost(`/api/jobs/${encodeURIComponent(jobId)}/answer`, { answer }, { alertOnError: false });
   await poll();
 }
 
 async function decideCommand(jobId, approve) {
-  await fetch(`/api/jobs/${encodeURIComponent(jobId)}/approve_command`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ approve }),
-  });
+  await apiPost(`/api/jobs/${encodeURIComponent(jobId)}/approve_command`, { approve }, { alertOnError: false });
   await poll();
 }
 
@@ -3515,15 +3520,7 @@ function surfaceOpenJob(jobId) {
 }
 
 async function cancelJob(jobId) {
-  const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: "{}",
-  });
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    alert(d.error || `Cancel failed (${res.status})`);
-  }
+  await apiPost(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {}, { failLabel: "Cancel" });
   await poll();
   surfaceOpenJob(jobId);
 }
@@ -3534,19 +3531,15 @@ async function skipJob(jobId, reason) {
       return;
     }
   }
-  const body = reason ? JSON.stringify({ reason }) : "{}";
-  const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/skip`, {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body,
-  });
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    alert(d.error || `Skip failed (${res.status})`);
+  const { ok, data: d } = await apiPost(
+    `/api/jobs/${encodeURIComponent(jobId)}/skip`,
+    reason ? { reason } : {},
+    { failLabel: "Skip" },
+  );
+  if (!ok) {
     await poll();
     return;
   }
-  const d = await res.json().catch(() => ({}));
   await poll();
   // Duplicate merge may keep this job as survivor — stay on Open.
   if (d.merged_into && d.deleted_id && d.deleted_id !== jobId) {
@@ -3557,14 +3550,8 @@ async function skipJob(jobId, reason) {
 }
 
 async function restoreJob(jobId) {
-  const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/restore`, {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: "{}",
-  });
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    alert(d.error || `Restore failed (${res.status})`);
+  const { ok } = await apiPost(`/api/jobs/${encodeURIComponent(jobId)}/restore`, {}, { failLabel: "Restore" });
+  if (!ok) {
     await poll();
     return;
   }
@@ -3584,15 +3571,7 @@ async function markSubmitted(jobId) {
       + "Mark as applied anyway? Only do this if you already submitted on the employer site. "
       + "We never auto-submit.";
   if (!confirm(msg)) return;
-  const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/submitted`, {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: "{}",
-  });
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    alert(d.error || `Mark applied failed (${res.status})`);
-  }
+  await apiPost(`/api/jobs/${encodeURIComponent(jobId)}/submitted`, {}, { failLabel: "Mark applied" });
   await poll();
 }
 
@@ -3636,12 +3615,8 @@ async function deleteJob(jobId) {
     ? "Delete this applied job from tracking?\n\nIt moves to Deleted (soft). URL tombstones still block rediscovery."
     : "Move to Deleted?";
   if (!confirm(msg)) return;
-  const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    alert(d.error || `Delete failed (${res.status})`);
-    return;
-  }
+  const { ok } = await apiPost(`/api/jobs/${encodeURIComponent(jobId)}`, undefined, { method: "DELETE", failLabel: "Delete" });
+  if (!ok) return;
   const j = jobs.find(x => x.id === jobId);
   if (j) {
     j.status = "deleted";
@@ -3662,14 +3637,8 @@ async function emptyDeleted() {
   const emptyBtn = document.getElementById("empty-deleted-btn");
   if (emptyBtn) emptyBtn.disabled = true;
   try {
-    const res = await fetch("/api/jobs/empty-deleted", {
-      method: "POST", headers: {"Content-Type":"application/json"}, body: "{}",
-    });
-    const d = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      alert(d.error || `Empty Deleted failed (${res.status})`);
-      return;
-    }
+    const { ok } = await apiPost("/api/jobs/empty-deleted", {}, { failLabel: "Empty Deleted" });
+    if (!ok) return;
     jobs = jobs.filter(j => j.status !== "deleted");
     if (selectedId && !jobs.some(j => j.id === selectedId)) selectedId = null;
     lastJobsJSON = null; // force poll to accept server list
@@ -3762,15 +3731,7 @@ async function runPrune() {
 
 async function abortDiscoverSource(sourceId) {
   if (!sourceId) return;
-  const res = await fetch("/api/discover/abort", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ source_id: sourceId }),
-  });
-  const d = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    alert(d.error || `Abort source failed (${res.status})`);
-  }
+  const { data: d } = await apiPost("/api/discover/abort", { source_id: sourceId }, { failLabel: "Abort source" });
   if (d.discovery) discoveryState = d.discovery;
   syncDiscoverUI();
   await pollStatus();
@@ -3848,11 +3809,7 @@ function toggleDiscoveryRun() {
 }
 
 async function abortDiscover() {
-  const res = await fetch("/api/discover/abort", {
-    method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ all: true }),
-  });
-  const d = await res.json().catch(() => ({}));
+  const { data: d } = await apiPost("/api/discover/abort", { all: true }, { alertOnError: false });
   if (d.discovery) discoveryState = d.discovery;
   syncDiscoverUI();
   await pollStatus();
@@ -4487,11 +4444,8 @@ async function saveProfile() {
     alert("Not valid JSON: " + e.message);
     return;
   }
-  const res = await fetch("/api/profile", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(parsed),
-  });
-  if (res.ok) alert("Profile saved."); else alert("Save failed.");
+  const { ok } = await apiPost("/api/profile", parsed, { alertOnError: false });
+  if (ok) alert("Profile saved."); else alert("Save failed.");
 }
 
 // ------------------------------------------------------------------ Cron
@@ -4567,13 +4521,9 @@ async function toggleCron() {
   const el = document.getElementById("cron-toggle");
   const enable = !!(el && el.checked);
   try {
-    const res = await fetch("/api/cron/toggle", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enable }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      alert(data.error || `Could not ${enable ? "enable" : "disable"} cron (${res.status})`);
+    const { ok, data, status } = await apiPost("/api/cron/toggle", { enable }, { alertOnError: false });
+    if (!ok) {
+      alert(data.error || `Could not ${enable ? "enable" : "disable"} cron (${status})`);
     }
   } catch (e) {
     alert(String(e));
@@ -4591,14 +4541,9 @@ async function saveCronSchedule() {
     alert("Enter a valid time (HH:MM).");
     return;
   }
-  const res = await fetch("/api/cron/schedule", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ hour, minute, time: raw }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    alert(data.error || `Could not update schedule (${res.status})`);
+  const { ok, data, status } = await apiPost("/api/cron/schedule", { hour, minute, time: raw }, { alertOnError: false });
+  if (!ok) {
+    alert(data.error || `Could not update schedule (${status})`);
     return;
   }
   cronHour = hour;

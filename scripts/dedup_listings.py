@@ -27,7 +27,6 @@ skip reason plus the final count.
 import argparse
 import difflib
 import json
-import re
 import sys
 import time
 from datetime import date, datetime
@@ -50,6 +49,7 @@ from discovery_filters import (  # noqa: E402
     requires_us_citizen_or_greencard,
 )
 from jd_fingerprint import item_jd_fingerprint, same_jd_fingerprint  # noqa: E402
+from text_normalize import normalize_company, normalize_title  # noqa: E402
 
 
 def log(msg: str) -> None:
@@ -124,20 +124,6 @@ ATS_SOURCE_RANK = {
 def is_relevant(title) -> bool:
     t = str(title or "").lower()
     return any(kw in t for kw in RELEVANT_KEYWORDS)
-
-
-def normalize_company(name) -> str:
-    name = str(name or "").lower()
-    name = re.sub(r"\b(inc|llc|corp|corporation|ltd|co|company|group|technologies|technology)\b\.?", "", name)
-    name = re.sub(r"[^a-z0-9]+", "", name)
-    return name
-
-
-def normalize_title(title) -> str:
-    title = str(title or "").lower()
-    title = re.sub(r"[^a-z0-9 ]+", "", title)
-    title = re.sub(r"\s+", " ", title).strip()
-    return title
 
 
 def looks_like_staffing(company: str, description: str) -> bool:

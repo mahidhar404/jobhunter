@@ -42,6 +42,7 @@ from apply_urls import (  # noqa: E402
 )
 from jd_fingerprint import item_jd_fingerprint, same_jd_fingerprint  # noqa: E402
 from jobs_lock import locked_jobs_for_write  # noqa: E402
+from text_normalize import normalize_company, normalize_title  # noqa: E402
 
 TITLE_SIM_THRESHOLD = 0.85
 # Statuses that should not win a merge (or be active merge sources).
@@ -54,20 +55,6 @@ INACTIVE = frozenset({
     "applied",
     "cancelled",
 })
-
-
-def normalize_company(name) -> str:
-    name = str(name or "").lower()
-    name = re.sub(r"\b(inc|llc|corp|corporation|ltd|co|company|group|technologies|technology)\b\.?", "", name)
-    name = re.sub(r"[^a-z0-9]+", "", name)
-    return name
-
-
-def normalize_title(title) -> str:
-    title = str(title or "").lower()
-    title = re.sub(r"[^a-z0-9 ]+", "", title)
-    title = re.sub(r"\s+", " ", title).strip()
-    return title
 
 
 def now_iso() -> str:

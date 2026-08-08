@@ -36,6 +36,7 @@ RESUMES_DIR = ROOT / "resumes"
 sys.path.insert(0, str(Path(__file__).parent))
 from jobs_lock import locked_jobs_for_write
 from apply_urls import enrich_listing_urls, normalize_url  # noqa: E402
+from text_normalize import normalize_company  # noqa: E402
 from blocked_urls import block_keys_for_url, load_blocked_url_set  # noqa: E402
 from multi_opening import detect_multi_opening  # noqa: E402
 from discovery_filters import (  # noqa: E402
@@ -70,13 +71,6 @@ def write_full_description(job_id: str, full_text: str) -> None:
     job_dir = RESUMES_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     (job_dir / "jd_full.txt").write_text(full_text)
-
-
-def normalize_company(name) -> str:
-    name = str(name or "").lower()
-    name = re.sub(r"\b(inc|llc|corp|corporation|ltd|co|company|group|technologies|technology)\b\.?", "", name)
-    name = re.sub(r"[^a-z0-9]+", "", name)
-    return name
 
 
 def slugify(text) -> str:

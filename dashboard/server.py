@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -4481,6 +4482,92 @@ def run_tailor_then_fill(
         _mark_fill_thread_stuck(job_id, e, where="run_tailor_then_fill")
 
 
+def _fill_skipping_partyrock(
+    job_id: str,
+    *,
+    test_mode: bool,
+    existing_resume: Path | None,
+    apply_url0: str,
+    fill_restore: str,
+) -> None:
+    """PartyRock-bypass fast path shared by "resume already on disk" and the
+    Test-Mode "skip PartyRock" toggle: publish any on-disk resume, then hand
+    straight to ``run_hybrid_fill_dummy``.
+
+    Extracted verbatim from ``_run_tailor_then_fill_body``; every path here
+    used to ``return`` from that function, so the caller simply ``return``s
+    after invoking this. Behavior is characterized in test_server_refactor.py.
+    """
+    clear_fill_activity(job_id)
+    if not apply_url0:
+        pipeline_milestone(
+            job_id,
+            event="error",
+            detail="Start aborted: no apply_url — cannot start fill.",
+            status="stuck",
+            status_detail=(
+                f"{_fill_mode_prefix(test_mode)} No apply_url/job_url; fill skipped."
+            ),
+        )
+        return
+    if existing_resume is not None:
+        try:
+            rel = str(existing_resume.relative_to(ROOT))
+        except ValueError:
+            rel = str(existing_resume)
+        with _lock:
+            data = read_jobs()
+            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+            if job is not None:
+                job["resume_path"] = rel
+                job["updated_at"] = now_iso()
+                _publish_resume_by_company(job, existing_resume, data)
+                write_jobs(data)
+        detail = (
+            f"Using uploaded resume ({existing_resume.name}) — "
+            "skipping PartyRock / tailor."
+        )
+        pipeline_milestone(
+            job_id,
+            event="resume",
+            detail=detail,
+            status="navigating",
+            status_detail=detail,
+        )
+    else:
+        pipeline_milestone(
+            job_id,
+            event="start",
+            detail=(
+                "Start (Test Mode): PartyRock bypassed — "
+                "dummy resume + DUMMY_PROFILE fast_fill only."
+            ),
+            status="navigating",
+            status_detail=(
+                "[DUMMY/TEST] PartyRock off — skipping tailor; "
+                f"opening apply URL via fast_fill (dummy, headed). {apply_url0[:160]}"
+            ),
+        )
+    append_fill_activity(
+        job_id,
+        event="fill",
+        detail=(
+            f"{'Using on-disk resume; ' if existing_resume else 'PartyRock skipped. '}"
+            f"Opening apply URL for fast_fill: {apply_url0[:120]}"
+        ),
+    )
+    if _job_fill_aborted(job_id):
+        return
+    run_hybrid_fill_dummy(
+        job_id,
+        test_mode=test_mode,
+        headed=True,
+        flash_leftovers=_dummy_fill_flash_requested(),
+        restore_status=fill_restore,
+        preserve_activity=True,
+    )
+
+
 def _run_tailor_then_fill_body(
     job_id: str,
     test_mode: bool = True,
@@ -4502,73 +4589,12 @@ def _run_tailor_then_fill_body(
 
     skip_for_resume = existing_resume is not None and not force_partyrock
     if skip_for_resume or (test_mode and skip_partyrock and not force_partyrock):
-        clear_fill_activity(job_id)
-        if not apply_url0:
-            pipeline_milestone(
-                job_id,
-                event="error",
-                detail="Start aborted: no apply_url — cannot start fill.",
-                status="stuck",
-                status_detail=(
-                    f"{_fill_mode_prefix(test_mode)} No apply_url/job_url; fill skipped."
-                ),
-            )
-            return
-        if existing_resume is not None:
-            try:
-                rel = str(existing_resume.relative_to(ROOT))
-            except ValueError:
-                rel = str(existing_resume)
-            with _lock:
-                data = read_jobs()
-                job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-                if job is not None:
-                    job["resume_path"] = rel
-                    job["updated_at"] = now_iso()
-                    _publish_resume_by_company(job, existing_resume, data)
-                    write_jobs(data)
-            detail = (
-                f"Using uploaded resume ({existing_resume.name}) — "
-                "skipping PartyRock / tailor."
-            )
-            pipeline_milestone(
-                job_id,
-                event="resume",
-                detail=detail,
-                status="navigating",
-                status_detail=detail,
-            )
-        else:
-            pipeline_milestone(
-                job_id,
-                event="start",
-                detail=(
-                    "Start (Test Mode): PartyRock bypassed — "
-                    "dummy resume + DUMMY_PROFILE fast_fill only."
-                ),
-                status="navigating",
-                status_detail=(
-                    "[DUMMY/TEST] PartyRock off — skipping tailor; "
-                    f"opening apply URL via fast_fill (dummy, headed). {apply_url0[:160]}"
-                ),
-            )
-        append_fill_activity(
-            job_id,
-            event="fill",
-            detail=(
-                f"{'Using on-disk resume; ' if existing_resume else 'PartyRock skipped. '}"
-                f"Opening apply URL for fast_fill: {apply_url0[:120]}"
-            ),
-        )
-        if _job_fill_aborted(job_id):
-            return
-        run_hybrid_fill_dummy(
+        _fill_skipping_partyrock(
             job_id,
             test_mode=test_mode,
-            headed=True,
-            flash_leftovers=_dummy_fill_flash_requested(),
-            restore_status=fill_restore,
-            preserve_activity=True,
+            existing_resume=existing_resume,
+            apply_url0=apply_url0,
+            fill_restore=fill_restore,
         )
         return
 
@@ -5797,6 +5823,40 @@ class Handler(BaseHTTPRequestHandler):
     def _job(self, data, job_id):
         return next((j for j in data["jobs"] if j["id"] == job_id), None)
 
+    @contextmanager
+    def _locked_job(self, job_id):
+        """Hold ``_lock`` while yielding ``(data, job)`` for a job lookup.
+
+        Consolidates the ``with _lock: data = read_jobs(); job = self._job(...)``
+        prologue repeated across the mutating handlers. The lock is held for the
+        whole ``with`` body — byte-for-byte the same lock scope those handlers
+        used before — and callers still emit their own ``{"error": "not found"}``
+        404 when ``job is None``.
+        """
+        with _lock:
+            data = read_jobs()
+            yield data, self._job(data, job_id)
+
+    # POST /api/jobs/<id>/<action> → (handler method name, whether it takes the
+    # JSON payload). Data-driven replacement for the hand-unrolled per-action
+    # `len(parts)==4 and parts[3]=="…"` index checks. Matching + precedence are
+    # identical: dispatch is gated on the same `len==4 and parts[0:2]==api/jobs`
+    # guard, and any action not in this table falls through to the exact-path
+    # routes below exactly as an unmatched `if` chain did. (The multipart
+    # `resume` upload is intentionally absent — it is routed before the body is
+    # read, above.)
+    _JOB_ACTION_POST = {
+        "answer": ("_handle_answer", True),
+        "approve_command": ("_handle_approve_command", True),
+        "cancel": ("_handle_cancel", False),
+        "skip": ("_handle_skip", True),
+        "restore": ("_handle_restore", False),
+        "edit": ("_handle_edit_applied", True),
+        "submitted": ("_handle_mark_submitted", False),
+        "claim-ready-announcement": ("_handle_claim_ready_announcement", False),
+        "start": ("_handle_start", True),
+    }
+
     # ---------------------------------------------------------------- GET
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -5940,34 +6000,16 @@ class Handler(BaseHTTPRequestHandler):
             )
             self._send_json(body, code)
             return
-        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "answer":
-            self._handle_answer(parts[2], payload)
-            return
-        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "approve_command":
-            self._handle_approve_command(parts[2], payload)
-            return
-        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "cancel":
-            self._handle_cancel(parts[2])
-            return
-        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "skip":
-            self._handle_skip(parts[2], payload)
-            return
-        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "restore":
-            self._handle_restore(parts[2])
-            return
-        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "edit":
-            self._handle_edit_applied(parts[2], payload)
-            return
-        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "submitted":
-            self._handle_mark_submitted(parts[2])
-            return
-        if (
-            len(parts) == 4
-            and parts[0:2] == ["api", "jobs"]
-            and parts[3] == "claim-ready-announcement"
-        ):
-            self._handle_claim_ready_announcement(parts[2])
-            return
+        if len(parts) == 4 and parts[0:2] == ["api", "jobs"]:
+            route = self._JOB_ACTION_POST.get(parts[3])
+            if route is not None:
+                method_name, takes_payload = route
+                handler = getattr(self, method_name)
+                if takes_payload:
+                    handler(parts[2], payload)
+                else:
+                    handler(parts[2])
+                return
         if parts == ["api", "profile"]:
             self._handle_profile_update(payload)
             return
@@ -5997,9 +6039,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parts == ["api", "cron", "schedule"]:
             self._handle_cron_schedule(payload)
-            return
-        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "start":
-            self._handle_start(parts[2], payload)
             return
         self._send_json({"error": "not found"}, 404)
 
@@ -6067,9 +6106,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_approve_command(self, job_id, payload):
         approve = bool(payload.get("approve"))
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
+        with self._locked_job(job_id) as (data, job):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
@@ -6113,9 +6150,7 @@ class Handler(BaseHTTPRequestHandler):
         Does not leave status=cancelled in a Skipped pile. Keeps resume_path /
         on-disk resume so Fill can restart cleanly after clearing proc/hold state.
         """
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
+        with self._locked_job(job_id) as (data, job):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
@@ -6152,9 +6187,7 @@ class Handler(BaseHTTPRequestHandler):
             close_job_partyrock_tab(job_id, RESUMES_DIR / job_id)
         except Exception as e:
             print(f"warn: PartyRock tab close on cancel for {job_id}: {e}")
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
+        with self._locked_job(job_id) as (data, job):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
@@ -6196,9 +6229,7 @@ class Handler(BaseHTTPRequestHandler):
         merged_into = None
         deleted_id = job_id
         survivor_id = None
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
+        with self._locked_job(job_id) as (data, job):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
@@ -6304,9 +6335,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_restore(self, job_id):
         """Move a deleted (or legacy skipped/cancelled) job back to discovered."""
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
+        with self._locked_job(job_id) as (data, job):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
@@ -6357,9 +6386,7 @@ class Handler(BaseHTTPRequestHandler):
         """The agent never clicks Submit - it can't know when a real
         submission happens on the actual external site, so this is purely
         a manual action the user takes after they've actually done it."""
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
+        with self._locked_job(job_id) as (data, job):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
@@ -6420,9 +6447,7 @@ class Handler(BaseHTTPRequestHandler):
         if not fields:
             self._send_json({"error": "no editable fields"}, 400)
             return
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
+        with self._locked_job(job_id) as (data, job):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
@@ -6454,9 +6479,7 @@ class Handler(BaseHTTPRequestHandler):
         clears it when the job leaves Ready, so a genuinely new Ready event
         is announced again — once.
         """
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
+        with self._locked_job(job_id) as (data, job):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
@@ -6479,9 +6502,7 @@ class Handler(BaseHTTPRequestHandler):
         if content_length <= 0 or content_length > 25 * 1024 * 1024:
             self._send_json({"error": "invalid or too-large upload"}, 400)
             return
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
+        with self._locked_job(job_id) as (data, job):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
@@ -6522,9 +6543,7 @@ class Handler(BaseHTTPRequestHandler):
             rel = str(dest.relative_to(ROOT))
         except ValueError:
             rel = str(dest)
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
+        with self._locked_job(job_id) as (data, job):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
@@ -6568,9 +6587,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_resume_clear(self, job_id: str) -> None:
         """Clear job.resume_path (and local resumes/<id> files) for dossier Clear."""
         cleared = []
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
+        with self._locked_job(job_id) as (data, job):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
@@ -6841,9 +6858,7 @@ class Handler(BaseHTTPRequestHandler):
         if _session_running_local(job["session_key"]):
             self._send_json({"error": "this job is already running"}, 409)
             return
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
+        with self._locked_job(job_id) as (data, job):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return

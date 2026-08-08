@@ -60,7 +60,6 @@ import argparse
 import fcntl
 import json
 import random
-import re
 import shutil
 import sys
 from contextlib import contextmanager
@@ -71,6 +70,7 @@ from openpyxl import Workbook, load_workbook
 
 import text_to_pdf
 from jobs_lock import locked_jobs_for_write
+from text_normalize import normalize_company
 from resume_publish import (
     BY_COMPANY_DIR,
     ensure_file_id,
@@ -125,13 +125,6 @@ def locked_tracker_for_read():
             yield
         finally:
             fcntl.flock(lockfile, fcntl.LOCK_UN)
-
-
-def normalize_company(name) -> str:
-    name = str(name or "").lower()
-    name = re.sub(r"\b(inc|llc|corp|corporation|ltd|co|company|group|technologies|technology)\b\.?", "", name)
-    name = re.sub(r"[^a-z0-9]+", "", name)
-    return name
 
 
 def ensure_workbook():

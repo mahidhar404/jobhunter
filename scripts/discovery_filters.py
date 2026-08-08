@@ -177,12 +177,26 @@ US_LOCATION_STRONG_RE = re.compile(
     re.I,
 )
 
+# Single source of truth for US state / DC abbreviations. Both the
+# comma-prefixed abbreviation regex below and the ISO-2 country-tail
+# US_STATE_ABBREVS set (further down) are built from this ordered tuple, so a
+# code can never be added to one form and missed in the other.
+US_STATE_ABBREV_CODES = (
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DC", "DE", "FL", "GA", "HI",
+    "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN",
+    "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH",
+    "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA",
+    "WV", "WI", "WY",
+)
+# US territories that also appear as ISO-3166 alpha-2 codes. Only the
+# country-tail set needs these — the comma-prefixed abbreviation regex keeps
+# the states+DC list to preserve its exact matching behavior.
+US_TERRITORY_ISO2_CODES = ("PR", "VI", "GU", "AS", "MP")
+
 # Comma-prefixed US state / DC abbreviations ("Rome, NY", "Paris, TX").
 # Bare city names that are also non-US hubs still drop without this.
 US_STATE_ABBREV_RE = re.compile(
-    r",\s*(?:AL|AK|AZ|AR|CA|CO|CT|DC|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|"
-    r"MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|"
-    r"TN|TX|UT|VT|VA|WA|WV|WI|WY)\b",
+    r",\s*(?:" + "|".join(US_STATE_ABBREV_CODES) + r")\b",
     re.I,
 )
 
@@ -196,15 +210,7 @@ US_LOCATION_RE = re.compile(
 # codes collide with US state abbreviations (IN=India/Indiana, DE, CA, MD, …),
 # so the tail is resolved explicitly before the state-abbreviation US signal
 # runs — otherwise ", in" reads as Indiana and vetoes the non-US decision.
-US_STATE_ABBREVS = {
-    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DC", "DE", "FL", "GA", "HI",
-    "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN",
-    "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH",
-    "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA",
-    "WV", "WI", "WY",
-    # Territories that also appear as ISO country codes (PR, VI, GU, …)
-    "PR", "VI", "GU", "AS", "MP",
-}
+US_STATE_ABBREVS = set(US_STATE_ABBREV_CODES) | set(US_TERRITORY_ISO2_CODES)
 
 # Non-US ISO-3166 alpha-2 codes seen in ATS location tails. "us" is handled
 # separately as a positive US signal; codes not listed here fall through to
@@ -243,22 +249,33 @@ DISCOVERY_REGIONS_ENV = "JOBHUNTER_DISCOVERY_REGIONS"
 
 # Clear India geography (cities / states / country). Subset of
 # NON_US_LOCATION_RE — no US-state collisions. "ncr" = Delhi NCR.
+# Token lists live here as data; INDIA_LOCATION_RE is built from them so a new
+# city/state is added in one place. Each token is a regex fragment (e.g.
+# r"tamil\s+nadu") joined with "|"; order is preserved to keep the compiled
+# pattern identical to the hand-written original.
+INDIA_COUNTRY_TOKENS = ("india", "bharat")
+INDIA_STATE_TOKENS = (
+    r"karnataka", r"telangana", r"maharashtra", r"tamil\s+nadu", r"kerala",
+    r"gujarat", r"haryana", r"uttar\s+pradesh", r"west\s+bengal",
+    r"andhra\s+pradesh", r"rajasthan", r"madhya\s+pradesh", r"odisha",
+    r"assam", r"jharkhand", r"punjab", r"bihar", r"chhattisgarh",
+    r"uttarakhand", r"goa",
+)
+INDIA_CITY_TOKENS = (
+    r"bangalore", r"bengaluru", r"mumbai", r"bombay", r"delhi", r"new\s+delhi",
+    r"hyderabad", r"pune", r"chennai", r"madras", r"kolkata", r"calcutta",
+    r"gurgaon", r"gurugram", r"noida", r"ghaziabad", r"ahmedabad", r"jaipur",
+    r"coimbatore", r"kochi", r"cochin", r"thiruvananthapuram", r"trivandrum",
+    r"indore", r"bhubaneswar", r"vadodara", r"nagpur", r"mysuru", r"mysore",
+    r"visakhapatnam", r"vizag", r"lucknow", r"chandigarh", r"surat", r"nashik",
+    r"thane",
+)
+# "\bncr\b" (Delhi NCR) keeps its own word boundaries inside the group.
 INDIA_LOCATION_RE = re.compile(
     r"\b("
-    r"india|bharat|"
-    # States / union territories
-    r"karnataka|telangana|maharashtra|tamil\s+nadu|kerala|gujarat|"
-    r"haryana|uttar\s+pradesh|west\s+bengal|andhra\s+pradesh|"
-    r"rajasthan|madhya\s+pradesh|odisha|assam|jharkhand|"
-    r"punjab|bihar|chhattisgarh|uttarakhand|goa|"
-    # Major cities (both spellings)
-    r"bangalore|bengaluru|mumbai|bombay|delhi|new\s+delhi|hyderabad|pune|"
-    r"chennai|madras|kolkata|calcutta|gurgaon|gurugram|noida|ghaziabad|"
-    r"ahmedabad|jaipur|coimbatore|kochi|cochin|thiruvananthapuram|trivandrum|"
-    r"indore|bhubaneswar|vadodara|nagpur|mysuru|mysore|visakhapatnam|vizag|"
-    r"lucknow|chandigarh|surat|nashik|thane|"
-    r"\bncr\b"
-    r")\b",
+    + "|".join((*INDIA_COUNTRY_TOKENS, *INDIA_STATE_TOKENS, *INDIA_CITY_TOKENS))
+    + r"|\bncr\b"
+    + r")\b",
     re.I,
 )
 
