@@ -30,6 +30,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from jobs_lock import locked_jobs_for_write
+from multi_opening import apply_multi_opening_flag
+from resume_publish import publish_resume_to_by_company
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def now_iso() -> str:
@@ -73,6 +77,20 @@ def main() -> None:
             job["pending_command"] = None
         if args.resume_path is not None:
             job["resume_path"] = args.resume_path
+            pdf = Path(args.resume_path)
+            if not pdf.is_absolute():
+                pdf = ROOT / pdf
+            if pdf.is_file() and pdf.suffix.lower() == ".pdf":
+                existing_ids = {j["file_id"] for j in data["jobs"] if j.get("file_id")}
+                try:
+                    publish_resume_to_by_company(
+                        job,
+                        pdf,
+                        existing_file_ids=existing_ids,
+                        root=ROOT,
+                    )
+                except Exception as e:
+                    print(f"warn: by_company publish failed: {e}", file=sys.stderr)
         if args.date_posted is not None:
             job["date_posted"] = args.date_posted
         if args.company is not None:
@@ -83,6 +101,14 @@ def main() -> None:
             job["location"] = args.location
         if args.job_description is not None:
             job["job_description"] = args.job_description
+        # Recompute when title or JD text may have changed (also picks up
+        # resumes/<id>/jd_full.txt if present).
+        if (
+            args.title is not None
+            or args.job_description is not None
+            or "multi_opening" not in job
+        ):
+            apply_multi_opening_flag(job)
         job["updated_at"] = now_iso()
         status_for_print = job.get("status")
 

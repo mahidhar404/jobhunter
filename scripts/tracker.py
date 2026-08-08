@@ -71,6 +71,12 @@ from openpyxl import Workbook, load_workbook
 
 import text_to_pdf
 from jobs_lock import locked_jobs_for_write
+from resume_publish import (
+    BY_COMPANY_DIR,
+    ensure_file_id,
+    publish_resume_to_by_company,
+    sanitize_filename,
+)
 
 ROOT = Path(__file__).parent.parent
 TRACKER_FILE = ROOT / "application_tracker.xlsx"
@@ -86,7 +92,6 @@ TRACKER_FILE = ROOT / "application_tracker.xlsx"
 # --role), but it demonstrates concurrent tracker writes are a real,
 # already-occurring pattern, not a hypothetical one.
 TRACKER_LOCK_FILE = TRACKER_FILE.with_suffix(".xlsx.lock")
-BY_COMPANY_DIR = ROOT / "resumes" / "by_company"
 SHEET_NAME = "Applications"
 COLUMNS = ["Company", "Role", "Status", "Job Posting Date", "Date Applied",
            "Location", "Address Used", "Work Type", "Salary", "Source",
@@ -127,11 +132,6 @@ def normalize_company(name) -> str:
     name = re.sub(r"\b(inc|llc|corp|corporation|ltd|co|company|group|technologies|technology)\b\.?", "", name)
     name = re.sub(r"[^a-z0-9]+", "", name)
     return name
-
-
-def sanitize_filename(name) -> str:
-    name = re.sub(r'[\\/:*?"<>|]', "", str(name or "")).strip()
-    return name or "company"
 
 
 def ensure_workbook():
@@ -177,9 +177,6 @@ def cmd_check(args) -> None:
     sys.exit(0 if found else 1)
 
 
-FILE_ID_DIGITS = 5
-
-
 def get_or_create_file_id(job_id: str) -> str:
     """Every job gets one persistent 5-digit ID, generated once and
     reused for BOTH its resume and job-description filenames in
@@ -194,16 +191,8 @@ def get_or_create_file_id(job_id: str) -> str:
         job = next((j for j in data["jobs"] if j["id"] == job_id), None)
         if job is None:
             raise SystemExit(f"no job found with id {job_id!r} (--job-id)")
-        if job.get("file_id"):
-            return job["file_id"]
         existing = {j["file_id"] for j in data["jobs"] if j.get("file_id")}
-        max_n = 10 ** FILE_ID_DIGITS
-        for _ in range(200):
-            candidate = f"{random.randint(0, max_n - 1):0{FILE_ID_DIGITS}d}"
-            if candidate not in existing:
-                job["file_id"] = candidate
-                return candidate
-        raise RuntimeError("could not find a free 5-digit file_id after 200 tries")
+        return ensure_file_id(job, existing)
 
 
 def _unique_dest(company: str, suffix_digits: int, ext: str, tag: str = "") -> Path:
@@ -242,11 +231,24 @@ def cmd_add(args) -> None:
     resume_dest = None
     if args.resume_path and Path(args.resume_path).exists():
         BY_COMPANY_DIR.mkdir(parents=True, exist_ok=True)
-        if file_id:
-            resume_dest = BY_COMPANY_DIR / f"{sanitize_filename(args.company)}_resume_{file_id}.pdf"
+        if file_id and args.job_id:
+            # Shared helper: one <Company>_resume_<file_id>.pdf per job_id
+            # (overwrite on re-add). Also stamps resume_by_company_path.
+            with locked_jobs_for_write() as data:
+                job = next((j for j in data["jobs"] if j["id"] == args.job_id), None)
+                if job is None:
+                    raise SystemExit(f"no job found with id {args.job_id!r} (--job-id)")
+                existing_ids = {j["file_id"] for j in data["jobs"] if j.get("file_id")}
+                resume_dest = publish_resume_to_by_company(
+                    job,
+                    args.resume_path,
+                    existing_file_ids=existing_ids,
+                    company=args.company,
+                    root=ROOT,
+                )
         else:
             resume_dest = _unique_dest(args.company, 2, ".pdf", tag="resume")
-        shutil.copyfile(args.resume_path, resume_dest)
+            shutil.copyfile(args.resume_path, resume_dest)
 
     jd_path = None
     if args.jd_path and Path(args.jd_path).exists():

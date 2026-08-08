@@ -1,0 +1,103 @@
+{
+  "_comment": "Synthetic privacy placeholders keyed by the exact city shown in the resume header. Never sourced from profile.json. Remote/US defaults to Chicago, IL. Unknown City, ST pairs are deterministically generated and persisted by address_resolver.py.",
+  "remote_default": {
+    "city": "Chicago",
+    "state": "IL"
+  },
+  "addresses": [
+    {
+      "city": "San Francisco",
+      "state": "CA",
+      "zip": "94105",
+      "street": "320 Mission Street",
+      "unit": "Unit 9"
+    },
+    {
+      "city": "New York",
+      "state": "NY",
+      "zip": "10001",
+      "street": "245 West 29th Street",
+      "unit": "Apt 4B"
+    },
+    {
+      "city": "Seattle",
+      "state": "WA",
+      "zip": "98101",
+      "street": "56 Alaskan Way",
+      "unit": "Apt 3C"
+    },
+    {
+      "city": "Austin",
+      "state": "TX",
+      "zip": "78701",
+      "street": "742 Maple Avenue",
+      "unit": "Apt 3B"
+    },
+    {
+      "city": "Boston",
+      "state": "MA",
+      "zip": "02110",
+      "street": "230 Congress Street",
+      "unit": "Apt 2B"
+    },
+    {
+      "city": "Chicago",
+      "state": "IL",
+      "zip": "60661",
+      "street": "410 West Monroe Street",
+      "unit": "Apt 9C"
+    },
+    {
+      "city": "Denver",
+      "state": "CO",
+      "zip": "80202",
+      "street": "455 Pine Avenue",
+      "unit": "Unit 7"
+    },
+    {
+      "city": "Atlanta",
+      "state": "GA",
+      "zip": "30303",
+      "street": "540 Peachtree Street",
+      "unit": "Apt 2A"
+    },
+    {
+      "city": "Dallas",
+      "state": "TX",
+      "zip": "75201",
+      "street": "215 Oak Street",
+      "unit": "Unit 12"
+    },
+    {
+      "city": "Springfield",
+      "state": "IL",
+      "zip": "62701",
+      "street": "100 Example Avenue",
+      "unit": "Apt 1A"
+    },
+    {
+      "city": "Orlando",
+      "state": "FL",
+      "zip": "32248",
+      "street": "7091 Parkview Drive",
+      "unit": "Apt 18D",
+      "generated": true
+    },
+    {
+      "city": "Chandler",
+      "state": "AZ",
+      "zip": "85467",
+      "street": "7862 Maple Avenue",
+      "unit": "Apt 4E",
+      "generated": true
+    },
+    {
+      "city": "Alexandria",
+      "state": "VA",
+      "zip": "22540",
+      "street": "4321 Riverside Avenue",
+      "unit": "Apt 12F",
+      "generated": true
+    }
+  ]
+}

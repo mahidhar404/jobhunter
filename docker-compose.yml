@@ -1,0 +1,103 @@
+# docker-compose.yml — run the job-hunter stack in containers.
+#
+# Quickstart (core app, no real data):
+#   docker compose up --build
+#   open http://127.0.0.1:8787
+#
+# Optional heavy Skyvern path (LLM-assisted fill):
+#   docker compose --profile skyvern up --build
+#
+# Config: the app seeds DUMMY profile/credentials/web_keys/.env from
+# fixtures/*.example on first boot. To use your own data, uncomment the config
+# bind mounts under the `app` service and point them at real host files.
+# See docs/DOCKER.md for the full guide.
+
+services:
+  # -------------------------------------------------------------------------
+  # Core dashboard — the only service you need for clone -> up -> open.
+  # -------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: job-hunter-app:latest
+    # Publish only to host loopback (matches the app's local-first posture).
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      JOBHUNTER_DASHBOARD_HOST: "0.0.0.0"
+      JOBHUNTER_DASHBOARD_PORT: "8787"
+      JOBHUNTER_DATA_DIR: "/app/data"
+      JOBHUNTER_TECTONIC_BIN: "/usr/local/bin/tectonic"
+      # Fastfill safety: stay in DUMMY mode. Never set these to real-PII values
+      # in a shared/container context.
+      FASTFILL_ALLOW_REAL: "0"
+      TEST_MODE: "1"
+      # Optional: point the learning path at the db service's Postgres.
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-jobhunter}:${POSTGRES_PASSWORD:-jobhunter}@db:5432/${POSTGRES_DB:-jobhunter}"
+    volumes:
+      # Runtime state persists here (jobs.json, listings/, logs/, resumes/,
+      # application_tracker.xlsx). No PII is baked into the image.
+      - jobhunter_data:/app/data
+      # --- Optional: use YOUR real config instead of the seeded dummies ---
+      # Create the files on the host first, then uncomment:
+      # - ./profile.json:/app/profile.json
+      # - ./credentials.json:/app/credentials.json
+      # - ./web_keys.json:/app/web_keys.json
+      # - ./.env:/app/.env
+    restart: unless-stopped
+    # db is only needed for the optional Skyvern/learning path; the core
+    # dashboard runs fine without it, so this is a soft (non-blocking) link.
+    depends_on:
+      db:
+        condition: service_started
+
+  # -------------------------------------------------------------------------
+  # Postgres — backs the Skyvern learning path (fastfill/learning.py) and the
+  # optional Skyvern service below. Healthchecked + persisted to a volume.
+  # -------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-jobhunter}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-jobhunter}"
+      POSTGRES_DB: "${POSTGRES_DB:-jobhunter}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jobhunter} -d ${POSTGRES_DB:-jobhunter}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # Expose to host loopback only if you want to inspect it directly:
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # Skyvern (OPTIONAL, heavy) — behind the `skyvern` profile so it never runs
+  # for the core quickstart. This is a documented PLACEHOLDER wired to `db`:
+  # it uses the upstream Skyvern image as a starting point. The repo's own
+  # skyvern_runtime/ is a separately-vendored setup (its own venv + .env +
+  # .secrets.env) and is NOT reproduced here — full containerization of that
+  # runtime is an owner follow-up (see docs/DOCKER.md). Its deps are
+  # deliberately kept OUT of the main app image.
+  # -------------------------------------------------------------------------
+  skyvern:
+    profiles: ["skyvern"]
+    image: "public.ecr.aws/skyvern/skyvern:latest"
+    environment:
+      DATABASE_STRING: "postgresql+psycopg://${POSTGRES_USER:-jobhunter}:${POSTGRES_PASSWORD:-jobhunter}@db:5432/${POSTGRES_DB:-jobhunter}"
+      # Provide your own LLM keys / Skyvern config here or via an env_file.
+      # LLM_KEY, OPENAI_API_KEY, etc. — see Skyvern's own documentation.
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  jobhunter_data:
+  pgdata:

@@ -1,0 +1,175 @@
+{
+  "url": "https://jobs.smartrecruiters.com/ServiceNow/744000139371929-machine-learning-engineer-agentic-ai-systems-moveworks",
+  "platform": "smartrecruiters",
+  "coverage_path": "selector_pack+generic_dom",
+  "universal_attempt": true,
+  "dummy": true,
+  "never_submit": true,
+  "submit_clicked": false,
+  "headed": false,
+  "headless": true,
+  "identity_email": "randommail6969+97c0e5a81dac@gmail.com",
+  "email": "randommail6969+97c0e5a81dac@gmail.com",
+  "email_alias": "randommail6969+97c0e5a81dac@gmail.com",
+  "alias_token": "97c0e5a81dac",
+  "resume_pdf": "/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/fastfill_run_93vt5nhg/dummy_resume_run_97c0e5a81dac.pdf",
+  "resume_compiled": true,
+  "entry_prepass": {
+    "clicked": [
+      {
+        "text": "I'm interested",
+        "kind": "ENTRY",
+        "ok": true,
+        "round": 0,
+        "in_iframe": false
+      }
+    ],
+    "refused_final": [
+      "Submit feedback."
+    ],
+    "final_clicks": 0,
+    "form_reached": false,
+    "time_to_form_seconds": null,
+    "buttons_seen_count": 22,
+    "switched_tab": false,
+    "spa_wait": {
+      "reached": false,
+      "waited_ms": 20236,
+      "polls": 22,
+      "iframe_tried": true,
+      "context": {
+        "kind": "frame",
+        "url": "https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMArOCXI1IKUugA8uG4EQ%3D%3D&hash=E5A9F170BDF11F4EA91D813241166A&cid=1yeyphiiYK1EGqkAeP8~fG1J8nAiavLVI0hDlGkPPwNyJSx30gxbqK1GGnpyrqo51~N_M6",
+        "visible_input_count": 0,
+        "candidates": [
+          {
+            "kind": "frame",
+            "url": "https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMArOCXI1IKUugA8uG4EQ%3D%3D&hash=E5A9F170BDF11F4EA91D813241166A&cid=1yeyphiiYK1EGqkAeP8~fG1J8nAiav",
+            "name": "",
+            "visible_input_count": 0,
+            "reached": false,
+            "hint": "|https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMArOCXI1IKUugA8uG4EQ%3D%3D&hash=E5A9F170BDF11F4EA91D8132"
+          },
+          {
+            "kind": "page",
+            "url": "https://jobs.smartrecruiters.com/oneclick-ui/company/ServiceNow/publication/3c915d96-ad99-4602-a75e-044bc9390722?dcr_ci=ServiceNow",
+            "name": "",
+            "visible_input_count": 0,
+            "reached": false,
+            "hint": ""
+          }
+        ]
+      },
+      "navigations": []
+    },
+    "fill_kind": "frame",
+    "fill_url": "https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMArOCXI1IKUugA8uG4EQ%3D%3D&hash=E5A9F170BDF11F4EA91D813241166A&cid=1yeyphiiYK1EGqkAeP8~fG1J8nAiavLVI0hDlGkPPwNyJSx30gxbqK1GGnpyrqo51~N_M6"
+  },
+  "filled": [],
+  "leftovers": [
+    {
+      "reason": "generic_dom_no_fields",
+      "label": "no_extractable_fields_after_entry",
+      "flash_candidate": true,
+      "hint": "Apply may open iframe/new tab/login; inspect entry_prepass.spa_wait / fill_context / iframe_login",
+      "platform": "smartrecruiters",
+      "coverage_path": "selector_pack+generic_dom",
+      "spa_wait": {
+        "reached": false,
+        "waited_ms": 20236,
+        "polls": 22,
+        "iframe_tried": true,
+        "context": {
+          "kind": "frame",
+          "url": "https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMArOCXI1IKUugA8uG4EQ%3D%3D&hash=E5A9F170BDF11F4EA91D813241166A&cid=1yeyphiiYK1EGqkAeP8~fG1J8nAiavLVI0hDlGkPPwNyJSx30gxbqK1GGnpyrqo51~N_M6",
+          "visible_input_count": 0,
+          "candidates": [
+            {
+              "kind": "frame",
+              "url": "https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMArOCXI1IKUugA8uG4EQ%3D%3D&hash=E5A9F170BDF11F4EA91D813241166A&cid=1yeyphiiYK1EGqkAeP8~fG1J8nAiav",
+              "name": "",
+              "visible_input_count": 0,
+              "reached": false,
+              "hint": "|https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMArOCXI1IKUugA8uG4EQ%3D%3D&hash=E5A9F170BDF11F4EA91D8132"
+            },
+            {
+              "kind": "page",
+              "url": "https://jobs.smartrecruiters.com/oneclick-ui/company/ServiceNow/publication/3c915d96-ad99-4602-a75e-044bc9390722?dcr_ci=ServiceNow",
+              "name": "",
+              "visible_input_count": 0,
+              "reached": false,
+              "hint": ""
+            }
+          ]
+        },
+        "navigations": []
+      },
+      "fill_context": {
+        "kind": "frame",
+        "url": "https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMArOCXI1IKUugA8uG4EQ%3D%3D&hash=E5A9F170BDF11F4EA91D813241166A&cid=1yeyphiiYK1EGqkAeP8~fG1J8nAiavLVI0hDlGkPPwNyJSx30gxbqK1GGnpyrqo51~N_M6"
+      }
+    }
+  ],
+  "errors": [],
+  "blocker": null,
+  "extracted_count": 0,
+  "flash_called": false,
+  "flash_leftovers_requested": false,
+  "flash_note": "leftovers only \u2014 pass flash_leftovers=True / --flash-leftovers to invoke thin DeepSeek-V4-Flash handoff (default OFF)",
+  "fill_context": {
+    "kind": "frame",
+    "url": "https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMArOCXI1IKUugA8uG4EQ%3D%3D&hash=E5A9F170BDF11F4EA91D813241166A&cid=1yeyphiiYK1EGqkAeP8~fG1J8nAiavLVI0hDlGkPPwNyJSx30gxbqK1GGnpyrqo51~N_M6"
+  },
+  "iframe_login": {
+    "ran": false,
+    "is_login": false,
+    "filled": [],
+    "clicks": [],
+    "blocker": null,
+    "reached_app_fields": false,
+    "rounds": 0,
+    "fill_url": "https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMArOCXI1IKUugA8uG4EQ%3D%3D&hash=E5A9F170BDF11F4EA91D813241166A&cid=1yeyphiiYK1EGqkAeP8~fG1J8nAiavLVI0hDlGkPPwNyJSx30gxbqK1GGnpyrqo51~N_M6",
+    "final_url": "",
+    "skipped": "not_login_context"
+  },
+  "replay_filled_count": 0,
+  "elapsed_seconds": 27.12,
+  "filled_count": 0,
+  "leftover_count": 1,
+  "coverage": 0.0,
+  "coverage_note": "filled_count / max(extracted, filled+leftovers); selector-pack-only fills may exceed extract count",
+  "replay_recorded": 0,
+  "replay_fingerprint": "56777b12588920e541f239d4",
+  "flash": {
+    "mode": "leftovers_only",
+    "invoked": false,
+    "never_submit": true,
+    "submit_clicked": false,
+    "dummy": true,
+    "flash_default_on": false,
+    "url": "https://jobs.smartrecruiters.com/ServiceNow/744000139371929-machine-learning-engineer-agentic-ai-systems-moveworks",
+    "platform": "smartrecruiters",
+    "model_hint": "DeepSeek-V4-Flash",
+    "identity_email": "randommail6969+97c0e5a81dac@gmail.com",
+    "already_filled": [],
+    "already_filled_count": 0,
+    "leftovers": [
+      {
+        "label": "no_extractable_fields_after_entry",
+        "type": null,
+        "selector": "",
+        "reason": "generic_dom_no_fields",
+        "automation_id": null,
+        "flash_candidate": true
+      }
+    ],
+    "leftover_count": 1,
+    "leftovers_truncated": false,
+    "max_steps": 5,
+    "max_leftover_fields": 5,
+    "cheat_sheet": "ALREADY FILLED (do not re-fill / do not ask about):\n  (none)",
+    "prompt": "Continue this job application form. Deterministic layers already filled what they could. Use dummy applicant data only.\n\nALREADY FILLED (do not re-fill / do not ask about):\n  (none)\n\nLEFTOVER FIELDS (fill these only \u2014 nothing else):\n  1. label='no_extractable_fields_after_entry' type=None reason='generic_dom_no_fields' selector=''\n\nLEFTOVERS-ONLY MODE (DeepSeek-V4-Flash, cost-aware):\n1. Fields listed under ALREADY FILLED are done \u2014 do NOT clear, retype, ask about,\n   or re-derive them. Treat the cheat sheet as ground truth.\n2. Fill ONLY the LEFTOVER fields listed below. One action per field.\n3. Prefer Decline/No for EEO/demographics when unsure \u2014 never invent personal facts.\n4. Never press Enter to confirm a dropdown (can submit the form) \u2014 click the option.\n5. Resume upload path if needed: use the dummy resume already known to the harness.\n6. Stay within 5 actions maximum.\n7. ABSOLUTE HARD RULE: never click Submit / Submit application / Apply-final / Send / Finish / Confirm. Stop at ready-for-review. Account Create/Sign In and Next/Continue are allowed. Never solve CAPTCHA \u2014 terminate if one appears.",
+    "prompt_chars": 1118,
+    "cheat_sheet_chars": 60
+  }
+}

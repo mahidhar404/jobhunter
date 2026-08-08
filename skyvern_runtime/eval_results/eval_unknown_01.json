@@ -1,0 +1,158 @@
+{
+  "url": "https://careers.rockco.com/jobs/5353/job",
+  "platform": "icims",
+  "coverage_path": "selector_pack+generic_dom",
+  "universal_attempt": true,
+  "dummy": true,
+  "never_submit": true,
+  "submit_clicked": false,
+  "headed": false,
+  "headless": true,
+  "identity_email": "randommail6969+b56d26b2a9db@gmail.com",
+  "email": "randommail6969+b56d26b2a9db@gmail.com",
+  "email_alias": "randommail6969+b56d26b2a9db@gmail.com",
+  "alias_token": "b56d26b2a9db",
+  "resume_pdf": "/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/fastfill_run_60qi1wyp/dummy_resume_run_b56d26b2a9db.pdf",
+  "resume_compiled": true,
+  "entry_prepass": {
+    "clicked": [
+      {
+        "text": "Apply",
+        "kind": "ENTRY",
+        "ok": true,
+        "round": 0,
+        "in_iframe": false
+      }
+    ],
+    "refused_final": [],
+    "final_clicks": 0,
+    "form_reached": true,
+    "time_to_form_seconds": 5.0,
+    "buttons_seen_count": 34,
+    "switched_tab": false,
+    "spa_wait": null,
+    "fill_kind": "frame",
+    "fill_url": "https://careers-rcm.icims.com/jobs/5353/login?_sp=d4ce61d7-cdaf-41e4-8c38-1c16279e03b3.1785447382164&_jsqid=undefined&_gl=1*ogb1g5*_ga*MTMzMDY0MjY3My4xNzg1NDQ3Mzgw*_ga_5Y2BYGL910*czE3ODU0NDczNzkkbzEkZ"
+  },
+  "filled": [
+    {
+      "via": "icims_selector_pack",
+      "layer": "0.5",
+      "selector": "input#email, input[name='css_loginName'], input[name*='loginName' i], input[name='PersonProfileFields.Login'], input[type=email], input[name*='email' i], input[autocomplete='email']",
+      "type": "EMAIL",
+      "mode": "fill",
+      "ok": true,
+      "value": "randommail6969+b56d26b2a9db@gmail.com"
+    },
+    {
+      "ok": true,
+      "selector": "input#email",
+      "value": "randommail6969+b56d26b2a9db@gmail.com",
+      "type": "EMAIL",
+      "via": "iframe_login"
+    }
+  ],
+  "leftovers": [
+    {
+      "reason": "blocker:captcha",
+      "label": "auth_gate_blocked",
+      "flash_candidate": false,
+      "iframe_login": {
+        "ran": true,
+        "is_login": true,
+        "filled": [
+          {
+            "ok": true,
+            "selector": "input#email",
+            "value": "randommail6969+b56d26b2a9db@gmail.com",
+            "type": "EMAIL",
+            "via": "iframe_login"
+          }
+        ],
+        "clicks": [],
+        "blocker": "captcha",
+        "reached_app_fields": false,
+        "rounds": 1,
+        "fill_url": "https://careers-rcm.icims.com/jobs/5353/login?_sp=d4ce61d7-cdaf-41e4-8c38-1c16279e03b3.1785447382164&_jsqid=undefined&_gl=1*ogb1g5*_ga*MTMzMDY0MjY3My4xNzg1NDQ3Mzgw*_ga_5Y2BYGL910*czE3ODU0NDczNzkkbzEkZ",
+        "final_url": "https://careers-rcm.icims.com/jobs/5353/login?_sp=d4ce61d7-cdaf-41e4-8c38-1c16279e03b3.1785447382164&_jsqid=undefined&_gl=1*ogb1g5*_ga*MTMzMDY0MjY3My4xNzg1NDQ3Mzgw*_ga_5Y2BYGL910*czE3ODU0NDczNzkkbzEkZ"
+      }
+    }
+  ],
+  "errors": [],
+  "blocker": "captcha",
+  "extracted_count": 0,
+  "flash_called": false,
+  "flash_leftovers_requested": false,
+  "flash_note": "leftovers only \u2014 pass flash_leftovers=True / --flash-leftovers to invoke thin DeepSeek-V4-Flash handoff (default OFF)",
+  "platform_from_fill_url": true,
+  "fill_context": {
+    "kind": "frame",
+    "url": "https://careers-rcm.icims.com/jobs/5353/login?_sp=d4ce61d7-cdaf-41e4-8c38-1c16279e03b3.1785447382164&_jsqid=undefined&_gl=1*ogb1g5*_ga*MTMzMDY0MjY3My4xNzg1NDQ3Mzgw*_ga_5Y2BYGL910*czE3ODU0NDczNzkkbzEkZ",
+    "post_login": true
+  },
+  "iframe_login": {
+    "ran": true,
+    "is_login": true,
+    "filled": [
+      {
+        "ok": true,
+        "selector": "input#email",
+        "value": "randommail6969+b56d26b2a9db@gmail.com",
+        "type": "EMAIL",
+        "via": "iframe_login"
+      }
+    ],
+    "clicks": [],
+    "blocker": "captcha",
+    "reached_app_fields": false,
+    "rounds": 1,
+    "fill_url": "https://careers-rcm.icims.com/jobs/5353/login?_sp=d4ce61d7-cdaf-41e4-8c38-1c16279e03b3.1785447382164&_jsqid=undefined&_gl=1*ogb1g5*_ga*MTMzMDY0MjY3My4xNzg1NDQ3Mzgw*_ga_5Y2BYGL910*czE3ODU0NDczNzkkbzEkZ",
+    "final_url": "https://careers-rcm.icims.com/jobs/5353/login?_sp=d4ce61d7-cdaf-41e4-8c38-1c16279e03b3.1785447382164&_jsqid=undefined&_gl=1*ogb1g5*_ga*MTMzMDY0MjY3My4xNzg1NDQ3Mzgw*_ga_5Y2BYGL910*czE3ODU0NDczNzkkbzEkZ"
+  },
+  "replay_filled_count": 0,
+  "elapsed_seconds": 8.07,
+  "filled_count": 2,
+  "leftover_count": 1,
+  "coverage": 0.667,
+  "coverage_note": "filled_count / max(extracted, filled+leftovers); selector-pack-only fills may exceed extract count",
+  "replay_recorded": 2,
+  "replay_fingerprint": "b5acb13c312881c10be664d3",
+  "flash": {
+    "mode": "leftovers_only",
+    "invoked": false,
+    "never_submit": true,
+    "submit_clicked": false,
+    "dummy": true,
+    "flash_default_on": false,
+    "url": "https://careers.rockco.com/jobs/5353/job",
+    "platform": "icims",
+    "model_hint": "DeepSeek-V4-Flash",
+    "identity_email": "randommail6969+b56d26b2a9db@gmail.com",
+    "already_filled": [
+      {
+        "type": "EMAIL",
+        "label": "",
+        "selector": "input#email, input[name='css_loginName'], input[name*='loginName' i], input[name='PersonProfileFields.Login'], input[type=email], input[name*='email' i], input[autocomplete='email']",
+        "value": "randommail6969+b56d26b2a9db@gmail.com",
+        "via": "icims_selector_pack"
+      },
+      {
+        "type": "EMAIL",
+        "label": "",
+        "selector": "input#email",
+        "value": "randommail6969+b56d26b2a9db@gmail.com",
+        "via": "iframe_login"
+      }
+    ],
+    "already_filled_count": 2,
+    "leftovers": [],
+    "leftover_count": 0,
+    "leftovers_truncated": false,
+    "max_steps": 5,
+    "max_leftover_fields": 5,
+    "cheat_sheet": "ALREADY FILLED (do not re-fill / do not ask about):\n  - EMAIL: 'randommail6969+b56d26b2a9db@gmail.com'\n  - EMAIL: 'randommail6969+b56d26b2a9db@gmail.com'",
+    "prompt": "Continue this job application form. Deterministic layers already filled what they could. Use dummy applicant data only.\n\nALREADY FILLED (do not re-fill / do not ask about):\n  - EMAIL: 'randommail6969+b56d26b2a9db@gmail.com'\n  - EMAIL: 'randommail6969+b56d26b2a9db@gmail.com'\n\nLEFTOVER FIELDS (fill these only \u2014 nothing else):\n  (none \u2014 nothing for Flash to do)\n\nLEFTOVERS-ONLY MODE (DeepSeek-V4-Flash, cost-aware):\n1. Fields listed under ALREADY FILLED are done \u2014 do NOT clear, retype, ask about,\n   or re-derive them. Treat the cheat sheet as ground truth.\n2. Fill ONLY the LEFTOVER fields listed below. One action per field.\n3. Prefer Decline/No for EEO/demographics when unsure \u2014 never invent personal facts.\n4. Never press Enter to confirm a dropdown (can submit the form) \u2014 click the option.\n5. Resume upload path if needed: use the dummy resume already known to the harness.\n6. Stay within 5 actions maximum.\n7. ABSOLUTE HARD RULE: never click Submit / Submit application / Apply-final / Send / Finish / Confirm. Stop at ready-for-review. Account Create/Sign In and Next/Continue are allowed. Never solve CAPTCHA \u2014 terminate if one appears.",
+    "prompt_chars": 1146,
+    "cheat_sheet_chars": 153
+  }
+}

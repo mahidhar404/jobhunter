@@ -7,20 +7,54 @@ session via `openclaw agent --agent job-hunter --session-key <key> --message <an
 """
 from __future__ import annotations
 
+import concurrent.futures
 import fcntl
+import html
 import json
+import os
 import re
-import shlex
 import shutil
+import signal
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "scripts" / "fastfill"))
+from partyrock_config import (  # noqa: E402
+    load_partyrock_urls,
+    partyrock_mode_label,
+    partyrock_url,
+)
+from partyrock_tabs import close_job_partyrock_tab  # noqa: E402
+from chrome_for_testing import (  # noqa: E402
+    ensure_partyrock_browser_direct,
+)
+# OpenClaw-free replacement modules (sibling files in dashboard/). These make
+# the whole pipeline run with the `openclaw` binary/runtime completely absent:
+#   agent_runner   → direct DeepSeek tool-loop (replaces `openclaw agent`)
+#   scheduler_mod  → in-process daily discovery (replaces `openclaw cron`)
+#   run_guard      → local flock double-start guard (replaces `sessions list`)
+#   approvals_store→ local exec-approvals JSON (replaces `approvals allowlist add`)
+import agent_runner  # noqa: E402
+import approvals_store  # noqa: E402
+import run_guard  # noqa: E402
+import scheduler as scheduler_mod  # noqa: E402
+from apply_urls import normalize_url  # noqa: E402
+from blocked_urls import (  # noqa: E402
+    block_deleted_job,
+    block_deleted_jobs_batch,
+    is_url_blocked,
+    unblock_job,
+)
+from resume_publish import publish_resume_to_by_company  # noqa: E402
 JOBS_FILE = ROOT / "jobs.json"
 # Same lock file scripts/jobs_lock.py uses - update_job.py and
 # write_discovered_jobs.py run as separate OS processes with no visibility
@@ -31,13 +65,49 @@ JOBS_FILE = ROOT / "jobs.json"
 JOBS_LOCK_FILE = JOBS_FILE.with_suffix(".json.lock")
 PROFILE_FILE = ROOT / "profile.json"
 STATIC_DIR = Path(__file__).parent / "static"
-OPENCLAW_BIN = "/opt/homebrew/bin/openclaw"
+
+
+def _resolve_bin(env_var: str, name: str, default: str) -> str:
+    """Resolve an external binary: explicit env override → PATH lookup →
+    the macOS Homebrew default. Keeps the existing macOS behavior as the
+    final fallback while letting Linux/containers point at their own path
+    (or find it on PATH). A missing binary is not fatal here — the value is
+    only invoked on demand, so the dashboard still starts if it's absent."""
+    override = (os.environ.get(env_var) or "").strip()
+    if override:
+        return override
+    found = shutil.which(name)
+    if found:
+        return found
+    return default
+
+
+OPENCLAW_BIN = _resolve_bin("JOBHUNTER_OPENCLAW_BIN", "openclaw", "/opt/homebrew/bin/openclaw")
+TECTONIC_BIN = _resolve_bin("JOBHUNTER_TECTONIC_BIN", "tectonic", "/opt/homebrew/bin/tectonic")
 PYTHON_BIN = str(ROOT / ".venv" / "bin" / "python3")
+SKYVERN_PYTHON = ROOT / "skyvern_runtime" / "venv" / "bin" / "python"
+FASTFILL_SCRIPT = ROOT / "scripts" / "fastfill" / "fast_fill.py"
+HYBRID_FILL_SCRIPT = ROOT / "skyvern_runtime" / "scripts" / "hybrid_fill.py"
 SCOUT_SCRIPT = ROOT / "scripts" / "scout.py"
 LISTINGS_DIR = ROOT / "listings"
 EXEC_APPROVALS_FILE = Path.home() / ".openclaw" / "exec-approvals.json"
 CRON_JOB_NAME = "job-hunter-daily"
 DISCOVERY_SESSION_KEY = "agent:job-hunter:discovery"
+DISCOVERY_LAST_RUN_FILE = Path(__file__).parent / "discovery_last_run.json"
+DISCOVERY_SETTINGS_FILE = ROOT / "logs" / "discovery_settings.json"
+BUILTIN_SUPPORTED_DAYS = (1, 3, 7, 30)
+BUILTIN_DEFAULT_DAYS = 1
+PRUNE_SETTINGS_FILE = ROOT / "logs" / "prune_settings.json"
+PRUNE_REASON_CODES = (
+    "management_track",
+    "non_us_location",
+    "clearance_or_intel",
+    "excessive_yoe",
+    "citizenship_or_greencard",
+)
+PRUNE_INTERVALS_S = (0, 300, 900, 3600, 86400)
+# Per-source progress for crash/quit resume (under logs/ — gitignored).
+DISCOVERY_CHECKPOINT_FILE = ROOT / "logs" / "discovery_checkpoint.json"
 SCOUT_TIMEOUT_S = 1500  # raised alongside SEARCH_TERMS growing from 6 to 14 terms
 TAILOR_SCRIPT = ROOT / "scripts" / "tailor_resume.py"
 RESUMES_DIR = ROOT / "resumes"
@@ -46,6 +116,43 @@ INBOUND_MEDIA_DIR = Path.home() / ".openclaw" / "media" / "inbound"
 INBOUND_RESUME_MAX_AGE_S = 7 * 24 * 3600
 ATS_NOTES_DIR = ROOT / "ats_notes"
 PLAYBOOK_FILE = ROOT / "PLAYBOOK.md"
+# Dummy/test fill timeouts — Playwright path must cover fill + headed hold
+# + Flash refill. Hold itself is indefinite (--hold-open); once hold starts
+# the subprocess waiter stops applying this deadline so review isn't killed.
+# Observed live fills ~114–240s elapsed including old 90s hold — 180s falsely
+# killed mid-review and left jobs looking hung.
+DUMMY_FILL_PLAYWRIGHT_TIMEOUT_S = 420
+DUMMY_FILL_HYBRID_TIMEOUT_S = 1800
+# After hold_review begins, wait this long before treating as abandoned.
+DUMMY_FILL_HOLD_GRACE_S = 7 * 24 * 3600  # effectively until Cancel / browser close
+# User/terminal decisions the Start/fill daemon must never clobber.
+# `cancelled` is only a brief abort signal during Cancel→Open reset.
+# Legacy skipped_* remain until triage migration maps them to deleted.
+FILL_ABORT_STATUSES = frozenset({
+    "cancelled",
+    "skipped_manual",
+    "skipped_duplicate",
+    "skipped_contract",
+    "skipped_easy_apply",
+    "deleted",
+    "applied",
+})
+# Pre-redesign holding-pen statuses (no longer a visible Skipped queue).
+LEGACY_SKIP_STATUSES = frozenset({
+    "skipped_manual",
+    "skipped_duplicate",
+    "skipped_contract",
+    "skipped_easy_apply",
+})
+# Skip reason → (deleted_reason code, status_detail).
+SKIP_REASON_TO_DELETED = {
+    "duplicate": ("duplicate", "Skipped: duplicate company/role."),
+    "not_us": ("non_us_location", "Skipped: not US."),
+    "too_senior": ("management_track", "Skipped: too senior."),
+    "contract": ("contract", "Skipped: contract/C2C."),
+    "easy_apply": ("easy_apply", "Skipped: easy apply."),
+    "dead_link": ("dead_link", "Skipped: dead link."),
+}
 
 
 def playbook_preamble() -> str:
@@ -79,15 +186,265 @@ ATS_URL_PATTERNS = {
 
 _lock = threading.Lock()
 _running_procs: dict[str, subprocess.Popen] = {}
-# PartyRock is one shared logged-in app instance (one managed browser
-# session) - two jobs tailoring at the same moment would fight over the
-# same "job description" input / generated output. Everything else in the
-# pipeline (navigating/filling the real application, waiting for review)
-# doesn't touch PartyRock at all and can run fully in parallel across
-# jobs - this lock only ever wraps the narrow window where a job is
-# actually using PartyRock, so clicking Start on job B while job A is
-# mid-tailor queues B for PartyRock specifically, not for the whole job.
+_prune_settings_lock = threading.Lock()
+_discovery_settings_lock = threading.Lock()
+_prune_schedule_wakeup = threading.Event()
+# Live fill-step stream for dashboard "Live activity" (fast fill path).
+# Keyed by job_id; independent of OpenClaw session tail used by Start/agent.
+_fill_activity_lock = threading.Lock()
+_fill_activity: dict[str, list[dict]] = {}
+_FILL_ACTIVITY_MAX = 500
+
+# UI lifecycle: after the first dashboard tab heartbeats, the server exits when
+# every client goes quiet (tab closed or crashed). Closing one of N tabs does
+# not shut down while others keep heartbeating. CLI-only runs never arm.
+# Set JOB_HUNTER_UI_LIFECYCLE=0 to keep a headless/dev server up forever.
+UI_HEARTBEAT_TIMEOUT_S = 20
+_ui_lock = threading.Lock()
+_ui_clients: dict[str, float] = {}  # client_id -> last_seen (time.time)
+_ui_lifecycle_armed = False
+_shutdown_lock = threading.Lock()
+_shutdown_requested = False
+_shutdown_reason = ""
+_restart_requested = False
+# CHR3-001/002: Refresh with CAPTCHA/Ready hold — finally must not undo preserve.
+_preserve_fill_cft_on_exit = False
+_http_server: ThreadingHTTPServer | None = None
+RESTART_FLAG_PATH = ROOT / "logs" / "dashboard_restart.flag"
+LAUNCHER_PID_PATH = ROOT / "logs" / "dashboard_launcher.pid"
+LAUNCH_DASHBOARD_SH = Path(__file__).resolve().parent / "launch_dashboard.sh"
+# Dedicated Chrome profiles / CDP — never the user's daily Chrome profile.
+DASHBOARD_CHROME_PROFILE = ROOT / "dashboard_chrome_profile"  # legacy (Google Chrome era)
+# The UI window runs on Chrome-for-Testing under this profile so that
+# /Applications/Google Chrome.app stays free for the user's daily profile.
+DASHBOARD_UI_PROFILE = ROOT / "dashboard_ui_profile"
+PARTYROCK_CHROME_PROFILE = ROOT / "partyrock_chrome_profile"
+# OpenClaw managed browser (PartyRock tailor via tailor_resume.py CDP).
+OPENCLAW_BROWSER_USER_DATA = Path.home() / ".openclaw" / "browser" / "openclaw" / "user-data"
+OPENCLAW_BROWSER_CDP_PORT = 18800
+# PartyRock generation serializes briefly (one tailor_resume.py at a time)
+# to avoid CDP contention. Each job still gets its **own** CDP tab via
+# /json/new; tabs stay open after tailor until Mark as applied / Cancel
+# closes that job's target only. Fill runs fully in parallel across jobs.
 _partyrock_lock = threading.Lock()
+PARTYROCK_LOCK_TIMEOUT_S = 900.0  # PR-005: never block forever on a stuck holder
+
+# Discovery progress for the dashboard status bar. Separate from
+# _running_procs so the UI still shows a phase during the brief gap
+# between "thread started" and the first subprocess, and after a step
+# exits before the next one starts.
+_discovery_lock = threading.Lock()
+# Exit code returned by _run_subprocess_step when cooperatively aborted.
+DISCOVERY_ABORT_EXIT = -2
+# Listing sources discovery actually scrapes (JobSpy sites + ATS boards + Built In).
+# Each enabled catalog source runs as its own subprocess (scout --sites / scrape_ats
+# --platforms / scrape_builtin) with a per-source listing file and abort track key.
+DISCOVERY_SOURCE_DEFS: list[tuple[str, str]] = [
+    ("indeed", "Indeed"),
+    ("linkedin", "LinkedIn"),
+    ("greenhouse", "Greenhouse"),
+    ("lever", "Lever"),
+    ("ashby", "Ashby"),
+    ("recruitee", "Recruitee"),
+    ("personio", "Personio"),
+    ("smartrecruiters", "SmartRecruiters"),
+    ("workable", "Workable"),
+    ("rippling", "Rippling"),
+    ("breezy", "Breezy"),
+    ("bamboohr", "BambooHR"),
+    ("builtin", "Built In"),
+    # India-only sources (see INDIA_ONLY_SOURCE_IDS) — only run when the India
+    # region is enabled; force-disabled / greyed in the UI otherwise.
+    ("internshala", "Internshala"),
+    ("hirist", "Hirist"),
+    ("cutshort", "Cutshort"),
+    ("adzuna", "Adzuna (IN)"),
+]
+SCOUT_SOURCE_IDS = ("indeed", "linkedin")
+ATS_SOURCE_IDS = (
+    "greenhouse", "lever", "ashby", "recruitee", "personio",
+    "smartrecruiters", "workable", "rippling", "breezy", "bamboohr",
+)
+# India-only discovery sources: only meaningful when the India region is on.
+# They are force-disabled (and hidden/greyed in the UI) when India is off,
+# and auto-enabled by the Discover popover when India is first turned on.
+INDIA_ONLY_SOURCE_IDS = ("internshala", "hirist", "cutshort", "adzuna")
+# Standalone scraper script per India-only source (each reads public pages /
+# an official API at low volume; Adzuna self-skips without keys).
+INDIA_SOURCE_SCRIPTS = {
+    "internshala": ROOT / "scripts" / "scrape_internshala.py",
+    "hirist": ROOT / "scripts" / "scrape_hirist.py",
+    "cutshort": ROOT / "scripts" / "scrape_cutshort.py",
+    "adzuna": ROOT / "scripts" / "scrape_adzuna.py",
+}
+# Polite per-source delays mean these run a few minutes at most.
+INDIA_SOURCE_TIMEOUT_S = 600
+_SCOUT_GOT_RE = re.compile(r"got (\d+) new results from (indeed|linkedin)/")
+_ATS_GOT_RE = re.compile(
+    r"got (\d+) relevant results from ("
+    + "|".join(ATS_SOURCE_IDS)
+    + r")/"
+)
+_ATS_PROGRESS_RE = re.compile(r"\((\d+)/(\d+) done\)")
+_INDIA_GOT_RE = re.compile(
+    r"got (\d+) results from ("
+    + "|".join(INDIA_ONLY_SOURCE_IDS)
+    + r")/"
+)
+_BUILTIN_PROC_RE = re.compile(r"processed (\d+)/(\d+) \((\d+) usable so far\)")
+_WROTE_LISTINGS_RE = re.compile(r"wrote (\d+) listings")
+
+
+DISCOVERY_SOURCE_IDS = tuple(sid for sid, _ in DISCOVERY_SOURCE_DEFS)
+
+
+def _empty_discovery_sources(enabled: set[str] | None = None) -> list[dict]:
+    """Build per-source rows. Disabled sources start as skipped."""
+    enabled = set(DISCOVERY_SOURCE_IDS) if enabled is None else set(enabled)
+    rows = []
+    for sid, label in DISCOVERY_SOURCE_DEFS:
+        on = sid in enabled
+        rows.append({
+            "id": sid,
+            "label": label,
+            "status": "pending" if on else "skipped",
+            "count": 0,
+            "detail": "" if on else "Disabled",
+            "enabled": on,
+        })
+    return rows
+
+
+def _parse_enabled_sources(payload: dict | None) -> set[str] | None:
+    """Return enabled source ids from a discover POST body, or None for all.
+
+    Accepts ``sources`` as a list of ids, or ``enabled_sources`` as a
+    ``{id: bool}`` map. Unknown ids are ignored. Empty selection is an error
+    at the handler (not here) — None means "caller omitted → default all".
+    """
+    if not isinstance(payload, dict):
+        return None
+    if "enabled_sources" in payload:
+        raw = payload.get("enabled_sources")
+        if isinstance(raw, dict):
+            return {sid for sid in DISCOVERY_SOURCE_IDS if raw.get(sid, True)}
+        if isinstance(raw, list):
+            return {sid for sid in raw if sid in DISCOVERY_SOURCE_IDS}
+        return None
+    if "sources" in payload:
+        raw = payload.get("sources")
+        if isinstance(raw, list):
+            return {sid for sid in raw if sid in DISCOVERY_SOURCE_IDS}
+        if isinstance(raw, dict):
+            return {sid for sid in DISCOVERY_SOURCE_IDS if raw.get(sid, True)}
+    return None
+
+
+_discovery_state: dict = {
+    "running": False,
+    "phase": None,
+    "phase_label": None,
+    "started_at": None,
+    "finished_at": None,
+    "last_finished_at": None,
+    "ok": None,
+    "error": None,
+    # Last completed run: success | failed | interrupted | partial
+    "last_outcome": None,
+    "last_summary": None,
+    "last_jobs_added": None,
+    "sources": [],
+    "enabled_sources": list(DISCOVERY_SOURCE_IDS),
+    "can_abort": False,
+    "abort_requested": False,
+    "resumed": False,
+    "resume_available": False,
+    "run_id": None,
+}
+# Merge bookkeeping for the active run (also persisted in the checkpoint).
+_discovery_checkpoint_meta: dict = {
+    "run_id": None,
+    "date": None,
+    "merged_paths": set(),
+    "merges_ok": 0,
+    "jobs_added": 0,
+}
+# Active discovery procs keyed by track_key (per-source: …:src:{id}).
+_discovery_procs_by_key: dict[str, subprocess.Popen] = {}
+# Per-source aborts (do not set global abort_requested / do not finish discovery).
+_discovery_source_aborts: set[str] = set()
+_discovery_protect_proc = False  # True during write — finish write instead of killing mid-file.
+
+
+class _DiscoveryProcSetView:
+    """Set-like view over `_discovery_procs_by_key` values (tests + kill-all)."""
+
+    def clear(self) -> None:
+        _discovery_procs_by_key.clear()
+
+    def __len__(self) -> int:
+        return len(_discovery_procs_by_key)
+
+    def __iter__(self):
+        return iter(list(_discovery_procs_by_key.values()))
+
+    def __bool__(self) -> bool:
+        return bool(_discovery_procs_by_key)
+
+    def discard(self, proc: subprocess.Popen) -> None:
+        dead = [k for k, p in _discovery_procs_by_key.items() if p is proc]
+        for k in dead:
+            _discovery_procs_by_key.pop(k, None)
+
+
+# Back-compat: len/list/clear/discard used by tests and older call sites.
+_discovery_current_procs = _DiscoveryProcSetView()
+
+
+def _discovery_source_track_key(source_id: str) -> str:
+    return f"{DISCOVERY_SESSION_KEY}:src:{source_id}"
+
+
+def _register_discovery_proc(track_key: str, proc: subprocess.Popen) -> None:
+    with _discovery_lock:
+        _discovery_procs_by_key[track_key] = proc
+
+
+def _unregister_discovery_proc(track_key: str, proc: subprocess.Popen) -> None:
+    with _discovery_lock:
+        if _discovery_procs_by_key.get(track_key) is proc:
+            _discovery_procs_by_key.pop(track_key, None)
+
+
+def _kill_discovery_proc_by_key(track_key: str) -> None:
+    with _discovery_lock:
+        proc = _discovery_procs_by_key.get(track_key)
+    if proc is not None:
+        _kill_process_tree(proc)
+
+
+def _source_abort_requested(source_id: str) -> bool:
+    with _discovery_lock:
+        return source_id in _discovery_source_aborts
+
+
+DISCOVERY_PHASE_LABELS = {
+    "starting": "Starting discovery…",
+    "resuming": "Continuing previous run…",
+    "scraping": "Scraping sources…",
+    "scout": "Scouting Indeed/LinkedIn…",
+    "ats": "Scraping ATS boards…",
+    "builtin": "Scraping Built In…",
+    "dedup": "Deduplicating listings…",
+    "tracker": "Checking tracked companies…",
+    "write": "Writing jobs…",
+    "dedup_jobs": "Merging duplicate jobs…",
+    "agent_recovery": "Agent recovering from error…",
+    "aborting": "Aborting discovery…",
+}
+
+# Statuses that mean the run still has leftover work.
+_DISCOVERY_SOURCE_INCOMPLETE = frozenset({"pending", "collecting", "stopped"})
 
 
 def ats_notes_for_url(url: str) -> tuple[Path, str] | None:
@@ -117,18 +474,15 @@ def is_risky(args_str: str) -> bool:
 
 
 def gateway_running_session_keys() -> set[str]:
-    """The actual work happens on the gateway server, which can keep running
-    a turn even after the local CLI client that started it has exited or
-    disconnected. Local process tracking alone is not authoritative - ask
-    the gateway which sessions are genuinely still 'running'."""
+    """Session keys with an agent turn currently running.
+
+    Historically this shelled out to ``openclaw sessions list`` because a turn
+    could outlive the local CLI client on the gateway. With OpenClaw removed,
+    agent turns run in-process via ``agent_runner``, so its active-turn
+    registry is authoritative — no subprocess round-trip. (Name kept for the
+    call sites; there is no gateway anymore.)"""
     try:
-        out = subprocess.run(
-            [OPENCLAW_BIN, "sessions", "list", "--agent", "job-hunter",
-             "--active", "60", "--json"],
-            capture_output=True, text=True, timeout=15,
-        ).stdout
-        data = json.loads(out) if out.strip() else {}
-        return {s["key"] for s in data.get("sessions", []) if s.get("status") == "running"}
+        return agent_runner.active_turn_keys()
     except Exception as e:
         print(f"warn: gateway_running_session_keys failed: {e}")
         return set()
@@ -143,19 +497,60 @@ def is_session_running(session_key: str) -> bool:
     (see scripts/jobs_lock.py, now fixed with a real file lock) - jobs no
     longer need to be serialized against each other or against discovery
     just to keep jobs.json from getting corrupted."""
+    if session_key == DISCOVERY_SESSION_KEY:
+        with _discovery_lock:
+            if _discovery_state["running"]:
+                return True
+    return session_key in _running_session_keys()
+
+
+def _session_running_local(session_key: str) -> bool:
+    """Fast, local-only 'is this session running?' — no gateway subprocess.
+
+    ``is_session_running`` shells out to ``openclaw sessions list`` (timeout
+    15s) to catch turns still alive on the gateway after the CLI client
+    exited. That authoritative check is worth it in some places, but on the
+    Start request path it adds seconds of lag before tailoring can even
+    begin. The double-Start race it guards is already closed by the in-lock
+    status claim (``IN_PROGRESS_STATUSES``) plus this local tracked-proc
+    check, so Start uses the fast path and skips the gateway round-trip."""
+    if session_key == DISCOVERY_SESSION_KEY:
+        with _discovery_lock:
+            if _discovery_state["running"]:
+                return True
+    return any(
+        k == session_key and p.poll() is None
+        for k, p in _running_procs.items()
+    )
+
+
+def _prewarm_openclaw_browser_async() -> None:
+    """Kick the OpenClaw CDP browser start concurrently so its subprocess
+    overlaps with status writes + tailor_resume.py startup instead of
+    running sequentially right before tailoring. ``openclaw browser start``
+    is idempotent, so the tailor thread's own call becomes a fast no-op."""
+    threading.Thread(
+        target=_ensure_openclaw_managed_browser,
+        daemon=True,
+        name="partyrock-browser-prewarm",
+    ).start()
+
+
+def _running_session_keys() -> set[str]:
     local_keys = {k for k, p in _running_procs.items() if p.poll() is None}
     gateway_keys = gateway_running_session_keys()
-    return session_key in (local_keys | gateway_keys)
+    return local_keys | gateway_keys
 
 
 def active_job() -> dict | None:
     """Return the currently-running job, if any - used only for display
     (e.g. showing what's in progress), not to block starting anything
     else. See is_session_running() for the actual per-session check."""
-    local_keys = {k for k, p in _running_procs.items() if p.poll() is None}
-    gateway_keys = gateway_running_session_keys()
-    running_keys = local_keys | gateway_keys
+    running_keys = _running_session_keys()
     if not running_keys:
+        with _discovery_lock:
+            if _discovery_state["running"]:
+                return {"id": None, "company": "(discovery run)", "title": ""}
         return None
     data = read_jobs()
     for job in data["jobs"]:
@@ -164,6 +559,2025 @@ def active_job() -> dict | None:
     if DISCOVERY_SESSION_KEY in running_keys:
         return {"id": None, "company": "(discovery run)", "title": ""}
     return None
+
+
+def _set_discovery_phase(phase: str, error: str | None = None) -> None:
+    with _discovery_lock:
+        _discovery_state["phase"] = phase
+        _discovery_state["phase_label"] = DISCOVERY_PHASE_LABELS.get(phase, phase)
+        if error is not None:
+            _discovery_state["error"] = error
+
+
+def _discovery_abort_requested() -> bool:
+    with _discovery_lock:
+        return bool(_discovery_state.get("abort_requested"))
+
+
+def _update_discovery_sources(
+    source_ids: tuple[str, ...] | list[str],
+    *,
+    status: str | None = None,
+    detail: str | None = None,
+    counts: dict[str, int] | None = None,
+    add_counts: dict[str, int] | None = None,
+    only_if_status: tuple[str, ...] | None = None,
+) -> None:
+    """Update one or more source rows in _discovery_state['sources']."""
+    id_set = set(source_ids)
+    with _discovery_lock:
+        for src in _discovery_state.get("sources") or []:
+            if src.get("id") not in id_set:
+                continue
+            if only_if_status and src.get("status") not in only_if_status:
+                continue
+            if status is not None:
+                src["status"] = status
+            if detail is not None:
+                src["detail"] = detail
+            sid = src["id"]
+            if counts and sid in counts:
+                src["count"] = int(counts[sid])
+            if add_counts and sid in add_counts:
+                src["count"] = int(src.get("count") or 0) + int(add_counts[sid])
+
+
+def _set_source_fields(source_id: str, **fields) -> None:
+    with _discovery_lock:
+        for src in _discovery_state.get("sources") or []:
+            if src.get("id") == source_id:
+                src.update(fields)
+                return
+
+
+def _mark_incomplete_sources_stopped() -> None:
+    with _discovery_lock:
+        for src in _discovery_state.get("sources") or []:
+            if src.get("status") in ("pending", "collecting"):
+                src["status"] = "stopped"
+                if not src.get("detail"):
+                    src["detail"] = "Stopped"
+
+
+def _count_listings_by_site(path: Path) -> dict[str, int]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return {}
+    counts: dict[str, int] = {}
+    if not isinstance(data, list):
+        return counts
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        site = (item.get("site") or "").lower().strip()
+        if site:
+            counts[site] = counts.get(site, 0) + 1
+    return counts
+
+
+def _apply_site_counts(
+    counts: dict[str, int],
+    source_ids: tuple[str, ...] | list[str],
+    *,
+    status: str = "completed",
+    zero_detail: str = "",
+) -> None:
+    for sid in source_ids:
+        n = int(counts.get(sid, 0))
+        detail = f"{n} listings" if n else zero_detail
+        _set_source_fields(sid, status=status, count=n, detail=detail)
+
+
+def _load_discovery_last_run() -> None:
+    """Hydrate last discovery finish time from disk (survives server restart)."""
+    try:
+        if not DISCOVERY_LAST_RUN_FILE.exists():
+            return
+        data = json.loads(DISCOVERY_LAST_RUN_FILE.read_text())
+        finished = data.get("finished_at") or data.get("last_finished_at")
+        if not finished:
+            return
+        outcome = data.get("outcome")
+        if not outcome:
+            if data.get("ok") is True:
+                outcome = "success"
+            elif data.get("ok") is False:
+                outcome = "failed"
+        with _discovery_lock:
+            if not _discovery_state.get("last_finished_at"):
+                _discovery_state["last_finished_at"] = finished
+            if not _discovery_state.get("finished_at"):
+                _discovery_state["finished_at"] = finished
+            if _discovery_state.get("ok") is None and "ok" in data:
+                _discovery_state["ok"] = data.get("ok")
+            if not _discovery_state.get("last_outcome") and outcome:
+                _discovery_state["last_outcome"] = outcome
+            if not _discovery_state.get("last_summary") and data.get("summary"):
+                _discovery_state["last_summary"] = data.get("summary")
+            if _discovery_state.get("last_jobs_added") is None and data.get("jobs_added") is not None:
+                _discovery_state["last_jobs_added"] = data.get("jobs_added")
+    except Exception as e:
+        print(f"warn: load discovery_last_run failed: {e}")
+
+
+def _persist_discovery_last_run(
+    finished_at: str,
+    ok: bool | None,
+    *,
+    outcome: str | None = None,
+    summary: str | None = None,
+    jobs_added: int | None = None,
+) -> None:
+    try:
+        if not outcome:
+            if ok is True:
+                outcome = "success"
+            elif ok is False:
+                outcome = "failed"
+        payload = {
+            "finished_at": finished_at,
+            "last_finished_at": finished_at,
+            "ok": ok,
+            "outcome": outcome,
+            "summary": summary,
+            "jobs_added": jobs_added,
+        }
+        DISCOVERY_LAST_RUN_FILE.write_text(json.dumps(payload, indent=2) + "\n")
+    except Exception as e:
+        print(f"warn: persist discovery_last_run failed: {e}")
+
+
+def _parse_jobs_added_from_log(log_path: Path) -> int:
+    """Parse ``added: N`` lines from write_discovered_jobs logs."""
+    try:
+        text = log_path.read_text()
+    except OSError:
+        return 0
+    total = 0
+    for line in text.splitlines():
+        m = re.search(r"\badded:\s*(\d+)\b", line)
+        if m:
+            total += int(m.group(1))
+    return total
+
+
+def _discovery_compute_outcome(
+    *,
+    ok: bool,
+    error: str | None,
+    fully_done: bool,
+    aborted: bool,
+) -> tuple[str, str]:
+    """Return (outcome, short summary) for last-run UI."""
+    with _discovery_lock:
+        sources = [dict(s) for s in (_discovery_state.get("sources") or [])]
+        jobs_added = int(_discovery_checkpoint_meta.get("jobs_added") or 0)
+    enabled = [s for s in sources if s.get("enabled")]
+    completed = sum(1 for s in enabled if s.get("status") in ("completed", "skipped"))
+    failed = sum(1 for s in enabled if s.get("status") == "failed")
+    incomplete = sum(
+        1 for s in enabled
+        if s.get("status") in _DISCOVERY_SOURCE_INCOMPLETE
+    )
+    parts: list[str] = []
+    if jobs_added:
+        parts.append(f"+{jobs_added} jobs")
+    elif fully_done and ok:
+        parts.append("+0 jobs")
+    if completed:
+        parts.append(f"{completed} source{'s' if completed != 1 else ''} done")
+    if failed:
+        parts.append(f"{failed} failed")
+    if incomplete:
+        parts.append(f"{incomplete} incomplete")
+    if error and not aborted:
+        parts.append(error[:80])
+    summary = " · ".join(parts) if parts else ("ok" if ok else (error or "finished"))
+
+    if aborted and not fully_done:
+        outcome = "interrupted" if jobs_added == 0 and completed == 0 else "partial"
+    elif fully_done and ok and failed == 0:
+        outcome = "success"
+    elif fully_done and failed and completed:
+        outcome = "partial"
+    elif ok and not fully_done:
+        outcome = "partial"
+    else:
+        outcome = "failed"
+    return outcome, summary
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
+def _load_discovery_checkpoint() -> dict | None:
+    try:
+        if not DISCOVERY_CHECKPOINT_FILE.exists():
+            return None
+        data = json.loads(DISCOVERY_CHECKPOINT_FILE.read_text())
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        print(f"warn: load discovery_checkpoint failed: {e}")
+        return None
+
+
+def _clear_discovery_checkpoint() -> None:
+    try:
+        DISCOVERY_CHECKPOINT_FILE.unlink(missing_ok=True)
+    except Exception as e:
+        print(f"warn: clear discovery_checkpoint failed: {e}")
+
+
+def _today_local_iso() -> str:
+    return datetime.now(timezone.utc).astimezone().date().isoformat()
+
+
+def _checkpoint_has_leftover(checkpoint: dict | None, enabled: set[str] | None = None) -> bool:
+    """True if checkpoint is an incomplete same-day run with work left."""
+    if not checkpoint:
+        return False
+    if checkpoint.get("status") not in ("running", "incomplete"):
+        return False
+    if checkpoint.get("date") != _today_local_iso():
+        return False
+    sources = checkpoint.get("sources") or {}
+    if not isinstance(sources, dict) or not sources:
+        return False
+    enabled = set(DISCOVERY_SOURCE_IDS) if enabled is None else set(enabled)
+    for sid in enabled:
+        info = sources.get(sid) or {}
+        st = info.get("status") or "pending"
+        if st in _DISCOVERY_SOURCE_INCOMPLETE or st == "failed":
+            return True
+        # Enabled now but missing from prior run → leftover.
+        if sid not in sources:
+            return True
+    return False
+
+
+def _reset_checkpoint_meta(
+    *,
+    run_id: str | None = None,
+    date: str | None = None,
+    merged_paths: set[str] | None = None,
+    merges_ok: int = 0,
+    jobs_added: int = 0,
+) -> None:
+    _discovery_checkpoint_meta["run_id"] = run_id
+    _discovery_checkpoint_meta["date"] = date
+    _discovery_checkpoint_meta["merged_paths"] = set(merged_paths or ())
+    _discovery_checkpoint_meta["merges_ok"] = int(merges_ok or 0)
+    _discovery_checkpoint_meta["jobs_added"] = int(jobs_added or 0)
+
+
+def _flush_discovery_checkpoint(status: str = "running") -> None:
+    """Persist per-source progress so a crash/quit can resume later.
+
+    Safe to call often; uses atomic replace. Does nothing if discovery is not
+    running and status is still 'running' (idle banner uses incomplete).
+    """
+    try:
+        with _discovery_lock:
+            running = bool(_discovery_state.get("running"))
+            sources_live = [dict(s) for s in (_discovery_state.get("sources") or [])]
+            enabled = list(_discovery_state.get("enabled_sources") or DISCOVERY_SOURCE_IDS)
+            started_at = _discovery_state.get("started_at")
+            run_id = (
+                _discovery_state.get("run_id")
+                or _discovery_checkpoint_meta.get("run_id")
+                or started_at
+                or now_iso()
+            )
+            date = _discovery_checkpoint_meta.get("date") or _today_local_iso()
+            merged_paths = sorted(_discovery_checkpoint_meta.get("merged_paths") or [])
+            merges_ok = int(_discovery_checkpoint_meta.get("merges_ok") or 0)
+            if not running and status == "running":
+                # Only mark incomplete from an active flush path.
+                status = "incomplete"
+        sources_map: dict[str, dict] = {}
+        for src in sources_live:
+            sid = src.get("id")
+            if not sid:
+                continue
+            listing = ""
+            try:
+                listing = str(_source_listing_path(date, sid))
+            except ValueError:
+                listing = ""
+            sources_map[sid] = {
+                "status": src.get("status") or "pending",
+                "count": int(src.get("count") or 0),
+                "detail": src.get("detail") or "",
+                "enabled": bool(src.get("enabled", True)),
+                "listing_path": listing,
+                "merged": listing in merged_paths if listing else False,
+            }
+        payload = {
+            "version": 1,
+            "run_id": run_id,
+            "date": date,
+            "started_at": started_at,
+            "updated_at": now_iso(),
+            "status": status,
+            "enabled_sources": enabled,
+            "sources": sources_map,
+            "merged_paths": merged_paths,
+            "merges_ok": merges_ok,
+            "jobs_added": int(_discovery_checkpoint_meta.get("jobs_added") or 0),
+        }
+        _atomic_write_json(DISCOVERY_CHECKPOINT_FILE, payload)
+    except Exception as e:
+        print(f"warn: flush discovery_checkpoint failed: {e}")
+
+
+def _sources_from_checkpoint(checkpoint: dict, enabled: set[str]) -> list[dict]:
+    """Build UI source rows from a checkpoint, applying current enabled set."""
+    rows = _empty_discovery_sources(enabled)
+    prior = checkpoint.get("sources") or {}
+    if not isinstance(prior, dict):
+        return rows
+    for src in rows:
+        sid = src["id"]
+        if not src.get("enabled"):
+            continue
+        info = prior.get(sid)
+        if not isinstance(info, dict):
+            continue
+        st = info.get("status") or "pending"
+        if st == "completed":
+            n = int(info.get("count") or 0)
+            src["status"] = "completed"
+            src["count"] = n
+            src["detail"] = info.get("detail") or (f"{n} listings" if n else "Done")
+        elif st in ("stopped", "failed", "collecting", "pending"):
+            src["status"] = "stopped" if st == "collecting" else st
+            src["count"] = int(info.get("count") or 0)
+            src["detail"] = info.get("detail") or (
+                "Interrupted" if st in ("collecting", "pending") else ""
+            )
+    return rows
+
+
+def _hydrate_discovery_resume_banner() -> None:
+    """On server start: surface incomplete discovery for click-to-resume.
+
+    Prefer explicit Discover click over auto-resume (safer after a crash —
+    user may have closed the dashboard intentionally mid-run).
+    """
+    checkpoint = _load_discovery_checkpoint()
+    if not checkpoint:
+        return
+    if checkpoint.get("date") != _today_local_iso():
+        # Stale day — drop so tomorrow starts clean.
+        _clear_discovery_checkpoint()
+        return
+    if checkpoint.get("status") not in ("running", "incomplete"):
+        return
+    # Process died while status said running → normalize to incomplete.
+    sources = checkpoint.get("sources") or {}
+    if isinstance(sources, dict):
+        changed = checkpoint.get("status") == "running"
+        for sid, info in sources.items():
+            if not isinstance(info, dict):
+                continue
+            if info.get("status") in ("pending", "collecting"):
+                info["status"] = "stopped"
+                if not info.get("detail"):
+                    info["detail"] = "Interrupted"
+                changed = True
+        if changed:
+            checkpoint["status"] = "incomplete"
+            checkpoint["updated_at"] = now_iso()
+            try:
+                _atomic_write_json(DISCOVERY_CHECKPOINT_FILE, checkpoint)
+            except Exception as e:
+                print(f"warn: normalize discovery_checkpoint failed: {e}")
+    enabled_raw = checkpoint.get("enabled_sources")
+    if isinstance(enabled_raw, list) and enabled_raw:
+        enabled = {sid for sid in enabled_raw if sid in DISCOVERY_SOURCE_IDS}
+    else:
+        enabled = set(DISCOVERY_SOURCE_IDS)
+    if not _checkpoint_has_leftover(checkpoint, enabled):
+        _clear_discovery_checkpoint()
+        return
+    rows = _sources_from_checkpoint(checkpoint, enabled)
+    with _discovery_lock:
+        if _discovery_state.get("running"):
+            return
+        last_finished = _discovery_state.get("last_finished_at") or _discovery_state.get("finished_at")
+        last_outcome = _discovery_state.get("last_outcome") or "interrupted"
+        last_summary = _discovery_state.get("last_summary")
+        jobs_added = checkpoint.get("jobs_added")
+        if jobs_added is None:
+            jobs_added = _discovery_state.get("last_jobs_added")
+        _discovery_state.update({
+            "running": False,
+            "phase": None,
+            "phase_label": None,
+            "started_at": checkpoint.get("started_at"),
+            "finished_at": None,
+            "last_finished_at": last_finished,
+            "ok": False,
+            "error": "Incomplete — click Discover to continue",
+            "last_outcome": last_outcome if last_outcome != "success" else "interrupted",
+            "last_summary": last_summary or "Incomplete — will continue",
+            "last_jobs_added": jobs_added,
+            "sources": rows,
+            "enabled_sources": sorted(enabled, key=lambda s: DISCOVERY_SOURCE_IDS.index(s)),
+            "can_abort": False,
+            "abort_requested": False,
+            "resumed": False,
+            "resume_available": True,
+            "run_id": checkpoint.get("run_id"),
+        })
+    _reset_checkpoint_meta(
+        run_id=checkpoint.get("run_id"),
+        date=checkpoint.get("date"),
+        merged_paths=set(checkpoint.get("merged_paths") or []),
+        merges_ok=int(checkpoint.get("merges_ok") or 0),
+        jobs_added=int(checkpoint.get("jobs_added") or 0),
+    )
+
+
+def _discovery_run_fully_complete() -> bool:
+    """True when every enabled source finished successfully or was skipped.
+
+    ``failed`` / ``stopped`` keep the checkpoint so Discover can resume.
+    """
+    with _discovery_lock:
+        sources = list(_discovery_state.get("sources") or [])
+    enabled_rows = [s for s in sources if s.get("enabled")]
+    if not enabled_rows:
+        return True
+    for src in enabled_rows:
+        if src.get("status") not in ("completed", "skipped"):
+            return False
+    return True
+
+
+def _begin_discovery(enabled: set[str] | None = None, *, fresh: bool = False) -> bool:
+    """Mark discovery as running. Returns False if already running.
+
+    Default: resume incomplete same-day checkpoint (skip completed sources).
+    Pass fresh=True to clear the checkpoint and start a new pass (still
+    skips already-known URLs at scrape/write time).
+    """
+    enabled_ids = set(DISCOVERY_SOURCE_IDS) if enabled is None else (set(enabled) & set(DISCOVERY_SOURCE_IDS))
+    if fresh:
+        _clear_discovery_checkpoint()
+        checkpoint = None
+        resuming = False
+    else:
+        checkpoint = _load_discovery_checkpoint()
+        resuming = _checkpoint_has_leftover(checkpoint, enabled_ids)
+    with _discovery_lock:
+        if _discovery_state["running"]:
+            return False
+        # Preserve last_finished_at / last_outcome across a new run so the UI
+        # can still show prior status until this run completes.
+        last_finished = _discovery_state.get("last_finished_at") or _discovery_state.get("finished_at")
+        last_outcome = _discovery_state.get("last_outcome")
+        last_summary = _discovery_state.get("last_summary")
+        last_jobs_added = _discovery_state.get("last_jobs_added")
+        if resuming and checkpoint:
+            sources = _sources_from_checkpoint(checkpoint, enabled_ids)
+            # Mark leftover enabled sources pending so the UI shows work ahead;
+            # completed ones keep their counts from the checkpoint.
+            for src in sources:
+                if not src.get("enabled"):
+                    continue
+                if src.get("status") in _DISCOVERY_SOURCE_INCOMPLETE or src.get("status") == "failed":
+                    src["status"] = "pending"
+                    src["detail"] = "Continuing…"
+            run_id = checkpoint.get("run_id") or now_iso()
+            started_at = checkpoint.get("started_at") or now_iso()
+            phase = "resuming"
+            merged_paths = set(checkpoint.get("merged_paths") or [])
+            merges_ok = int(checkpoint.get("merges_ok") or 0)
+            jobs_added = int(checkpoint.get("jobs_added") or 0)
+            date = checkpoint.get("date") or _today_local_iso()
+        else:
+            sources = _empty_discovery_sources(enabled_ids)
+            run_id = now_iso()
+            started_at = run_id
+            phase = "starting"
+            merged_paths = set()
+            merges_ok = 0
+            jobs_added = 0
+            date = _today_local_iso()
+        _discovery_state.update({
+            "running": True,
+            "phase": phase,
+            "phase_label": DISCOVERY_PHASE_LABELS[phase],
+            "started_at": started_at,
+            "finished_at": None,
+            "last_finished_at": last_finished,
+            "last_outcome": last_outcome,
+            "last_summary": last_summary,
+            "last_jobs_added": last_jobs_added,
+            "ok": None,
+            "error": None,
+            "sources": sources,
+            "enabled_sources": sorted(enabled_ids, key=lambda s: DISCOVERY_SOURCE_IDS.index(s)),
+            "can_abort": True,
+            "abort_requested": False,
+            "resumed": resuming,
+            "resume_available": False,
+            "run_id": run_id,
+        })
+        _discovery_procs_by_key.clear()
+        _discovery_source_aborts.clear()
+    _reset_checkpoint_meta(
+        run_id=run_id, date=date, merged_paths=merged_paths, merges_ok=merges_ok,
+        jobs_added=jobs_added,
+    )
+    _flush_discovery_checkpoint("running")
+    return True
+
+
+def _discovery_enabled_set() -> set[str]:
+    with _discovery_lock:
+        raw = _discovery_state.get("enabled_sources")
+        if isinstance(raw, list) and raw:
+            return {sid for sid in raw if sid in DISCOVERY_SOURCE_IDS}
+        return set(DISCOVERY_SOURCE_IDS)
+
+
+def _finish_discovery(ok: bool, error: str | None = None) -> None:
+    global _discovery_protect_proc
+    finished = now_iso()
+    fully_done = _discovery_run_fully_complete()
+    aborted = _discovery_abort_requested() or (
+        isinstance(error, str) and "abort" in error.lower()
+    )
+    outcome, summary = _discovery_compute_outcome(
+        ok=ok, error=error, fully_done=fully_done, aborted=aborted,
+    )
+    jobs_added = int(_discovery_checkpoint_meta.get("jobs_added") or 0)
+    with _discovery_lock:
+        _discovery_state.update({
+            "running": False,
+            "phase": None,
+            "phase_label": None,
+            "finished_at": finished,
+            "last_finished_at": finished,
+            "ok": ok,
+            "error": error,
+            "last_outcome": outcome,
+            "last_summary": summary,
+            "last_jobs_added": jobs_added,
+            "can_abort": False,
+            "abort_requested": False,
+            "resumed": False,
+            "resume_available": not fully_done,
+        })
+        # Keep sources for post-run hover inspection.
+        _discovery_procs_by_key.clear()
+        _discovery_source_aborts.clear()
+        _discovery_protect_proc = False
+    _persist_discovery_last_run(
+        finished, ok, outcome=outcome, summary=summary, jobs_added=jobs_added,
+    )
+    if fully_done:
+        _clear_discovery_checkpoint()
+        _reset_checkpoint_meta()
+    else:
+        _flush_discovery_checkpoint("incomplete")
+        with _discovery_lock:
+            if not _discovery_state.get("error"):
+                _discovery_state["error"] = "Incomplete — click Discover to continue"
+
+
+def normalize_builtin_days_since_updated(value) -> int:
+    """Validate Built In's UI-supported New Jobs filter values."""
+    if value is None:
+        return BUILTIN_DEFAULT_DAYS
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"builtin_days_since_updated must be one of {BUILTIN_SUPPORTED_DAYS}"
+        ) from None
+    if days not in BUILTIN_SUPPORTED_DAYS:
+        raise ValueError(
+            f"builtin_days_since_updated must be one of {BUILTIN_SUPPORTED_DAYS}"
+        )
+    return days
+
+
+def _coerce_bool(value, default: bool) -> bool:
+    """Best-effort bool from JSON / query values; ``default`` when absent."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return default
+
+
+def load_discovery_settings() -> dict:
+    # US discovery is the default; India is opt-in (see India region model).
+    defaults = {
+        "builtin_days_since_updated": BUILTIN_DEFAULT_DAYS,
+        "discover_us": True,
+        "discover_india": False,
+    }
+    with _discovery_settings_lock:
+        try:
+            raw = json.loads(DISCOVERY_SETTINGS_FILE.read_text())
+        except (OSError, json.JSONDecodeError, TypeError):
+            return dict(defaults)
+    if not isinstance(raw, dict):
+        return dict(defaults)
+    try:
+        days = normalize_builtin_days_since_updated(
+            raw.get("builtin_days_since_updated")
+        )
+    except (AttributeError, TypeError, ValueError):
+        days = BUILTIN_DEFAULT_DAYS
+    return {
+        "builtin_days_since_updated": days,
+        "discover_us": _coerce_bool(raw.get("discover_us"), True),
+        "discover_india": _coerce_bool(raw.get("discover_india"), False),
+    }
+
+
+def save_discovery_settings(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("expected a JSON object")
+    current = load_discovery_settings()
+    days = normalize_builtin_days_since_updated(
+        payload.get("builtin_days_since_updated")
+        if "builtin_days_since_updated" in payload
+        else current["builtin_days_since_updated"]
+    )
+    discover_us = _coerce_bool(
+        payload.get("discover_us"), current["discover_us"]
+    ) if "discover_us" in payload else current["discover_us"]
+    discover_india = _coerce_bool(
+        payload.get("discover_india"), current["discover_india"]
+    ) if "discover_india" in payload else current["discover_india"]
+    # Guard: never persist "no regions" — that would drop every listing.
+    if not discover_us and not discover_india:
+        discover_us = True
+    settings = {
+        "builtin_days_since_updated": days,
+        "discover_us": discover_us,
+        "discover_india": discover_india,
+    }
+    with _discovery_settings_lock:
+        DISCOVERY_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = DISCOVERY_SETTINGS_FILE.with_suffix(
+            DISCOVERY_SETTINGS_FILE.suffix + ".tmp"
+        )
+        tmp.write_text(json.dumps(settings, indent=2) + "\n")
+        tmp.replace(DISCOVERY_SETTINGS_FILE)
+    return settings
+
+
+def enabled_discovery_regions() -> list[str]:
+    """Ordered region ids from persisted settings (US first, then India)."""
+    s = load_discovery_settings()
+    regions = []
+    if s.get("discover_us", True):
+        regions.append("us")
+    if s.get("discover_india", False):
+        regions.append("india")
+    return regions or ["us"]
+
+
+def discovery_status() -> dict:
+    with _discovery_lock:
+        state = dict(_discovery_state)
+        state["sources"] = [dict(s) for s in (_discovery_state.get("sources") or [])]
+        state["source_catalog"] = [
+            {
+                "id": sid,
+                "label": label,
+                "india_only": sid in INDIA_ONLY_SOURCE_IDS,
+            }
+            for sid, label in DISCOVERY_SOURCE_DEFS
+        ]
+        state["india_only_sources"] = list(INDIA_ONLY_SOURCE_IDS)
+        enabled = _discovery_state.get("enabled_sources")
+        state["enabled_sources"] = list(enabled) if isinstance(enabled, list) else list(DISCOVERY_SOURCE_IDS)
+        # Always surface a stable last-run field for the Discover button.
+        if not state.get("last_finished_at") and state.get("finished_at"):
+            state["last_finished_at"] = state["finished_at"]
+        state["resume_available"] = bool(state.get("resume_available"))
+        state["resumed"] = bool(state.get("resumed"))
+        state.update(load_discovery_settings())
+        return state
+
+
+def _kill_process_tree(proc: subprocess.Popen | None) -> None:
+    """SIGTERM (then SIGKILL) a tracked child — prefer its process group.
+
+    Discovery/fill/agent children are started with start_new_session=True so
+    killpg only hits that tree (Chrome-for-Testing, JobSpy, etc.), never the
+    user's unrelated browser.
+    """
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=4)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=3)
+    except Exception:
+        pass
+
+
+# Back-compat alias used by discovery abort paths.
+_kill_discovery_process_tree = _kill_process_tree
+
+
+def _kill_all_discovery_procs() -> None:
+    """Kill every registered discovery subprocess process group."""
+    with _discovery_lock:
+        procs = list(_discovery_procs_by_key.values())
+    for proc in procs:
+        _kill_process_tree(proc)
+
+
+def _kill_all_tracked_child_procs(*, preserve_fill_procs: bool = False) -> None:
+    """Kill fill/agent/discovery children registered on this server.
+
+    Only process groups we started (start_new_session=True) — never the user's
+    unrelated Chrome profile. Gap: browsers/agents not registered in
+    `_running_procs` / `_discovery_current_procs` are not killed — see
+    `_kill_jh_associated_browsers` for orphaned Chrome-for-Testing / PartyRock.
+
+    CHR3-002: when *preserve_fill_procs* (Refresh + CAPTCHA/Ready hold), leave
+    fill/agent process groups alive so stdin wait / hold continues; still abort
+    discovery scrapes. Entries are detached from this server (dict cleared).
+    """
+    if preserve_fill_procs:
+        _running_procs.clear()
+        _kill_all_discovery_procs()
+        return
+    # _running_procs is mutated without _lock elsewhere; snapshot then clear.
+    procs = [p for p in list(_running_procs.values()) if p is not None]
+    _running_procs.clear()
+    for proc in procs:
+        _kill_process_tree(proc)
+    _kill_all_discovery_procs()
+
+
+def _pgrep_f_pids(pattern: str) -> list[int]:
+    """PIDs matching ``pgrep -f pattern`` (best-effort; empty on miss/error)."""
+    try:
+        out = subprocess.check_output(
+            ["/usr/bin/pgrep", "-f", "--", pattern],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return []
+    pids: list[int] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            pids.append(int(line.split(None, 1)[0]))
+        except ValueError:
+            continue
+    return pids
+
+
+def _signal_pids(pids: list[int], sig: int) -> list[int]:
+    """Send *sig* to each pid; return those we signaled without ProcessLookupError."""
+    signaled: list[int] = []
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+            signaled.append(pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+    return signaled
+
+
+def _kill_pids_term_then_kill(pids: list[int], *, wait_s: float = 2.0) -> list[int]:
+    """SIGTERM then SIGKILL lingering PIDs. Returns PIDs we attempted to kill."""
+    uniq = sorted({int(p) for p in pids if p})
+    if not uniq:
+        return []
+    _signal_pids(uniq, signal.SIGTERM)
+    deadline = time.time() + wait_s
+    alive = list(uniq)
+    while alive and time.time() < deadline:
+        still: list[int] = []
+        for pid in alive:
+            try:
+                os.kill(pid, 0)
+                still.append(pid)
+            except (ProcessLookupError, PermissionError, OSError):
+                continue
+        alive = still
+        if alive:
+            time.sleep(0.15)
+    if alive:
+        _signal_pids(alive, signal.SIGKILL)
+    return uniq
+
+
+def _fill_cft_exclude_markers() -> tuple[str, ...]:
+    """Argv markers for CfT mains that are NOT Playwright form-fill (CHR3-003).
+
+    Dashboard UI and OpenClaw PartyRock share the Chrome-for-Testing binary;
+    counting/killing them as fill Chrome orphans login tabs or false-caps.
+    """
+    return (
+        f"--user-data-dir={DASHBOARD_UI_PROFILE}",
+        "--app=http://127.0.0.1:8787",
+        f"--user-data-dir={OPENCLAW_BROWSER_USER_DATA}",
+        f"--remote-debugging-port={OPENCLAW_BROWSER_CDP_PORT}",
+        "openclaw/user-data",
+    )
+
+
+def _chrome_for_testing_main_pids() -> list[int]:
+    """Main Google Chrome for Testing processes (Playwright / fast_fill headed).
+
+    Excludes the dashboard UI window (``dashboard_ui_profile`` / ``--app=:8787``)
+    and OpenClaw PartyRock CDP (``~/.openclaw/browser/openclaw/user-data`` /
+    ``:18800``). UI teardown is ``launch_dashboard.sh``; PartyRock stop is
+    ``_stop_openclaw_managed_browser`` only.
+    """
+    exclude = _fill_cft_exclude_markers()
+    try:
+        out = subprocess.check_output(
+            ["/usr/bin/pgrep", "-lf", "Google Chrome for Testing"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return []
+    pids: list[int] = []
+    for line in out.splitlines():
+        if "Helper" in line or "crashpad" in line:
+            continue
+        if "MacOS/Google Chrome for Testing" not in line and not re.search(
+            r"/chrome(?:\s|$)", line
+        ):
+            continue
+        if any(marker in line for marker in exclude):
+            continue
+        parts = line.strip().split(None, 1)
+        if not parts:
+            continue
+        try:
+            pids.append(int(parts[0]))
+        except ValueError:
+            continue
+    return pids
+
+
+def _kill_chrome_for_testing() -> list[int]:
+    """Tear down Playwright Chrome-for-Testing (form-fill), never daily Chrome."""
+    return _kill_pids_term_then_kill(_chrome_for_testing_main_pids())
+
+
+def _pids_for_user_data_dir(user_data_dir: Path | str) -> list[int]:
+    """Chrome processes whose argv includes ``--user-data-dir=<path>``."""
+    path = str(user_data_dir)
+    return _pgrep_f_pids(f"--user-data-dir={path}")
+
+
+def _kill_chrome_user_data_dir(user_data_dir: Path | str) -> list[int]:
+    return _kill_pids_term_then_kill(_pids_for_user_data_dir(user_data_dir))
+
+
+_openclaw_browser_start_lock = threading.Lock()
+
+
+def _ensure_openclaw_managed_browser(*, required: bool = False) -> dict:
+    """Start OpenClaw PartyRock CDP only when tailor needs it (CHR2-001).
+
+    Forces Chrome for Testing / Chromium — never daily Google Chrome.app —
+    via ``scripts/chrome_for_testing.py`` (pins ``browser.executablePath``
+    and falls back to a direct CfT launch on the OpenClaw user-data dir).
+
+    Dashboard launch / refresh / idle must not start PartyRock CDP.
+
+    Serialized so the Start-path pre-warm and the tailor thread never race
+    two concurrent starts.
+
+    *required* (PR2-002): raise ``RuntimeError`` on failure instead of warn-only
+    (tailor path). Prewarm / best-effort callers keep ``required=False``.
+    """
+    with _openclaw_browser_start_lock:
+        try:
+            # OpenClaw-free: launch Chrome-for-Testing directly on the same
+            # persistent user-data dir + CDP :18800 (login/cookies persist as
+            # before). No `openclaw browser start` call.
+            result = ensure_partyrock_browser_direct()
+            if not result.get("ok"):
+                msg = (
+                    "PartyRock Chrome-for-Testing CDP start failed: "
+                    f"{result.get('error') or result}"
+                )
+                if required:
+                    raise RuntimeError(msg)
+                print(f"warn: {msg}")
+            return result if isinstance(result, dict) else {"ok": bool(result)}
+        except (FileNotFoundError, OSError, RuntimeError) as e:
+            if required:
+                raise
+            print(f"warn: PartyRock browser start failed: {e}")
+            return {"ok": False, "error": str(e)[:300]}
+
+
+def _fill_hold_browser_active() -> bool:
+    """True when a headed fill/CAPTCHA/Ready hold should protect CfT (CHR2-002/003).
+
+    Signals: fresh captcha wait marker (TTL — CHR2-005), live fast_fill /
+    run_fill_visible / hybrid_fill / real_job_test, or any Playwright fill
+    Chrome-for-Testing main (excludes dashboard UI + OpenClaw PartyRock —
+    CHR3-004). PartyRock-alone is never a fill hold.
+    """
+    try:
+        from captcha_pause import captcha_waiting_marker_active
+
+        if captcha_waiting_marker_active():
+            return True
+    except Exception:
+        # Fallbacks if captcha_pause import fails mid-shutdown.
+        for marker in (
+            ROOT / "skyvern_runtime" / "real_job_results" / ".captcha_waiting.json",
+            ROOT / "logs" / ".captcha_waiting.json",
+        ):
+            try:
+                if marker.is_file():
+                    return True
+            except OSError:
+                pass
+    for pattern in (
+        "fast_fill.py",
+        "run_fill_visible.sh",
+        "hybrid_fill.py",
+        "real_job_test.py",
+    ):
+        try:
+            out = subprocess.check_output(
+                ["/usr/bin/pgrep", "-lf", pattern],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            continue
+        if out.strip():
+            return True
+    # Fill CfT only — PartyRock OpenClaw alone must not look like a fill hold.
+    return bool(_chrome_for_testing_main_pids())
+
+
+def _stop_openclaw_managed_browser() -> dict:
+    """Stop the PartyRock tailor CDP Chrome (port 18800).
+
+    OpenClaw-free: there is no ``openclaw browser stop`` anymore — we launched
+    Chrome-for-Testing directly, so we tear it down directly too, by killing
+    only processes that carry the persistent user-data-dir or
+    ``--remote-debugging-port=18800`` (never the user's daily Chrome).
+    """
+    result: dict = {"cli_stop": False, "killed": []}
+    # Match identifiable argv for the PartyRock CfT main(s) only.
+    patterns = [
+        f"--user-data-dir={OPENCLAW_BROWSER_USER_DATA}",
+        f"--remote-debugging-port={OPENCLAW_BROWSER_CDP_PORT}",
+    ]
+    leftover: list[int] = []
+    for pat in patterns:
+        leftover.extend(_pgrep_f_pids(pat))
+    # Drop helpers — killing the main Chrome is enough; helpers die with it.
+    # Still include all matched PIDs: Helpers share the same user-data-dir argv
+    # and can linger in Dock if the main exits oddly; SIGTERM on helpers is safe.
+    killed = _kill_pids_term_then_kill(leftover)
+    result["killed"] = killed
+    return result
+
+
+def _kill_jh_associated_browsers(
+    *,
+    stop_openclaw_browser: bool = True,
+    preserve_fill_cft: bool = False,
+) -> dict:
+    """Kill JH form-fill + PartyRock browsers only (never daily Chrome).
+
+    Identifiers:
+      - Chrome-for-Testing binary (Playwright fast_fill / hybrid leftovers),
+        unless *preserve_fill_cft* (CHR2-003: Refresh while CAPTCHA/Ready hold)
+      - Legacy ``partyrock_chrome_profile/`` leftovers (manual window retired;
+        PartyRock now uses OpenClaw CfT profile)
+      - OpenClaw managed browser (``~/.openclaw/browser/openclaw/user-data``,
+        CDP :18800) when *stop_openclaw_browser* is True
+
+    Dashboard ``dashboard_ui_profile`` is left to ``launch_dashboard.sh``
+    so Refresh can keep the UI window.
+    """
+    summary: dict = {
+        "chrome_for_testing": [],
+        "partyrock_chrome_profile": [],
+        "openclaw_browser": None,
+        "fill_cft_preserved": False,
+    }
+    if preserve_fill_cft:
+        summary["fill_cft_preserved"] = True
+        summary["chrome_for_testing"] = []
+    else:
+        try:
+            summary["chrome_for_testing"] = _kill_chrome_for_testing()
+        except Exception as e:
+            print(f"warn: chrome-for-testing cleanup: {e}")
+    try:
+        summary["partyrock_chrome_profile"] = _kill_chrome_user_data_dir(
+            PARTYROCK_CHROME_PROFILE
+        )
+    except Exception as e:
+        print(f"warn: partyrock chrome profile cleanup: {e}")
+    if stop_openclaw_browser:
+        try:
+            summary["openclaw_browser"] = _stop_openclaw_managed_browser()
+        except Exception as e:
+            print(f"warn: openclaw browser cleanup: {e}")
+            summary["openclaw_browser"] = {"error": str(e)[:200]}
+    return summary
+
+
+def _launcher_is_alive() -> bool:
+    """True if launch_dashboard.sh recorded a live PID (waiting on this server).
+
+    Prefers ``logs/dashboard_launcher.lockdir/pid`` (single-instance lock), then
+    falls back to ``logs/dashboard_launcher.pid``. Avoids spawning a second
+    ``--restart`` copy that would race the primary and kill dashboard Chrome.
+    """
+    candidates = [
+        ROOT / "logs" / "dashboard_launcher.lockdir" / "pid",
+        LAUNCHER_PID_PATH,
+    ]
+    for path in candidates:
+        try:
+            raw = path.read_text().strip()
+            if not raw:
+                continue
+            pid = int(raw)
+            os.kill(pid, 0)
+            return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def _write_restart_flag() -> None:
+    RESTART_FLAG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RESTART_FLAG_PATH.write_text(f"{time.time()}\n", encoding="utf-8")
+
+
+def _spawn_relaunch_fallback() -> None:
+    """When no launcher is waiting, spawn launch_dashboard.sh --restart."""
+    if not LAUNCH_DASHBOARD_SH.is_file():
+        print(f"warn: missing launcher script: {LAUNCH_DASHBOARD_SH}")
+        return
+    log_path = ROOT / "logs" / "dashboard_launcher.out"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_f = open(log_path, "a", encoding="utf-8")  # noqa: SIM115 — kept for child lifetime
+    try:
+        subprocess.Popen(
+            ["/bin/bash", str(LAUNCH_DASHBOARD_SH), "--restart"],
+            cwd=str(ROOT),
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env=os.environ.copy(),
+        )
+        print("spawned launch_dashboard.sh --restart (no live launcher)")
+    except Exception as e:
+        print(f"warn: could not spawn relaunch: {e}")
+        try:
+            log_f.close()
+        except Exception:
+            pass
+
+
+def ui_lifecycle_enabled() -> bool:
+    raw = (os.environ.get("JOB_HUNTER_UI_LIFECYCLE") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _prune_stale_ui_clients(now: float | None = None) -> None:
+    """Drop clients that have not heartbeated within UI_HEARTBEAT_TIMEOUT_S.
+
+    Caller must hold _ui_lock.
+    """
+    now = time.time() if now is None else now
+    cutoff = now - UI_HEARTBEAT_TIMEOUT_S
+    stale = [cid for cid, last in _ui_clients.items() if last < cutoff]
+    for cid in stale:
+        _ui_clients.pop(cid, None)
+
+
+def ui_lifecycle_status() -> dict:
+    with _ui_lock:
+        _prune_stale_ui_clients()
+        return {
+            "enabled": ui_lifecycle_enabled(),
+            "armed": _ui_lifecycle_armed,
+            "client_count": len(_ui_clients),
+            "heartbeat_timeout_s": UI_HEARTBEAT_TIMEOUT_S,
+            "shutdown_requested": _shutdown_requested,
+            "shutdown_reason": _shutdown_reason or None,
+        }
+
+
+def record_ui_heartbeat(client_id: str) -> tuple[dict, int]:
+    """Register/refresh a dashboard tab. Arms UI-tied lifecycle on first pulse."""
+    global _ui_lifecycle_armed
+    cid = (client_id or "").strip()
+    if not cid:
+        return {"ok": False, "error": "client_id required"}, 400
+    if not ui_lifecycle_enabled():
+        return {
+            "ok": True,
+            "armed": False,
+            "client_count": 0,
+            "enabled": False,
+            "heartbeat_timeout_s": UI_HEARTBEAT_TIMEOUT_S,
+        }, 200
+    with _ui_lock:
+        _ui_clients[cid] = time.time()
+        _ui_lifecycle_armed = True
+        _prune_stale_ui_clients()
+        count = len(_ui_clients)
+        armed = _ui_lifecycle_armed
+    return {
+        "ok": True,
+        "armed": armed,
+        "client_count": count,
+        "enabled": True,
+        "heartbeat_timeout_s": UI_HEARTBEAT_TIMEOUT_S,
+    }, 200
+
+
+def request_ui_shutdown(client_id: str | None = None, *, force: bool = False) -> tuple[dict, int]:
+    """Fast-path quit from sendBeacon / explicit shutdown.
+
+    Removes this client (if given). Shuts down only when no live clients remain
+    (or force=True). Other open tabs keep the stack alive.
+    """
+    if not ui_lifecycle_enabled() and not force:
+        return {"ok": True, "shutdown": False, "enabled": False, "reason": "lifecycle disabled"}, 200
+    cid = (client_id or "").strip()
+    with _ui_lock:
+        if cid:
+            _ui_clients.pop(cid, None)
+        _prune_stale_ui_clients()
+        remaining = len(_ui_clients)
+        armed = _ui_lifecycle_armed
+    if force or (armed and remaining == 0):
+        shutdown_dashboard_stack(
+            "ui shutdown" if not force else "forced shutdown",
+            client_id=cid or None,
+        )
+        return {
+            "ok": True,
+            "shutdown": True,
+            "client_count": 0,
+            "reason": _shutdown_reason,
+        }, 200
+    return {
+        "ok": True,
+        "shutdown": False,
+        "client_count": remaining,
+        "reason": "other clients still heartbeating",
+    }, 200
+
+
+def shutdown_dashboard_stack(reason: str, client_id: str | None = None) -> bool:
+    """Abort discovery, kill tracked children + JH browsers, stop HTTP, exit.
+
+    Idempotent. Returns True if this call initiated shutdown.
+
+    Always tears down form-fill Chrome-for-Testing and legacy
+    ``partyrock_chrome_profile`` on quit. On Refresh (``ui restart``): keeps
+    OpenClaw PartyRock CDP (never counted as fill CfT — CHR3-003), and also
+    preserves fill CfT + fill/agent procs when a CAPTCHA / Ready hold is live
+    (CHR2-003 / CHR3-001 / CHR3-002). Dashboard UI Chrome is closed by
+    ``launch_dashboard.sh``, not here.
+    """
+    global _shutdown_requested, _shutdown_reason, _preserve_fill_cft_on_exit
+    with _shutdown_lock:
+        if _shutdown_requested:
+            return False
+        _shutdown_requested = True
+        _shutdown_reason = reason
+    print(f"dashboard shutdown: {reason}" + (f" (client={client_id})" if client_id else ""))
+    try:
+        if _discovery_state.get("running"):
+            request_discovery_abort()
+            # Flush before process exit — discovery thread may not finish.
+            _mark_incomplete_sources_stopped()
+            _flush_discovery_checkpoint("incomplete")
+    except Exception as e:
+        print(f"warn: discovery abort on shutdown: {e}")
+    # Orphaned Playwright windows left after process-group kill.
+    is_restart = "restart" in (reason or "").lower() or _restart_requested
+    preserve_fill = False
+    if is_restart:
+        try:
+            preserve_fill = _fill_hold_browser_active()
+        except Exception as e:
+            print(f"warn: fill-hold probe on restart: {e}")
+            preserve_fill = True  # fail closed — keep review window
+    _preserve_fill_cft_on_exit = bool(preserve_fill)
+    try:
+        # CHR3-002: do not SIGTERM fill/agent while CAPTCHA/Ready hold is live.
+        _kill_all_tracked_child_procs(preserve_fill_procs=preserve_fill)
+    except Exception as e:
+        print(f"warn: child cleanup on shutdown: {e}")
+    try:
+        browser_summary = _kill_jh_associated_browsers(
+            stop_openclaw_browser=not is_restart,
+            preserve_fill_cft=preserve_fill,
+        )
+        print(f"dashboard browser cleanup: {browser_summary}")
+    except Exception as e:
+        print(f"warn: JH browser cleanup on shutdown: {e}")
+
+    def _stop_http() -> None:
+        srv = _http_server
+        if srv is not None:
+            try:
+                srv.shutdown()
+            except Exception as e:
+                print(f"warn: HTTP shutdown: {e}")
+
+    threading.Thread(target=_stop_http, daemon=True, name="dashboard-http-shutdown").start()
+    return True
+
+
+def request_ui_restart(client_id: str | None = None) -> tuple[dict, int]:
+    """Refresh path: same child cleanup as shutdown, then relaunch the server.
+
+    Writes `logs/dashboard_restart.flag` so `launch_dashboard.sh` respawns the
+    server after exit *without* opening a new Chrome window (UI reloads in
+    place). If no launcher is waiting, spawns `launch_dashboard.sh --restart`
+    as a fallback. Forces cleanup even when other tabs are open.
+    """
+    global _restart_requested
+    cid = (client_id or "").strip() or None
+    _restart_requested = True
+    try:
+        _write_restart_flag()
+    except OSError as e:
+        return {"ok": False, "error": f"could not write restart flag: {e}"}, 500
+    with _ui_lock:
+        _ui_clients.clear()
+    launcher_alive = _launcher_is_alive()
+    if not launcher_alive:
+        try:
+            _spawn_relaunch_fallback()
+        except Exception as e:
+            print(f"warn: relaunch fallback failed: {e}")
+    shutdown_dashboard_stack("ui restart", client_id=cid)
+    return {
+        "ok": True,
+        "restart": True,
+        "shutdown": True,
+        "launcher_will_respawn": launcher_alive,
+        "reason": _shutdown_reason or "ui restart",
+    }, 200
+
+
+def _ui_watchdog_loop() -> None:
+    """Prune stale UI heartbeats; do not auto-quit on idle.
+
+    Heartbeats still track connected clients for multi-tab shutdown
+    (last explicit Quit / pagehide / Cmd+Q). Stalled pulses alone must not
+    call shutdown_dashboard_stack — laptop sleep / background tabs used to
+    kill the stack after UI_HEARTBEAT_TIMEOUT_S.
+    """
+    while True:
+        time.sleep(2)
+        if _shutdown_requested or not ui_lifecycle_enabled():
+            return
+        with _ui_lock:
+            if not _ui_lifecycle_armed:
+                continue
+            _prune_stale_ui_clients()
+
+
+def check_ui_heartbeat_timeout_for_tests(now: float | None = None) -> bool:
+    """Test helper: prune stale clients. Idle never starts shutdown (returns False)."""
+    if not ui_lifecycle_enabled():
+        return False
+    with _ui_lock:
+        if not _ui_lifecycle_armed:
+            return False
+        _prune_stale_ui_clients(now)
+    return False
+
+
+def request_discovery_abort(source_id: str | None = None) -> tuple[dict, int]:
+    """Abort discovery: all sources, or a single catalog source_id.
+
+    Global abort (source_id None / \"all\"): flag the runner, kill all active
+    scrape trees unless mid-write. Per-source: kill only that source's
+    process group and mark it stopped; other scrapes continue (no global
+    abort_requested / discovery stays running).
+    """
+    sid = (str(source_id).strip() if source_id is not None else "") or None
+    if sid and sid.lower() == "all":
+        sid = None
+
+    if sid:
+        if sid not in DISCOVERY_SOURCE_IDS:
+            return {"error": f"unknown source_id: {sid}", "discovery": discovery_status()}, 400
+        with _discovery_lock:
+            if not _discovery_state.get("running"):
+                return {"error": "discovery is not running", "discovery": discovery_status()}, 409
+            _discovery_source_aborts.add(sid)
+        _kill_discovery_proc_by_key(_discovery_source_track_key(sid))
+        _update_discovery_sources(
+            (sid,), status="stopped", detail="Stopped",
+            only_if_status=("pending", "collecting"),
+        )
+        _flush_discovery_checkpoint("running")
+        return {"ok": True, "aborting": False, "source_id": sid, "discovery": discovery_status()}, 200
+
+    with _discovery_lock:
+        if not _discovery_state.get("running"):
+            running = False
+            already = False
+            protect = False
+        elif _discovery_state.get("abort_requested"):
+            running = True
+            already = True
+            protect = False
+        else:
+            running = True
+            already = False
+            _discovery_state["abort_requested"] = True
+            _discovery_state["can_abort"] = False
+            _discovery_state["phase"] = "aborting"
+            _discovery_state["phase_label"] = DISCOVERY_PHASE_LABELS["aborting"]
+            protect = _discovery_protect_proc
+    if not running:
+        return {"error": "discovery is not running", "discovery": discovery_status()}, 409
+    if already:
+        return {"ok": True, "aborting": True, "discovery": discovery_status()}, 200
+    if not protect:
+        _kill_all_discovery_procs()
+    _flush_discovery_checkpoint("incomplete")
+    return {"ok": True, "aborting": True, "discovery": discovery_status()}, 200
+
+
+def _parse_discovery_log_line(line: str, mode: str | None) -> None:
+    """Update live per-source counts from scout/ats/builtin stdout lines."""
+    if not mode:
+        return
+    if mode == "scout":
+        m = _SCOUT_GOT_RE.search(line)
+        if m:
+            n, site = int(m.group(1)), m.group(2)
+            with _discovery_lock:
+                for src in _discovery_state.get("sources") or []:
+                    if src.get("id") == site:
+                        src["status"] = "collecting"
+                        src["count"] = int(src.get("count") or 0) + n
+                        src["detail"] = f"{src['count']} listings"
+                        break
+        return
+    if mode == "ats":
+        m = _ATS_GOT_RE.search(line)
+        if m:
+            n, ats = int(m.group(1)), m.group(2)
+            prog = _ATS_PROGRESS_RE.search(line)
+            detail = f"{prog.group(1)}/{prog.group(2)} boards" if prog else ""
+            with _discovery_lock:
+                for src in _discovery_state.get("sources") or []:
+                    if src.get("id") == ats:
+                        src["status"] = "collecting"
+                        src["count"] = int(src.get("count") or 0) + n
+                        if detail:
+                            src["detail"] = f"{src['count']} · {detail}"
+                        else:
+                            src["detail"] = f"{src['count']} listings"
+                        break
+        return
+    if mode == "india":
+        m = _INDIA_GOT_RE.search(line)
+        if m:
+            n, sid = int(m.group(1)), m.group(2)
+            with _discovery_lock:
+                for src in _discovery_state.get("sources") or []:
+                    if src.get("id") == sid:
+                        src["status"] = "collecting"
+                        src["count"] = int(src.get("count") or 0) + n
+                        src["detail"] = f"{src['count']} listings"
+                        break
+        return
+    if mode == "builtin":
+        m = _BUILTIN_PROC_RE.search(line)
+        if m:
+            done, total, usable = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            _set_source_fields(
+                "builtin",
+                status="collecting",
+                count=usable,
+                detail=f"{done}/{total} pages · {usable} listings",
+            )
+            return
+        m2 = _WROTE_LISTINGS_RE.search(line)
+        if m2:
+            n = int(m2.group(1))
+            _set_source_fields("builtin", status="collecting", count=n, detail=f"{n} listings")
+
+
+class _LogTail:
+    """Incrementally read new lines from a growing log file."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._pos = 0
+        self._buf = ""
+
+    def poll_lines(self) -> list[str]:
+        try:
+            with open(self.path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(self._pos)
+                chunk = f.read()
+                self._pos = f.tell()
+        except FileNotFoundError:
+            return []
+        if not chunk:
+            return []
+        self._buf += chunk
+        lines = self._buf.split("\n")
+        self._buf = lines.pop() if lines else ""
+        return lines
+
+
+def _openclaw_env(base: dict | None = None) -> dict:
+    """Env for openclaw CLI — GUI/AppleScript launches often omit Homebrew PATH,
+    so ``#!/usr/bin/env node`` fails with exit 127 (seen after PartyRock on Start)."""
+    env = dict(base or os.environ)
+    extras = ["/opt/homebrew/bin", "/usr/local/bin"]
+    path = env.get("PATH") or ""
+    parts = [p for p in path.split(":") if p]
+    for extra in reversed(extras):
+        if extra not in parts:
+            parts.insert(0, extra)
+    env["PATH"] = ":".join(parts)
+    return env
+
+
+def _run_subprocess_step(cmd: list[str], log_name: str, timeout_s: int,
+                          track_key: str = DISCOVERY_SESSION_KEY,
+                          *, allow_abort: bool = False,
+                          protect_from_abort: bool = False,
+                          log_parse_mode: str | None = None,
+                          activity_job_id: str | None = None) -> tuple[int, Path]:
+    """Run one pipeline step as a plain subprocess with real logging (not
+    /dev/null - piping output away makes it impossible to check progress
+    mid-run). Tracked under track_key for is_session_running()'s
+    double-start check and for the dashboard's "what's currently running"
+    display - callers working on a specific job should pass that job's
+    own session_key, not the default, so it's attributed to the right job
+    instead of reporting it as a stray discovery run.
+
+    Discovery steps pass allow_abort=True so POST /api/discover/abort can
+    kill the process group(s). Parallel scrapes use distinct track_key
+    suffixes so they don't overwrite each other in _running_procs.
+    protect_from_abort=True (write step) finishes the current write instead
+    of killing mid-jobs.json.
+
+    activity_job_id: when set, tee new log lines into the job's Live activity
+    buffer (same feed Fast fill uses)."""
+    global _discovery_protect_proc
+    ROOT.joinpath("logs").mkdir(exist_ok=True)
+    log_path = ROOT / "logs" / log_name
+    log_file = open(log_path, "w")
+    step_start = time.monotonic()
+    # New session = own process group so abort can kill children (JobSpy, etc.).
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(ROOT),
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    _running_procs[track_key] = proc
+    if allow_abort:
+        _register_discovery_proc(track_key, proc)
+        with _discovery_lock:
+            _discovery_protect_proc = protect_from_abort
+    need_tail = bool(log_parse_mode or activity_job_id)
+    tail = _LogTail(log_path) if need_tail else None
+
+    def _consume_tail_lines() -> None:
+        if tail is None:
+            return
+        for line in tail.poll_lines():
+            if log_parse_mode:
+                _parse_discovery_log_line(line, log_parse_mode)
+            if activity_job_id:
+                ingest_pipeline_stdout_line(activity_job_id, line)
+
+    exit_code = -1
+    try:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            if allow_abort and _discovery_abort_requested() and not protect_from_abort:
+                _kill_discovery_process_tree(proc)
+                exit_code = DISCOVERY_ABORT_EXIT
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _kill_discovery_process_tree(proc)
+                exit_code = -1
+                break
+            try:
+                exit_code = proc.wait(timeout=min(0.4, remaining))
+                # Abort may have killed us from another thread; normalize.
+                if allow_abort and _discovery_abort_requested() and not protect_from_abort:
+                    exit_code = DISCOVERY_ABORT_EXIT
+                break
+            except subprocess.TimeoutExpired:
+                _consume_tail_lines()
+                continue
+        _consume_tail_lines()
+    finally:
+        _running_procs.pop(track_key, None)
+        if allow_abort:
+            _unregister_discovery_proc(track_key, proc)
+            with _discovery_lock:
+                if protect_from_abort or not _discovery_procs_by_key:
+                    _discovery_protect_proc = False
+        log_file.close()
+    _log_timing(log_name.removesuffix(".log"), time.monotonic() - step_start, f"exit={exit_code}")
+    return exit_code, log_path
+
+
+def _listing_file_nonempty(path: Path) -> bool:
+    """True if path exists and parses as a non-empty JSON list."""
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return False
+    return isinstance(data, list) and len(data) > 0
+
+
+def _source_listing_path(today: str, source_id: str) -> Path:
+    if source_id in SCOUT_SOURCE_IDS:
+        return LISTINGS_DIR / f"{today}-{source_id}.json"
+    if source_id in ATS_SOURCE_IDS:
+        return LISTINGS_DIR / f"{today}-ats-{source_id}.json"
+    if source_id == "builtin":
+        return LISTINGS_DIR / f"{today}-builtin.json"
+    # Adzuna's file is suffixed -adzuna-in to make its India origin explicit;
+    # the others use their bare source id.
+    if source_id == "adzuna":
+        return LISTINGS_DIR / f"{today}-adzuna-in.json"
+    if source_id in INDIA_ONLY_SOURCE_IDS:
+        return LISTINGS_DIR / f"{today}-{source_id}.json"
+    raise ValueError(f"unknown discovery source: {source_id}")
+
+
+def _source_qualified_tag(source_id: str) -> str:
+    if source_id in ATS_SOURCE_IDS:
+        return f"ats-{source_id}"
+    return source_id
+
+
+def _builtin_scrape_cmd(
+    listing: Path,
+    *,
+    skip_urls_file: Path | None,
+    days_since_updated: int,
+) -> list[str]:
+    days = normalize_builtin_days_since_updated(days_since_updated)
+    cmd = [
+        PYTHON_BIN,
+        "-u",
+        str(ROOT / "scripts" / "scrape_builtin.py"),
+        "--out",
+        str(listing),
+        "--days-since-updated",
+        str(days),
+    ]
+    if skip_urls_file is not None:
+        cmd.extend(["--skip-urls", str(skip_urls_file)])
+    return cmd
+
+
+def _incremental_merge_listing(listing_path: Path, today: str, skip_file: Path,
+                               source_tag: str) -> bool:
+    """Dedup one source listing and merge into jobs.json. Returns True on write success."""
+    if not _listing_file_nonempty(listing_path):
+        return False
+    qualified_file = LISTINGS_DIR / f"{today}-qualified-{source_tag}.json"
+    _set_discovery_phase("dedup")
+    dedup_exit, dedup_log = _run_subprocess_step(
+        [PYTHON_BIN, "-u", str(ROOT / "scripts" / "dedup_listings.py"),
+         str(listing_path), "--out", str(qualified_file)],
+        f"dedup_listings_{source_tag}.log",
+        120,
+        track_key=f"{DISCOVERY_SESSION_KEY}:dedup:{source_tag}",
+        allow_abort=True,
+        protect_from_abort=True,
+    )
+    if dedup_exit != 0 or not qualified_file.exists():
+        print(f"warn: incremental dedup failed for {source_tag}: exit={dedup_exit} ({dedup_log})")
+        return False
+    if not _listing_file_nonempty(qualified_file):
+        return False
+    _set_discovery_phase("write")
+    write_exit, write_log = _run_subprocess_step(
+        [PYTHON_BIN, "-u", str(ROOT / "scripts" / "write_discovered_jobs.py"),
+         str(qualified_file), "--skip-companies", str(skip_file)],
+        f"write_discovered_jobs_{source_tag}.log",
+        60,
+        track_key=f"{DISCOVERY_SESSION_KEY}:write:{source_tag}",
+        allow_abort=True,
+        protect_from_abort=True,
+    )
+    if write_exit != 0:
+        print(f"warn: incremental write failed for {source_tag}: exit={write_exit} ({write_log})")
+        return False
+    added = _parse_jobs_added_from_log(write_log)
+    if added:
+        _discovery_checkpoint_meta["jobs_added"] = (
+            int(_discovery_checkpoint_meta.get("jobs_added") or 0) + added
+        )
+    return True
+
+
+def _finalize_discovery_source(
+    source_id: str, exit_code: int, listing_path: Path, *, aborted: bool,
+) -> None:
+    """Mark one catalog source done/failed/stopped from its exit code + listing file."""
+    if aborted:
+        if listing_path.exists():
+            _apply_site_counts(
+                _count_listings_by_site(listing_path), (source_id,),
+                status="stopped", zero_detail="Stopped")
+        else:
+            _update_discovery_sources(
+                (source_id,), status="stopped", detail="Stopped",
+                only_if_status=("pending", "collecting", "stopped"))
+        return
+    if listing_path.exists():
+        _apply_site_counts(_count_listings_by_site(listing_path), (source_id,))
+    elif exit_code != 0:
+        _update_discovery_sources((source_id,), status="failed", detail="Failed")
+    else:
+        _apply_site_counts({}, (source_id,))
+
+
+def run_scout_scrape_then_dedup() -> None:
+    """Scraping, dedup/qualify filtering, the already-tracked-company check,
+    and the jobs.json write are all pure mechanical work with no judgment
+    calls in them - run them as plain subprocesses, not inside an LLM turn.
+    Babysitting a 5-15min scrape token-by-token wastes agent turn time/
+    budget and can blow past the gateway's hard per-turn timeout, silently
+    killing the whole run mid-work (observed: a combined scrape+dedup turn
+    aborted with 'request timed out' after exactly the --timeout value,
+    having already scraped successfully but never reaching the jobs.json
+    write). Re-deriving dedup/filter logic from scratch every run is also
+    unreliable - a plain script keeps the matching consistent.
+
+    The already-tracked-company check used to need an agent turn to query
+    Notion. Now that the tracker is a local Excel file (application_tracker
+    .xlsx, via scripts/tracker.py), that check is just as mechanical as
+    everything else - so a normal discovery run needs zero agent/LLM
+    involvement end to end. The agent only gets pulled in if one of these
+    steps actually fails and needs a human-judgment fix.
+
+    Each enabled catalog source runs as its own subprocess. As each finishes
+    (or is aborted with a partial listing file), that file is deduped and
+    merged into jobs.json. A final dedup_jobs pass runs if any writes landed.
+    Global abort still flushes completed/partial listing files before finish.
+
+    Resume: if ``logs/discovery_checkpoint.json`` has leftover work for
+    today, completed sources are skipped; incomplete ones continue after
+    merging any partial listing file already on disk. Scrapers receive a
+    shared skip-urls file (jobs.json + blocked + prior listings) so known
+    JDs are not re-fetched."""
+    try:
+        today = _today_local_iso()
+        enabled = _discovery_enabled_set()
+        # Propagate enabled regions (US default, India opt-in) to every
+        # discovery child (scout / scrape_ats / scrape_builtin / dedup /
+        # write) via env — they inherit os.environ (no env= on Popen).
+        regions = enabled_discovery_regions()
+        os.environ["JOBHUNTER_DISCOVERY_REGIONS"] = ",".join(regions)
+        print(f"discovery regions: {', '.join(regions)}")
+        LISTINGS_DIR.mkdir(parents=True, exist_ok=True)
+        with _discovery_lock:
+            resumed = bool(_discovery_state.get("resumed"))
+            sources_snap = [dict(s) for s in (_discovery_state.get("sources") or [])]
+        skip_ids = {
+            s["id"] for s in sources_snap
+            if s.get("enabled") and s.get("status") == "completed"
+        }
+        merged_paths: set[str] = set(_discovery_checkpoint_meta.get("merged_paths") or ())
+        merges_ok = int(_discovery_checkpoint_meta.get("merges_ok") or 0)
+
+        # Known URLs — scrapers skip detail fetches / duplicate rows.
+        skip_urls_file = ROOT / "logs" / "discovery_skip_urls.json"
+        try:
+            from known_job_urls import (  # noqa: E402
+                load_known_url_keys,
+                write_skip_urls_file,
+            )
+            listing_paths = []
+            for sid in enabled:
+                try:
+                    listing_paths.append(_source_listing_path(today, sid))
+                except ValueError:
+                    pass
+            known = load_known_url_keys(extra_listing_paths=listing_paths)
+            write_skip_urls_file(skip_urls_file, known)
+            print(f"discovery skip-urls: {len(known)} known key(s) -> {skip_urls_file}")
+        except Exception as e:
+            print(f"warn: building discovery skip-urls failed: {e}")
+            skip_urls_file = None
+
+        # Build one scrape job per enabled catalog source that still needs work.
+        # Built In has no public API / JobSpy support — direct HTML scrape
+        # (see scrape_builtin.py). Timeout 5400s: filtered search + sequential
+        # page fetch can run ~45 minutes in the wild.
+        source_jobs: list[tuple[str, Path, list[str], int, str, str]] = []
+        for sid in SCOUT_SOURCE_IDS:
+            if sid not in enabled or sid in skip_ids:
+                continue
+            listing = _source_listing_path(today, sid)
+            cmd = [PYTHON_BIN, "-u", str(SCOUT_SCRIPT),
+                   "--sites", sid, "--out", str(listing)]
+            source_jobs.append(
+                (sid, listing, cmd, SCOUT_TIMEOUT_S, f"scout_{sid}.log", "scout"))
+        for sid in ATS_SOURCE_IDS:
+            if sid not in enabled or sid in skip_ids:
+                continue
+            listing = _source_listing_path(today, sid)
+            cmd = [PYTHON_BIN, "-u", str(ROOT / "scripts" / "scrape_ats.py"),
+                   "--platforms", sid, "--out", str(listing)]
+            if skip_urls_file is not None:
+                cmd.extend(["--skip-urls", str(skip_urls_file)])
+            source_jobs.append(
+                (sid, listing, cmd, 300, f"scrape_ats_{sid}.log", "ats"))
+        if "builtin" in enabled and "builtin" not in skip_ids:
+            listing = _source_listing_path(today, "builtin")
+            days = load_discovery_settings()["builtin_days_since_updated"]
+            cmd = _builtin_scrape_cmd(
+                listing,
+                skip_urls_file=skip_urls_file,
+                days_since_updated=days,
+            )
+            source_jobs.append(
+                ("builtin", listing, cmd, 5400, "scrape_builtin.log", "builtin"))
+        # India-only sources: only meaningful when the India region is on.
+        # (_handle_discover already strips them from `enabled` when India is
+        # off; this guard is belt-and-suspenders for direct/API callers.)
+        if "india" in regions:
+            for sid in INDIA_ONLY_SOURCE_IDS:
+                if sid not in enabled or sid in skip_ids:
+                    continue
+                listing = _source_listing_path(today, sid)
+                cmd = [PYTHON_BIN, "-u", str(INDIA_SOURCE_SCRIPTS[sid]),
+                       "--out", str(listing)]
+                source_jobs.append(
+                    (sid, listing, cmd, INDIA_SOURCE_TIMEOUT_S,
+                     f"scrape_{sid}.log", "india"))
+
+        if skip_ids:
+            # Keep completed rows visible; clarify they were resumed/skipped.
+            for sid in skip_ids:
+                with _discovery_lock:
+                    for src in _discovery_state.get("sources") or []:
+                        if src.get("id") == sid and src.get("status") == "completed":
+                            detail = src.get("detail") or ""
+                            if "already done" not in detail.lower():
+                                n = int(src.get("count") or 0)
+                                src["detail"] = (
+                                    f"{n} listings (skipped — already done)"
+                                    if n else "Skipped — already done"
+                                )
+                            break
+
+        _set_discovery_phase("resuming" if resumed else "scraping")
+        if source_jobs:
+            _update_discovery_sources(
+                tuple(sid for sid, *_ in source_jobs),
+                status="collecting",
+                detail="Continuing…" if resumed else "Starting…")
+        _flush_discovery_checkpoint("running")
+
+        # Tracker once before first merge (skip-companies for write_discovered_jobs).
+        # Deliberately NOT under listings/ — scrape_ats --seed-from globs *.json there.
+        skip_file = ROOT / "logs" / "tracked-companies-skip.json"
+        _set_discovery_phase("tracker")
+        tracker_exit, tracker_log = _run_subprocess_step(
+            [PYTHON_BIN, "-u", str(ROOT / "scripts" / "tracker.py"),
+             "list-companies", "--out", str(skip_file)],
+            "tracker_list.log", 30,
+            allow_abort=True,
+        )
+        if tracker_exit == DISCOVERY_ABORT_EXIT or _discovery_abort_requested():
+            _mark_incomplete_sources_stopped()
+            _flush_discovery_checkpoint("incomplete")
+            _finish_discovery(False, "Aborted by user")
+            return
+        if tracker_exit != 0 or not skip_file.exists():
+            err = (
+                f"scripts/tracker.py list-companies exited with code {tracker_exit} "
+                f"(see {tracker_log})."
+            )
+            _set_discovery_phase("agent_recovery", error=err)
+            run_agent_message(
+                DISCOVERY_SESSION_KEY,
+                f"{err} Check for a bug in tracker.py and fix it.",
+                timeout_s=600,
+            )
+            _flush_discovery_checkpoint("incomplete")
+            _finish_discovery(False, err)
+            return
+
+        _set_discovery_phase("scraping")
+        scrape_results: dict[str, tuple[int, Path, Path]] = {}
+
+        def _note_merge(listing: Path) -> None:
+            nonlocal merges_ok
+            key = str(listing)
+            if key in merged_paths:
+                return
+            merged_paths.add(key)
+            merges_ok += 1
+            _discovery_checkpoint_meta["merged_paths"] = set(merged_paths)
+            _discovery_checkpoint_meta["merges_ok"] = merges_ok
+
+        def _try_merge(sid: str, listing: Path) -> bool:
+            key = str(listing)
+            if key in merged_paths:
+                return False
+            if not _listing_file_nonempty(listing):
+                return False
+            tag = _source_qualified_tag(sid)
+            if _incremental_merge_listing(listing, today, skip_file, tag):
+                _note_merge(listing)
+                _flush_discovery_checkpoint("running")
+                return True
+            return False
+
+        # Completed-but-unmerged leftovers (crash between finalize and merge).
+        for sid in skip_ids:
+            try:
+                _try_merge(sid, _source_listing_path(today, sid))
+            except ValueError:
+                pass
+
+        # Before re-scraping incomplete sources: merge leftover partials, then
+        # drop those paths from merged_paths so the post-scrape listing merges.
+        for sid, listing, *_ in source_jobs:
+            _try_merge(sid, listing)
+            merged_paths.discard(str(listing))
+        _discovery_checkpoint_meta["merged_paths"] = set(merged_paths)
+        _discovery_checkpoint_meta["merges_ok"] = merges_ok
+
+        def _run_one_source(
+            sid: str, listing: Path, cmd: list[str], timeout_s: int,
+            log_name: str, mode: str,
+        ) -> tuple[str, int, Path, Path]:
+            if _source_abort_requested(sid) or _discovery_abort_requested():
+                return sid, DISCOVERY_ABORT_EXIT, Path(""), listing
+            code, log = _run_subprocess_step(
+                cmd, log_name, timeout_s,
+                track_key=_discovery_source_track_key(sid),
+                allow_abort=True, log_parse_mode=mode)
+            return sid, code, log, listing
+
+        workers = max(1, len(source_jobs)) if source_jobs else 1
+        if source_jobs:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [
+                    pool.submit(_run_one_source, sid, listing, cmd, timeout_s, log_name, mode)
+                    for sid, listing, cmd, timeout_s, log_name, mode in source_jobs
+                ]
+                for fut in concurrent.futures.as_completed(futures):
+                    sid, code, log, listing = fut.result()
+                    scrape_results[sid] = (code, log, listing)
+                    aborted = (
+                        _discovery_abort_requested()
+                        or _source_abort_requested(sid)
+                        or code == DISCOVERY_ABORT_EXIT
+                    )
+                    _finalize_discovery_source(sid, code, listing, aborted=aborted)
+                    # Merge on success or abort-with-partial listing file.
+                    _try_merge(sid, listing)
+                    _flush_discovery_checkpoint("running")
+
+        # After all sources settle: still merge any leftover partial files
+        # (global abort must not skip flushing completed/partial listings).
+        for sid, listing, *_ in source_jobs:
+            if sid not in scrape_results:
+                _finalize_discovery_source(
+                    sid, DISCOVERY_ABORT_EXIT, listing,
+                    aborted=True)
+            _try_merge(sid, listing)
+
+        _mark_incomplete_sources_stopped()
+        aborted = _discovery_abort_requested()
+        _flush_discovery_checkpoint("incomplete" if aborted else "running")
+
+        if merges_ok > 0:
+            _set_discovery_phase("dedup_jobs")
+            _run_subprocess_step(
+                [PYTHON_BIN, "-u", str(ROOT / "scripts" / "dedup_jobs.py")],
+                "dedup_jobs.log",
+                120,
+                allow_abort=True,
+                protect_from_abort=True,
+            )
+
+        if aborted:
+            if merges_ok > 0:
+                _finish_discovery(True)
+            else:
+                _finish_discovery(False, "Aborted by user")
+            return
+
+        _finish_discovery(True)
+    except Exception as e:
+        if _discovery_abort_requested():
+            _mark_incomplete_sources_stopped()
+            _flush_discovery_checkpoint("incomplete")
+            _finish_discovery(False, "Aborted by user")
+            return
+        _flush_discovery_checkpoint("incomplete")
+        _finish_discovery(False, str(e))
+        raise
+
+
+def runtime_status() -> dict:
+    """Dashboard status bar payload: discovery phase + what's actively
+    running. Deliberately excludes profile/PII — ids, company, title,
+    status only."""
+    running_keys = _running_session_keys()
+    data = read_jobs()
+    running_jobs = []
+    for job in data["jobs"]:
+        sk = job.get("session_key")
+        if sk and sk in running_keys:
+            running_jobs.append({
+                "id": job["id"],
+                "company": job.get("company") or "",
+                "title": job.get("title") or "",
+                "status": job.get("status") or "",
+            })
+    disc = discovery_status()
+    discovery_running = disc.get("running") or (DISCOVERY_SESSION_KEY in running_keys)
+    aj = None
+    if running_jobs:
+        aj = running_jobs[0]
+    elif discovery_running:
+        aj = {"id": None, "company": "(discovery run)", "title": "", "status": "discovery"}
+    return {
+        "discovery": disc,
+        "discovery_running": discovery_running,
+        "active_job": aj,
+        "running_jobs": running_jobs,
+        "running_job_ids": [j["id"] for j in running_jobs],
+        "ui_lifecycle": ui_lifecycle_status(),
+    }
 
 
 def read_jobs() -> dict:
@@ -178,6 +2592,140 @@ def read_jobs() -> dict:
             fcntl.flock(lockfile, fcntl.LOCK_UN)
 
 
+# Truncation note written by write_discovered_jobs.trim_description / manual add.
+_JD_PREVIEW_SUFFIX_RE = re.compile(
+    r"\s*(?:…|\.\.\.)\s*\[full text in resumes/[^\]]+\]\s*$",
+    re.IGNORECASE,
+)
+# Common markdown/CommonMark backslash-escapes that look like junk in plain text.
+_JD_MD_ESCAPE_RE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|&<>])")
+_JD_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+class _StripHtmlTags(HTMLParser):
+    """Stdlib-only tag stripper (dashboard has no BeautifulSoup dep)."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self._parts.append(data)
+
+    def handle_entityref(self, name: str) -> None:
+        self._parts.append(html.unescape(f"&{name};"))
+
+    def handle_charref(self, name: str) -> None:
+        self._parts.append(html.unescape(f"&#{name};"))
+
+    def get_text(self) -> str:
+        return "".join(self._parts)
+
+
+def _maybe_fix_mojibake(text: str) -> str:
+    """If UTF-8 was decoded as Latin-1/cp1252, recover the original UTF-8."""
+    if not any(marker in text for marker in ("Ã", "Â", "â", "ð")):
+        return text
+    bad = lambda s: s.count("Ã") + s.count("Â") + s.count("â") + s.count("\ufffd")
+    for enc in ("cp1252", "latin-1"):
+        try:
+            fixed = text.encode(enc).decode("utf-8")
+        except UnicodeError:
+            continue
+        if bad(fixed) < bad(text):
+            return fixed
+    return text
+
+
+def sanitize_job_description_for_display(text: str) -> str:
+    """Clean JD text for safe dashboard display (never execute HTML/JS).
+
+    Handles double-encoded entities (&lt;p&gt;…), leftover HTML tags,
+    markdown backslash escapes (\\-, \\&), control/NUL bytes, classic
+    mojibake, and the jobs.json preview suffix that points at jd_full.txt.
+    """
+    if not text:
+        return ""
+    if text.lstrip().startswith("%PDF") or "/Type /Page" in text[:4000]:
+        return "[Job description looks like binary/PDF data and cannot be shown as text.]"
+
+    text = _maybe_fix_mojibake(text)
+    # Unescape repeatedly for double-encoded Greenhouse-style markup.
+    for _ in range(3):
+        nxt = html.unescape(text)
+        if nxt == text:
+            break
+        text = nxt
+
+    if "<" in text and ">" in text:
+        parser = _StripHtmlTags()
+        try:
+            parser.feed(text)
+            parser.close()
+            stripped = parser.get_text()
+            if stripped.strip():
+                text = stripped
+        except Exception:
+            text = re.sub(r"<[^>]+>", "", text)
+
+    text = _JD_CONTROL_RE.sub("", text)
+    text = _JD_PREVIEW_SUFFIX_RE.sub("", text)
+    text = _JD_MD_ESCAPE_RE.sub(r"\1", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def load_raw_job_description(job: dict) -> tuple[str, str]:
+    """Prefer resumes/<id>/jd_full.txt; fall back to jobs.json preview field.
+
+    Returns (raw_text, source) where source is jd_full.txt | jobs.json | none.
+    """
+    job_id = job.get("id") or ""
+    full_path = RESUMES_DIR / job_id / "jd_full.txt"
+    if job_id and full_path.is_file():
+        try:
+            return full_path.read_text(encoding="utf-8", errors="replace"), "jd_full.txt"
+        except OSError:
+            pass
+    preview = job.get("job_description") or ""
+    if isinstance(preview, str) and preview.strip():
+        return preview, "jobs.json"
+    return "", "none"
+
+
+def slim_job_for_list(job: dict) -> dict:
+    """List payloads omit full/preview JD bodies — fetch on demand instead."""
+    # timeline can be long; dossier loads it via /api/jobs/<id>/activity.
+    out = {
+        k: v
+        for k, v in job.items()
+        if k not in ("job_description", "timeline")
+    }
+    # Hint only (no per-poll filesystem scan). Description endpoint still
+    # prefers resumes/<id>/jd_full.txt when the user expands a job.
+    out["has_description"] = bool((job.get("job_description") or "").strip())
+    # Disk truth for resume (UI-005 / DASH2-005): do not trust stale resume_path.
+    disk = resolve_job_resume_file(job)
+    out["resume_on_disk"] = disk is not None
+    if disk is None:
+        out["resume_path"] = None
+    else:
+        try:
+            out["resume_path"] = str(disk.relative_to(ROOT))
+        except ValueError:
+            out["resume_path"] = str(disk)
+    return out
+
+
+def jobs_list_response(data: dict) -> dict:
+    return {
+        "jobs": [slim_job_for_list(j) for j in data.get("jobs") or []],
+        # UI-008: multi-job busy gate needs hold signal without gateway round-trip.
+        "fill_hold_active": _fill_hold_browser_active(),
+    }
+
+
 def write_jobs(data: dict) -> None:
     JOBS_LOCK_FILE.touch(exist_ok=True)
     with open(JOBS_LOCK_FILE, "r+") as lockfile:
@@ -190,6 +2738,12 @@ def write_jobs(data: dict) -> None:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# Load persisted last-run + incomplete checkpoint once at import
+# (after now_iso — hydrate may rewrite checkpoint timestamps).
+_load_discovery_last_run()
+_hydrate_discovery_resume_banner()
 
 
 def submit_job_answer(job_id: str, answer: str) -> bool:
@@ -216,17 +2770,11 @@ def submit_job_answer(job_id: str, answer: str) -> bool:
 
 
 def _ensure_job_hunter_ask_off() -> None:
-    """`openclaw approvals allowlist add` rewrites the agent block and drops
-    any fields it doesn't know about (like `ask`). Restore ask=off after
-    every allowlist add so job-hunter never goes back to hanging on
-    unattended approval prompts."""
+    """Keep job-hunter on ask=off so its exec flow never hangs on an
+    unattended approval prompt. Backed by the local approvals store
+    (``approvals_store``) — no ``openclaw approvals`` involvement."""
     try:
-        data = json.loads(EXEC_APPROVALS_FILE.read_text())
-        agent = data.setdefault("agents", {}).setdefault("job-hunter", {})
-        if agent.get("ask") != "off":
-            agent["ask"] = "off"
-            agent.setdefault("security", "allowlist")
-            EXEC_APPROVALS_FILE.write_text(json.dumps(data, indent=2))
+        approvals_store.ensure_ask_off("job-hunter", path=EXEC_APPROVALS_FILE)
     except Exception as e:
         print(f"warn: could not repair exec-approvals ask field: {e}")
 
@@ -246,142 +2794,6 @@ def _log_timing(step: str, duration_s: float, detail: str = "") -> None:
         line += f" ({detail})"
     with open(TIMING_LOG, "a") as f:
         f.write(line + "\n")
-
-
-def _run_subprocess_step(cmd: list[str], log_name: str, timeout_s: int,
-                          track_key: str = DISCOVERY_SESSION_KEY) -> tuple[int, Path]:
-    """Run one pipeline step as a plain subprocess with real logging (not
-    /dev/null - piping output away makes it impossible to check progress
-    mid-run). Tracked under track_key for is_session_running()'s
-    double-start check and for the dashboard's "what's currently running"
-    display - callers working on a specific job should pass that job's
-    own session_key, not the default, so it's attributed to the right job
-    instead of reporting it as a stray discovery run."""
-    ROOT.joinpath("logs").mkdir(exist_ok=True)
-    log_path = ROOT / "logs" / log_name
-    log_file = open(log_path, "w")
-    step_start = time.monotonic()
-    proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT)
-    _running_procs[track_key] = proc
-    try:
-        exit_code = proc.wait(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        exit_code = -1
-    finally:
-        _running_procs.pop(track_key, None)
-        log_file.close()
-    _log_timing(log_name.removesuffix(".log"), time.monotonic() - step_start, f"exit={exit_code}")
-    return exit_code, log_path
-
-
-def run_scout_scrape_then_dedup() -> None:
-    """Scraping, dedup/qualify filtering, the already-tracked-company check,
-    and the jobs.json write are all pure mechanical work with no judgment
-    calls in them - run them as plain subprocesses, not inside an LLM turn.
-    Babysitting a 5-15min scrape token-by-token wastes agent turn time/
-    budget and can blow past the gateway's hard per-turn timeout, silently
-    killing the whole run mid-work (observed: a combined scrape+dedup turn
-    aborted with 'request timed out' after exactly the --timeout value,
-    having already scraped successfully but never reaching the jobs.json
-    write). Re-deriving dedup/filter logic from scratch every run is also
-    unreliable - a plain script keeps the matching consistent.
-
-    The already-tracked-company check used to need an agent turn to query
-    Notion. Now that the tracker is a local Excel file (application_tracker
-    .xlsx, via scripts/tracker.py), that check is just as mechanical as
-    everything else - so a normal discovery run needs zero agent/LLM
-    involvement end to end. The agent only gets pulled in if one of these
-    steps actually fails and needs a human-judgment fix."""
-    today = datetime.now(timezone.utc).astimezone().date().isoformat()
-    scout_exit, scout_log = _run_subprocess_step(
-        [PYTHON_BIN, "-u", str(SCOUT_SCRIPT)], "scout.log", SCOUT_TIMEOUT_S)
-    scout_file = LISTINGS_DIR / f"{today}.json"
-    if scout_exit != 0 or not scout_file.exists():
-        run_agent_message(
-            DISCOVERY_SESSION_KEY,
-            f"scripts/scout.py exited with code {scout_exit} and {scout_file} "
-            f"was not produced (see {scout_log}). Check for a bug in scout.py "
-            "itself and fix it, then note the issue - do not retry scraping "
-            "inside this turn.",
-            timeout_s=600,
-        )
-        return
-
-    ats_exit, ats_log = _run_subprocess_step(
-        [PYTHON_BIN, "-u", str(ROOT / "scripts" / "scrape_ats.py")], "scrape_ats.log", 300)
-    ats_file = LISTINGS_DIR / f"{today}-ats.json"
-
-    # Built In has no public API and no JobSpy support - direct HTML
-    # scraping instead (see scrape_builtin.py's own docstring for exactly
-    # what was reverse-engineered live to make this work). Best-effort
-    # like the ATS scrape above: a failure here shouldn't block the rest
-    # of discovery, just contribute zero listings for this run.
-    # 180s was the initial guess before a real timed run existed - a real
-    # live run (5 terms x 2 pages, 247 candidate job pages) took 614.3s.
-    # scrape_builtin.py now applies Built In's own date/experience filters
-    # and pages deeper per term (see its own notes: an unfiltered, shallow
-    # search silently missed a real Intel posting ranked page 9) - a real
-    # live count of the new filtered search collected 1097 unique candidate
-    # URLs (~4.4x more than before), so the sequential-with-delay fetch
-    # phase (see scrape_builtin.py's own notes on why it can't parallelize
-    # this without triggering 429s) scales proportionally to roughly
-    # 45 real minutes. 5400s gives real headroom above that estimate.
-    builtin_exit, builtin_log = _run_subprocess_step(
-        [PYTHON_BIN, "-u", str(ROOT / "scripts" / "scrape_builtin.py")], "scrape_builtin.log", 5400)
-    builtin_file = LISTINGS_DIR / f"{today}-builtin.json"
-
-    dedup_cmd = [PYTHON_BIN, "-u", str(ROOT / "scripts" / "dedup_listings.py"), str(scout_file)]
-    if ats_exit == 0 and ats_file.exists():
-        dedup_cmd.append(str(ats_file))
-    if builtin_exit == 0 and builtin_file.exists():
-        dedup_cmd.append(str(builtin_file))
-    dedup_exit, dedup_log = _run_subprocess_step(dedup_cmd, "dedup_listings.log", 120)
-    qualified_file = LISTINGS_DIR / f"{today}-qualified.json"
-
-    if dedup_exit != 0 or not qualified_file.exists():
-        run_agent_message(
-            DISCOVERY_SESSION_KEY,
-            f"scripts/dedup_listings.py exited with code {dedup_exit} and "
-            f"{qualified_file} was not produced (see {dedup_log}). Check for "
-            "a bug in dedup_listings.py and fix it - do not re-implement "
-            "dedup/filter logic ad-hoc, fix the script.",
-            timeout_s=600,
-        )
-        return
-
-    # Deliberately NOT under listings/ - scrape_ats.py's own default
-    # --seed-from globs every *.json in that directory expecting job-
-    # listing arrays; a prior day's leftover skip-file (a flat array of
-    # company name strings, a completely different shape) sitting there
-    # crashed it with "'str' object has no attribute 'get'" the very next
-    # time discovery ran. logs/ is already the right place for ephemeral,
-    # single-run working files like this.
-    skip_file = ROOT / "logs" / "tracked-companies-skip.json"
-    tracker_exit, tracker_log = _run_subprocess_step(
-        [PYTHON_BIN, "-u", str(ROOT / "scripts" / "tracker.py"), "list-companies", "--out", str(skip_file)],
-        "tracker_list.log", 30,
-    )
-    if tracker_exit != 0 or not skip_file.exists():
-        run_agent_message(
-            DISCOVERY_SESSION_KEY,
-            f"scripts/tracker.py list-companies exited with code {tracker_exit} "
-            f"(see {tracker_log}). Check for a bug in tracker.py and fix it.",
-            timeout_s=600,
-        )
-        return
-
-    write_cmd = [PYTHON_BIN, "-u", str(ROOT / "scripts" / "write_discovered_jobs.py"),
-                 str(qualified_file), "--skip-companies", str(skip_file)]
-    write_exit, write_log = _run_subprocess_step(write_cmd, "write_discovered_jobs.log", 60)
-    if write_exit != 0:
-        run_agent_message(
-            DISCOVERY_SESSION_KEY,
-            f"scripts/write_discovered_jobs.py exited with code {write_exit} "
-            f"(see {write_log}). Check for a bug in the script and fix it - "
-            "do not hand-write jobs.json entries yourself.",
-            timeout_s=600,
-        )
 
 
 def _cleanup_old_inbound_resumes() -> None:
@@ -453,28 +2865,1595 @@ def _try_extract_manual_job_details(job_id: str, url: str) -> None:
         if result.get("location"):
             job["location"] = result["location"].strip()
         job["job_description"] = preview
+        try:
+            from multi_opening import detect_multi_opening
+
+            job["multi_opening"] = detect_multi_opening(
+                title=job.get("title") or "",
+                description=description,
+            )
+        except Exception as e:
+            print(f"warn: multi_opening detect failed for manual job {job_id}: {e}")
+        # Prefer company/ATS apply_url from extract; keep pasted aggregator as
+        # job_url / source_url. On failure to resolve, leave aggregator apply.
+        try:
+            from apply_urls import enrich_listing_urls, is_aggregator_url, prefer_apply_url
+
+            enriched = enrich_listing_urls({
+                "job_url": url,
+                "apply_url": result.get("apply_url") or url,
+                "description": description,
+                "alternate_urls": job.get("alternate_urls") or [],
+            })
+            best = prefer_apply_url(job.get("apply_url"), enriched.get("apply_url"), result.get("apply_url"))
+            if best:
+                if is_aggregator_url(url) and not is_aggregator_url(best):
+                    job["source_url"] = job.get("source_url") or url
+                    job["job_url"] = url
+                job["apply_url"] = best
+            if enriched.get("alternate_urls"):
+                job["alternate_urls"] = enriched["alternate_urls"]
+        except Exception as e:
+            print(f"warn: apply_url enrich failed for manual job {job_id}: {e}")
         job["status_detail"] = "Added manually via dashboard - details fetched automatically."
         job["updated_at"] = now_iso()
         write_jobs(data)
 
 
+class PartyRockLockAborted(Exception):
+    """Job was cancelled/deleted/applied/skipped while waiting for PartyRock lock."""
+
+
 def _acquire_partyrock_lock(job_id: str, session_key: str) -> None:
-    """Blocks until PartyRock is free. If it's already taken, marks the
-    job's status_detail first so the dashboard shows why it's waiting
-    instead of looking stalled - cleared again once the lock is ours."""
+    """Acquire PartyRock lock with timeout (PR-005).
+
+    If another job holds it, marks status_detail so the dashboard shows why
+    it's waiting. Polls ``_job_fill_aborted`` while waiting (DASH2-001) so
+    Cancel during the wait exits without starting tailor. Raises
+    ``PartyRockLockAborted`` if cancelled; ``TimeoutError`` if not acquired
+    within ``PARTYROCK_LOCK_TIMEOUT_S`` (default 900s). Caller must
+    ``release()`` only after a successful acquire.
+    """
+    timeout_s = float(os.environ.get("PARTYROCK_LOCK_TIMEOUT_S") or PARTYROCK_LOCK_TIMEOUT_S)
+    poll_s = float(os.environ.get("PARTYROCK_LOCK_POLL_S") or 0.5)
+    if _job_fill_aborted(job_id):
+        raise PartyRockLockAborted(
+            f"PartyRock lock aborted before wait (job={job_id}, session={session_key})"
+        )
     if _partyrock_lock.acquire(blocking=False):
+        if _job_fill_aborted(job_id):
+            _partyrock_lock.release()
+            raise PartyRockLockAborted(
+                f"PartyRock lock aborted after acquire (job={job_id}, session={session_key})"
+            )
         return
     with _lock:
         data = read_jobs()
         job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-        if job is not None:
-            job["status_detail"] = "Waiting for another job to finish using PartyRock..."
+        if job is not None and job.get("status") not in FILL_ABORT_STATUSES:
+            job["status_detail"] = (
+                "Waiting for another job to finish using PartyRock..."
+            )
             job["updated_at"] = now_iso()
             write_jobs(data)
-    _partyrock_lock.acquire()
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if _job_fill_aborted(job_id):
+            raise PartyRockLockAborted(
+                f"PartyRock lock aborted while waiting "
+                f"(job={job_id}, session={session_key})"
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"PartyRock lock not acquired within {timeout_s:.0f}s "
+                f"(job={job_id}, session={session_key})"
+            )
+        # Keep updated_at fresh so reconcile orphan-stale does not force-stuck
+        # a job legitimately waiting on another PartyRock holder.
+        with _lock:
+            data = read_jobs()
+            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+            if job is not None and job.get("status") not in FILL_ABORT_STATUSES:
+                job["updated_at"] = now_iso()
+                write_jobs(data)
+        if _partyrock_lock.acquire(timeout=min(poll_s, remaining)):
+            if _job_fill_aborted(job_id):
+                _partyrock_lock.release()
+                raise PartyRockLockAborted(
+                    f"PartyRock lock aborted after acquire "
+                    f"(job={job_id}, session={session_key})"
+                )
+            return
 
 
-def run_tailor_then_fill(job_id: str) -> None:
+_TIMELINE_MAX = 200
+
+
+def _activity_clock() -> str:
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def _timeline_clock_from_iso(iso_s: str | None) -> str:
+    """HH:MM:SS for dossier rail; empty if unparseable (never invent a clock)."""
+    if not iso_s:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(iso_s).replace("Z", "+00:00"))
+        return dt.astimezone().strftime("%H:%M:%S")
+    except Exception:
+        s = str(iso_s)
+        return s[11:19] if len(s) >= 19 and s[10:11] == "T" else ""
+
+
+def _timeline_entry(
+    *,
+    event: str,
+    detail: str = "",
+    at: str | None = None,
+    time_s: str | None = None,
+    reconstructed: bool = False,
+) -> dict:
+    at_iso = at or now_iso()
+    entry = {
+        "at": at_iso,
+        "time": time_s or _timeline_clock_from_iso(at_iso) or _activity_clock(),
+        "event": (event or "event")[:48],
+        "detail": (detail or "")[:500],
+    }
+    if reconstructed:
+        entry["reconstructed"] = True
+    return entry
+
+
+def _append_timeline_locked(job: dict, entry: dict) -> None:
+    """Append a durable timeline event. Caller must hold _lock."""
+    tl = job.setdefault("timeline", [])
+    if not isinstance(tl, list):
+        tl = []
+        job["timeline"] = tl
+    # Skip exact consecutive duplicates (status+milestone double-fire).
+    if tl:
+        prev = tl[-1]
+        if (
+            prev.get("event") == entry.get("event")
+            and (prev.get("detail") or "") == (entry.get("detail") or "")
+        ):
+            return
+    tl.append(entry)
+    if len(tl) > _TIMELINE_MAX:
+        del tl[: len(tl) - _TIMELINE_MAX]
+
+
+def append_job_timeline(
+    job_id: str,
+    *,
+    event: str,
+    detail: str = "",
+    at: str | None = None,
+    time_s: str | None = None,
+) -> None:
+    """Persist one lifecycle event onto jobs.json timeline."""
+    entry = _timeline_entry(
+        event=event, detail=detail, at=at, time_s=time_s
+    )
+    with _lock:
+        data = read_jobs()
+        job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+        if job is None:
+            return
+        _append_timeline_locked(job, entry)
+        write_jobs(data)
+
+
+def synthesize_job_timeline(job: dict) -> list[dict]:
+    """Honest lifecycle reconstruction when no persisted timeline exists.
+
+    Uses real timestamps from the job record only. Intermediate steps without
+    stored times are labeled reconstructed and do not invent clocks.
+    """
+    events: list[dict] = []
+    created = job.get("created_at") or ""
+    updated = job.get("updated_at") or ""
+    status = (job.get("status") or "").strip()
+    detail = (job.get("status_detail") or "").strip()
+    source = (job.get("source") or "").strip()
+    resume = (job.get("resume_path") or "").strip()
+
+    def add(at: str, event: str, det: str) -> None:
+        if not event:
+            return
+        events.append(
+            _timeline_entry(
+                event=event,
+                detail=det,
+                at=at or None,
+                time_s=_timeline_clock_from_iso(at) or "—",
+                reconstructed=True,
+            )
+        )
+
+    if created:
+        if source == "manual":
+            add(created, "added", "Added manually via dashboard.")
+        else:
+            src_bit = f" via {source}" if source else ""
+            add(created, "discovered", f"Discovered{src_bit}.")
+
+    # Resume on file without a dedicated timestamp — do not fake a clock.
+    if resume and status in (
+        "ready_for_review",
+        "applied",
+        "filling",
+        "navigating",
+        "tailoring",
+        "stuck",
+        "blocked_captcha",
+    ):
+        events.append(
+            {
+                "at": "",
+                "time": "—",
+                "event": "resume",
+                "detail": (
+                    "Resume on file (reconstructed — exact ready/fill "
+                    "start time was not stored)."
+                ),
+                "reconstructed": True,
+            }
+        )
+
+    # Terminal / current status at updated_at when it differs from discovered.
+    if status and status not in ("discovered",) and updated:
+        label = status
+        det = detail
+        if status == "ready_for_review":
+            label = "ready_for_review"
+            det = detail or "Ready for review (never submitted)."
+        elif status == "applied":
+            label = "applied"
+            det = detail or "Marked as applied."
+        elif not det:
+            det = f"Status → {status}"
+        if not (
+            len(events) == 1
+            and events[0].get("event") == status
+            and (events[0].get("detail") or "") == det
+        ):
+            add(updated, label, det)
+    elif detail and updated and status == "discovered":
+        if events:
+            events[0]["detail"] = detail
+        else:
+            add(updated, "discovered", detail)
+
+    return events
+
+
+def _job_is_holding_for_review(job: dict | None, *, job_id: str | None = None) -> bool:
+    """True when headed hold is active (Ready or hold detail/activity).
+
+    Hold stdout updates status_detail / activity event=hold while status often
+    stays ``filling`` until an honest Ready report — the fill deadline must
+    suspend in that window too (DASH-001).
+    """
+    if not isinstance(job, dict):
+        return False
+    if job.get("status") == "ready_for_review":
+        return True
+    detail = (job.get("status_detail") or "").lower()
+    if (
+        "browser held open" in detail
+        or "held open for review" in detail
+        or "hold_review" in detail
+        or detail.startswith("keeping browser open")
+    ):
+        return True
+    jid = job_id or job.get("id")
+    if jid:
+        for ev in reversed(get_fill_activity(str(jid), tail=40) or []):
+            if not isinstance(ev, dict):
+                continue
+            if (ev.get("event") or "") in ("hold", "hold_review"):
+                return True
+    return False
+
+
+def _job_is_fill_paused(job: dict | None, *, job_id: str | None = None) -> bool:
+    """True when in-page Pause is engaged — must NOT kill the fill CfT.
+
+    Dashboard fill deadline previously only suspended on hold/Ready, so a long
+    Pause + manual edit could hit DUMMY_FILL_PLAYWRIGHT_TIMEOUT_S and kill
+    Chrome behind the human.
+    """
+    if not isinstance(job, dict):
+        job = {}
+    detail = (job.get("status_detail") or "").lower()
+    if (
+        "fill paused" in detail
+        or "paused between actions" in detail
+        or "fill_pause" in detail
+    ):
+        return True
+    jid = job_id or job.get("id")
+    if not jid:
+        return False
+    for ev in reversed(get_fill_activity(str(jid), tail=40) or []):
+        if not isinstance(ev, dict):
+            continue
+        event = (ev.get("event") or "").lower()
+        det = (ev.get("detail") or "").lower()
+        if event in ("fill_pause", "pause"):
+            # Continue / resume lines clear pause suspension
+            if "continu" in det or "resum" in det:
+                return False
+            return True
+        if event == "notice" and "fill paused" in det:
+            return True
+        if event in ("hold", "hold_review", "run_end", "error"):
+            break
+    return False
+
+
+def _job_fill_browser_must_stay_open(
+    job: dict | None, *, job_id: str | None = None
+) -> bool:
+    """Hold/Ready OR Pause — suspend fill kill deadline; never auto-close CfT."""
+    return _job_is_holding_for_review(job, job_id=job_id) or _job_is_fill_paused(
+        job, job_id=job_id
+    )
+
+
+def _job_fill_aborted(job_id: str) -> bool:
+    """True if the job was cancelled/skipped/deleted/applied (or missing)."""
+    with _lock:
+        data = read_jobs()
+        job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
+        if job is None:
+            return True
+        return job.get("status") in FILL_ABORT_STATUSES
+
+
+def _patch_job(job_id: str, **fields) -> None:
+    """Update selected fields on a job and bump updated_at.
+
+    Refuses to overwrite FILL_ABORT_STATUSES via status=… so Cancel / Delete /
+    Mark-as-applied / Skip win over a still-running Start/fill daemon.
+    """
+    with _lock:
+        data = read_jobs()
+        job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+        if job is None:
+            return
+        old_status = job.get("status")
+        if (
+            "status" in fields
+            and old_status in FILL_ABORT_STATUSES
+            and fields.get("status") != old_status
+        ):
+            # Pipeline / fill-end must never undelete or un-cancel.
+            return
+        job.update(fields)
+        job["updated_at"] = now_iso()
+        new_status = job.get("status")
+        # Leaving Ready re-arms the spoken announcement, so a genuinely new
+        # ready_for_review event announces again (once) on the next run.
+        if (
+            "status" in fields
+            and new_status != "ready_for_review"
+            and job.get("ready_announced")
+        ):
+            job.pop("ready_announced", None)
+        if (
+            "status" in fields
+            and new_status
+            and new_status != old_status
+        ):
+            det = (
+                fields.get("status_detail")
+                if fields.get("status_detail") is not None
+                else job.get("status_detail")
+            ) or f"Status → {new_status}"
+            _append_timeline_locked(
+                job,
+                _timeline_entry(
+                    event=str(new_status),
+                    detail=str(det)[:500],
+                    at=job["updated_at"],
+                ),
+            )
+        write_jobs(data)
+
+
+def clear_fill_activity(job_id: str) -> None:
+    with _fill_activity_lock:
+        _fill_activity[job_id] = []
+
+
+def append_fill_activity(
+    job_id: str,
+    *,
+    event: str,
+    detail: str = "",
+    time_s: str | None = None,
+    persist: bool = False,
+) -> None:
+    """Append one human-readable fill event for the dashboard Live activity feed.
+
+    When persist=True, also write to jobs.json ``timeline`` so Ready/Applied
+    dossiers survive server restarts. Noisy fill-step lines stay memory-only.
+    """
+    entry = {
+        "time": time_s or _activity_clock(),
+        "event": (event or "fill")[:48],
+        "detail": (detail or "")[:500],
+        "at": now_iso(),
+    }
+    with _fill_activity_lock:
+        buf = _fill_activity.setdefault(job_id, [])
+        buf.append({k: entry[k] for k in ("time", "event", "detail")})
+        if len(buf) > _FILL_ACTIVITY_MAX:
+            del buf[: len(buf) - _FILL_ACTIVITY_MAX]
+    if persist:
+        append_job_timeline(
+            job_id,
+            event=entry["event"],
+            detail=entry["detail"],
+            at=entry["at"],
+            time_s=entry["time"],
+        )
+
+
+def get_fill_activity(job_id: str, tail: int = 200) -> list[dict]:
+    with _fill_activity_lock:
+        buf = list(_fill_activity.get(job_id) or [])
+    if tail > 0:
+        return buf[-tail:]
+    return buf
+
+
+_FILL_STEP_LINE_RE = re.compile(
+    r"^\[fill-step\s+(?P<n>\d+)\]\s*(?P<body>.*)$", re.IGNORECASE
+)
+_FILL_TAG_LINE_RE = re.compile(
+    r"^\[(?P<tag>[a-zA-Z][a-zA-Z0-9_-]{0,31})\]\s*(?P<body>.*)$"
+)
+# Keep readable; skip pure JSON dumps that blow up the feed.
+_SKIP_FILL_LINE_PREFIXES = (
+    "{",
+    "║",
+    "╔",
+    "╚",
+)
+
+
+def _classify_fill_stdout_line(line: str) -> tuple[str, str] | None:
+    """Map a child stdout line → (event, detail) for the activity feed.
+
+    Returns None to skip the line (noise / raw JSON).
+    """
+    raw = (line or "").rstrip("\n\r")
+    s = raw.strip()
+    if not s:
+        return None
+    # Banner / separator / huge JSON noise
+    if s.startswith("--- prompt"):
+        return None
+    if s.startswith(_SKIP_FILL_LINE_PREFIXES) and not s.startswith("[fill-step"):
+        return None
+    if s.startswith("[") and not s.startswith("[fill-step") and not _FILL_TAG_LINE_RE.match(s):
+        # JSON array dump, not a [tag] line
+        if len(s) > 120:
+            return None
+    if len(s) > 400 and (s.startswith("{") or (s.startswith("[") and s[1:2] in '"{[')):
+        return None
+
+    m = _FILL_STEP_LINE_RE.match(s)
+    if m:
+        body = (m.group("body") or "").strip()
+        # Prefer action token as event when present: "HH:MM:SS action | …"
+        action = "step"
+        detail = body
+        parts = body.split(None, 2)
+        if len(parts) >= 2 and re.match(r"^\d{2}:\d{2}:\d{2}$", parts[0]):
+            # drop embedded clock; keep action + rest
+            rest = body[len(parts[0]) :].strip()
+            ap = rest.split(None, 1)
+            if ap:
+                action = ap[0][:40]
+                detail = rest
+        elif parts:
+            action = parts[0][:40]
+        return action or "fill-step", detail[:500] or f"step {m.group('n')}"
+
+    if s.startswith("***"):
+        body = s.strip("* ").strip()
+        if "CAPTCHA" in body.upper() or "captcha" in body.lower():
+            return "captcha", body[:500]
+        if "FILL PAUSED" in body.upper() or "fill paused" in body.lower():
+            return "fill_pause", body[:500]
+        return "notice", body[:500]
+
+    m2 = _FILL_TAG_LINE_RE.match(s)
+    if m2:
+        tag = (m2.group("tag") or "fill").lower()
+        body = (m2.group("body") or "").strip()
+        # Normalize common tags to short event keys the UI already styles
+        alias = {
+            "chromium": "browser",
+            "browser": "browser",
+            "captcha": "captcha",
+            "hold": "hold",
+            "flash": "flash",
+            "identity": "identity",
+            "cookie": "cookie",
+            "entry": "entry",
+            "wait": "wait",
+            "fill-pause": "fill_pause",
+            "fill_pause": "fill_pause",
+        }.get(tag, tag)
+        return alias, (body or s)[:500]
+
+    # Untagged but useful progress lines
+    low = s.lower()
+    if "fill paused" in low or low.startswith("[fill-pause]"):
+        return "fill_pause", s[:500]
+    if "captcha" in low:
+        return "captcha", s[:500]
+    if "never submit" in low or "never_submit" in low:
+        return "safety", s[:500]
+    if s.startswith("LIVE FILL") or "fill-step" in low:
+        return "fill", s[:500]
+    # Skip very long untagged noise (stack traces mid-line etc. still pass if short)
+    if len(s) > 280:
+        return "log", s[:280] + "…"
+    return "log", s[:500]
+
+
+def _report_allows_ready(rep: dict) -> bool:
+    """True only when report claims Ready and honesty preconditions pass.
+
+    Hold alone must never promote — auth_wall / FAIL / incomplete block Ready.
+    """
+    if not isinstance(rep, dict):
+        return False
+    if not rep.get("ready_for_review"):
+        return False
+    try:
+        from page_progress import can_claim_ready
+
+        return bool(can_claim_ready(rep))
+    except Exception:
+        # Fail closed for clear blockers when page_progress import fails.
+        if rep.get("verdict") == "FAIL":
+            return False
+        blocker = str(rep.get("blocker") or "").strip()
+        if blocker in (
+            "auth_wall",
+            "page_incomplete",
+            "validation_errors",
+            "captcha",
+            "akamai",
+            "cloudflare",
+            "email_verify",
+            "self_id_incomplete",
+            "multipage_incomplete",
+        ):
+            return False
+        return bool(rep.get("ready_for_review"))
+
+
+def ingest_fill_stdout_line(job_id: str, line: str) -> None:
+    classified = _classify_fill_stdout_line(line)
+    if not classified:
+        return
+    event, detail = classified
+    append_fill_activity(job_id, event=event, detail=detail)
+    # Hold-for-review: note browser held, but do NOT promote to Ready solely
+    # because hold started — Ready requires an honest fill report.
+    low = (detail or "").lower()
+    if event in ("hold", "hold_review") or "hold_review" in low or (
+        event == "hold" or low.startswith("keeping browser open")
+    ):
+        with _lock:
+            data = read_jobs()
+            job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
+            if job is None:
+                return
+            # UI-027 / DASH2-014: honor full FILL_ABORT_STATUSES (not a subset).
+            if job.get("status") in FILL_ABORT_STATUSES:
+                return
+            # Already Ready (from honest report) — keep; else only update detail.
+            if job.get("status") == "ready_for_review":
+                job["status_detail"] = (
+                    "Ready for review — browser held open (never submitted). "
+                    "Mark as applied after you submit on the employer site, "
+                    "or close the browser when done reviewing."
+                )
+                job["updated_at"] = now_iso()
+                write_jobs(data)
+                return
+            job["status_detail"] = (
+                "Browser held open for review (never submitted) — "
+                "waiting for honest Ready signal from fill report."
+            )
+            job["updated_at"] = now_iso()
+            write_jobs(data)
+        return
+    # Pause engaged: surface in status_detail so kill-deadline suspends.
+    if event == "fill_pause" and (
+        "fill paused" in low or "paused between" in low or "paus" in low
+    ):
+        if "continu" in low or "resum" in low:
+            return
+        with _lock:
+            data = read_jobs()
+            job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
+            if job is None or job.get("status") in FILL_ABORT_STATUSES:
+                return
+            if job.get("status") == "ready_for_review":
+                return
+            job["status_detail"] = (
+                "Fill paused — browser stays open until you Continue fill "
+                "or close the window (never auto-closes while paused)."
+            )
+            job["updated_at"] = now_iso()
+            write_jobs(data)
+
+
+def _classify_pipeline_stdout_line(line: str) -> tuple[str, str] | None:
+    """Map tailor/compile/fit stdout → human milestones for Live activity."""
+    raw = (line or "").rstrip("\n\r")
+    s = raw.strip()
+    if not s:
+        return None
+    # Drop leading [HH:MM:SS] from tailor_resume.py log()
+    s_body = re.sub(r"^\[\d{2}:\d{2}:\d{2}\]\s*", "", s).strip()
+    low = s_body.lower()
+    if "partyrock mode=" in low or (low.startswith("opening") and "partyrock" in low):
+        return "partyrock", s_body[:500]
+    if "submitted jd" in low:
+        return "partyrock", "Pasted job description into PartyRock"
+    if "waiting for partyrock" in low:
+        return "wait", "Waiting on resume from PartyRock…"
+    if "wrote tailored resume" in low:
+        return "partyrock", "Collected resume from PartyRock"
+    # Poll spam — milestones already cover waiting; skip unless final write
+    if low.startswith("poll "):
+        return None
+    if "note:" in low and "page" in low:
+        return "pdf", s_body[:500]
+    # Fall through to generic fill classifier for [fill-step] / tags
+    return _classify_fill_stdout_line(s)
+
+
+def ingest_pipeline_stdout_line(job_id: str, line: str) -> None:
+    classified = _classify_pipeline_stdout_line(line)
+    if not classified:
+        return
+    event, detail = classified
+    append_fill_activity(job_id, event=event, detail=detail)
+
+
+def pipeline_milestone(
+    job_id: str,
+    *,
+    event: str,
+    detail: str,
+    status: str | None = None,
+    status_detail: str | None = None,
+) -> None:
+    """Emit a human milestone into Live activity (+ durable timeline + optional patch).
+
+    No-ops all job patches when cancelled/skipped/deleted/applied (DASH2-018)
+    so a Cancel mid-PartyRock cannot be overwritten by compile/fit milestones
+    (status_detail-only patches used to clobber aborted jobs).
+    """
+    if _job_fill_aborted(job_id):
+        append_fill_activity(
+            job_id,
+            event="abort",
+            detail=f"Skipped milestone ({event}): run already aborted.",
+            persist=False,
+        )
+        return
+    append_fill_activity(job_id, event=event, detail=detail, persist=True)
+    patch: dict = {}
+    if status is not None:
+        patch["status"] = status
+    if status_detail is not None:
+        patch["status_detail"] = status_detail
+    elif detail:
+        patch["status_detail"] = detail
+    if patch:
+        _patch_job(job_id, **patch)
+
+
+def get_job_activity(job: dict, tail: int = 200) -> list[dict]:
+    """Dossier timeline: live fill while running, else persisted/synthesized lifecycle.
+
+    Does **not** fall back to OpenClaw ``sessions tail`` — that mixed agent
+    session.trace events into the job timeline and flickered with the empty
+    status_detail synthesis on Applied jobs whenever the CLI returned
+    intermittently empty results.
+    """
+    job_id = job.get("id") or ""
+    status = (job.get("status") or "").strip()
+    live = get_fill_activity(job_id, tail=tail) if job_id else []
+    persisted = list(job.get("timeline") or []) if isinstance(job.get("timeline"), list) else []
+
+    # Live stream while a run is in progress (or browser held at Ready).
+    if live and status in IN_PROGRESS_STATUSES | {"ready_for_review"}:
+        return live[-tail:] if tail > 0 else live
+
+    if persisted:
+        return persisted[-tail:] if tail > 0 else persisted
+
+    synth = synthesize_job_timeline(job)
+    if synth:
+        return synth[-tail:] if tail > 0 else synth
+
+    # Last resort: in-memory buffer (e.g. mid-run race before status flips).
+    if live:
+        return live[-tail:] if tail > 0 else live
+    return []
+
+
+def _run_fill_subprocess_streaming(
+    cmd: list[str],
+    *,
+    job_id: str,
+    session_key: str,
+    log_path: Path,
+    env: dict,
+    timeout_s: int,
+    preserve_activity: bool = False,
+) -> tuple[int, bool]:
+    """Run fast fill with line-buffered stdout teed to log + live activity.
+
+    Returns (exit_code, timed_out).
+
+    preserve_activity=True keeps prior Start/tailor milestones in the feed
+    (default False clears so a standalone Fast fill starts clean).
+
+    Once hold_review / ready_for_review / fill Pause begins, the fill deadline
+    is suspended so an indefinite browser hold or human Pause is not killed.
+    """
+    if not preserve_activity:
+        clear_fill_activity(job_id)
+    # Short launch blurb — avoid dumping full -c scripts into the feed
+    launch_bits = []
+    for c in cmd:
+        if c in ("-u", "-c") or (len(c) > 80 and "\n" in c):
+            continue
+        launch_bits.append(Path(c).name if "/" in c else c)
+        if len(launch_bits) >= 4:
+            break
+    append_fill_activity(
+        job_id,
+        event="fill",
+        detail=f"Launching {' '.join(launch_bits) or 'fast_fill'}…",
+    )
+    timed_out = False
+    exit_code = -1
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "w", encoding="utf-8") as log_file:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            text=True,
+            bufsize=1,
+            start_new_session=True,  # own pgid → shutdown can kill Chrome-for-Testing tree
+        )
+        _running_procs[session_key] = proc
+
+        def _reader() -> None:
+            assert proc.stdout is not None
+            try:
+                for line in proc.stdout:
+                    try:
+                        log_file.write(line)
+                        log_file.flush()
+                    except Exception:
+                        pass
+                    try:
+                        ingest_fill_stdout_line(job_id, line)
+                    except Exception:
+                        pass
+            except Exception as e:
+                append_fill_activity(
+                    job_id, event="error", detail=f"stdout reader: {e}"[:200]
+                )
+
+        reader = threading.Thread(target=_reader, daemon=True, name=f"fill-log-{job_id}")
+        reader.start()
+        deadline = time.monotonic() + max(1, int(timeout_s))
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                # Suspend kill-deadline once hold, Ready, OR Pause (indefinite review).
+                with _lock:
+                    data = read_jobs()
+                    job = next(
+                        (j for j in data.get("jobs") or [] if j.get("id") == job_id),
+                        None,
+                    )
+                staying_open = _job_fill_browser_must_stay_open(job, job_id=job_id)
+                if staying_open:
+                    remaining = max(remaining, float(DUMMY_FILL_HOLD_GRACE_S))
+                    deadline = time.monotonic() + remaining
+                try:
+                    exit_code = proc.wait(timeout=min(1.0, max(0.1, remaining)))
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() >= deadline and not staying_open:
+                        timed_out = True
+                        append_fill_activity(
+                            job_id,
+                            event="error",
+                            detail=f"Timed out after {timeout_s}s — killing (never submitted).",
+                        )
+                        proc.kill()
+                        try:
+                            exit_code = proc.wait(timeout=10)
+                        except Exception:
+                            exit_code = -1
+                        break
+        finally:
+            _running_procs.pop(session_key, None)
+            reader.join(timeout=5)
+            # Drain any last bytes if reader exited early
+            if proc.stdout and not proc.stdout.closed:
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
+
+    append_fill_activity(
+        job_id,
+        event="run_end",
+        detail=(
+            f"Process exited {exit_code}"
+            + (" (timed out)" if timed_out else "")
+            + ". Never submitted."
+        ),
+    )
+    return exit_code, timed_out
+
+
+def _dummy_fill_flash_requested(payload: dict | None = None, query: dict | None = None) -> bool:
+    """Flash leftovers for dashboard fills (dummy AND real).
+
+    Default ON for both Test Mode and real-profile Start/Fast fill — leftovers
+    (salary/clearance/essays) are what made dummy quality feel complete.
+    Disable via JSON ``{"flash_leftovers": false}``, query ``?flash=0``, or env
+    ``FASTFILL_FLASH_LEFTOVERS=0``. Never-submit still applies either way.
+    """
+    payload = payload or {}
+    query = query or {}
+    if "flash_leftovers" in payload:
+        raw = payload.get("flash_leftovers")
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() not in ("0", "false", "no", "off")
+    for key in ("flash", "flash_leftovers"):
+        vals = query.get(key) or []
+        if not vals:
+            continue
+        raw = str(vals[0]).strip().lower()
+        if raw in ("0", "false", "no", "off"):
+            return False
+        if raw in ("1", "true", "yes", "on"):
+            return True
+    env = (os.environ.get("FASTFILL_FLASH_LEFTOVERS") or "").strip().lower()
+    if env in ("0", "false", "no", "off"):
+        return False
+    if env in ("1", "true", "yes", "on"):
+        return True
+    return True  # dashboard default ON (dummy + real)
+
+
+def _dummy_fill_headed_requested(payload: dict | None = None, query: dict | None = None) -> bool:
+    """Headed Chromium is optional — default headless for dashboard background runs.
+
+    Enable via JSON body ``{"headed": true}``, query ``?headed=1``, or env
+    ``FASTFILL_HEADED=1``.
+    """
+    payload = payload or {}
+    query = query or {}
+    if payload.get("headed") in (True, 1, "1", "true", "yes"):
+        return True
+    for key in ("headed", "headless"):
+        vals = query.get(key) or []
+        if not vals:
+            continue
+        raw = str(vals[0]).strip().lower()
+        if key == "headed" and raw in ("1", "true", "yes", "on"):
+            return True
+        if key == "headless" and raw in ("0", "false", "no", "off"):
+            return True
+    env = (os.environ.get("FASTFILL_HEADED") or "").strip().lower()
+    return env in ("1", "true", "yes", "on")
+
+
+def _dummy_restore_status(status: str | None) -> str:
+    """Status to restore after a dummy fill finishes (never leave stuck on filling)."""
+    if status in ("discovered", "stuck", "blocked_captcha", "cancelled", "ready_for_review"):
+        return status
+    return "discovered"
+
+
+def resolve_job_resume_file(job: dict | None) -> Path | None:
+    """Return an on-disk resume PDF for this job, or None.
+
+    Prefers ``job.resume_path`` only when the file exists, then
+    ``resumes/<id>/resume.pdf``, then ``uploaded_resume.pdf``.
+    Stale ``resume_path`` strings that point at missing files are ignored.
+    """
+    if not isinstance(job, dict):
+        return None
+    candidates: list[Path] = []
+    rp = (job.get("resume_path") or "").strip()
+    if rp:
+        p = Path(rp)
+        candidates.append(p if p.is_absolute() else ROOT / p)
+    jid = (job.get("id") or "").strip()
+    if jid:
+        candidates.append(RESUMES_DIR / jid / "resume.pdf")
+        candidates.append(RESUMES_DIR / jid / "uploaded_resume.pdf")
+    seen: set[str] = set()
+    for cand in candidates:
+        key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if cand.is_file() and cand.suffix.lower() in (".pdf", ".doc", ".docx"):
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def _find_in_progress_job(
+    data: dict, *, exclude_id: str | None = None
+) -> dict | None:
+    """First job in IN_PROGRESS_STATUSES, optionally excluding one id."""
+    for job in data.get("jobs") or []:
+        if not isinstance(job, dict):
+            continue
+        jid = job.get("id")
+        if exclude_id and jid == exclude_id:
+            continue
+        if job.get("status") in IN_PROGRESS_STATUSES:
+            return job
+    return None
+
+
+# Statuses that block Start/Fast-fill when a headed fill hold is still live.
+_HOLD_BLOCK_STATUSES = frozenset({"ready_for_review", "blocked_captcha"})
+
+
+def _find_blocking_start_job(
+    data: dict, *, exclude_id: str | None = None
+) -> dict | None:
+    """Job that must finish before another Start/Fast-fill (CHR2-002).
+
+    Always blocks on ``IN_PROGRESS_STATUSES``. Also blocks on Ready /
+    blocked_captcha when a fill CfT / CAPTCHA hold is still up — otherwise
+    Start succeeds, PartyRock may run, then fill hits ``headed_cap``.
+    """
+    other = _find_in_progress_job(data, exclude_id=exclude_id)
+    if other is not None:
+        return other
+    if not _fill_hold_browser_active():
+        return None
+    for job in data.get("jobs") or []:
+        if not isinstance(job, dict):
+            continue
+        jid = job.get("id")
+        if exclude_id and jid == exclude_id:
+            continue
+        if job.get("status") in _HOLD_BLOCK_STATUSES:
+            return job
+    return None
+
+
+def _mark_fill_thread_stuck(job_id: str, exc: BaseException, *, where: str) -> None:
+    detail = (
+        f"Fill thread crashed ({where}): {type(exc).__name__}: {exc}. "
+        "Never submitted."
+    )[:500]
+    try:
+        append_fill_activity(job_id, event="error", detail=detail, persist=True)
+    except Exception:
+        pass
+    # Cancel / Delete / Applied / Skip must win over crash→stuck (DASH-005).
+    if _job_fill_aborted(job_id):
+        return
+    try:
+        _patch_job(job_id, status="stuck", status_detail=detail)
+    except Exception as e:
+        print(f"warn: could not mark stuck after {where} crash: {e}")
+
+
+def _publish_resume_by_company(
+    job: dict,
+    pdf_path: Path | str,
+    data: dict | None = None,
+) -> Path | None:
+    """Copy resume into resumes/by_company/ (Command Center Documents/Resumes).
+
+    Best-effort: never fail the pipeline if publish fails. Mutates ``job``
+    (file_id, resume_by_company_path). Pass ``data`` when holding a jobs
+    lock so file_id allocation sees all existing ids.
+    """
+    src = Path(pdf_path)
+    if not src.is_file() or src.suffix.lower() != ".pdf":
+        return None
+    try:
+        existing = None
+        if isinstance(data, dict) and isinstance(data.get("jobs"), list):
+            existing = {j["file_id"] for j in data["jobs"] if j.get("file_id")}
+        dest = publish_resume_to_by_company(
+            job,
+            src,
+            existing_file_ids=existing,
+            root=ROOT,
+        )
+        return dest
+    except Exception as e:
+        jid = (job.get("id") or "?")[:80]
+        print(f"warn: by_company publish failed for job={jid}: {e}")
+        return None
+
+
+def _parse_multipart_file(body: bytes, content_type: str) -> tuple[str, bytes]:
+    """Extract the first file part from a multipart/form-data body."""
+    m = re.search(r"boundary=([^;\s]+)", content_type or "", re.I)
+    if not m:
+        raise ValueError("missing multipart boundary")
+    boundary = m.group(1).strip().strip('"').encode("ascii", "ignore")
+    if not boundary:
+        raise ValueError("empty multipart boundary")
+    for part in body.split(b"--" + boundary):
+        if b"Content-Disposition" not in part:
+            continue
+        header_blob, sep, data = part.partition(b"\r\n\r\n")
+        if not sep:
+            header_blob, sep, data = part.partition(b"\n\n")
+        if not sep or b"filename=" not in header_blob.lower():
+            continue
+        hm = re.search(br'filename="([^"]*)"', header_blob, re.I)
+        if not hm:
+            hm = re.search(br"filename=([^\r\n;]+)", header_blob, re.I)
+        name = (hm.group(1).decode("utf-8", "replace").strip() if hm else "resume.pdf")
+        name = Path(name).name or "resume.pdf"
+        # Trim trailing boundary markers / CRLF
+        if data.endswith(b"--\r\n"):
+            data = data[:-4]
+        elif data.endswith(b"--\n"):
+            data = data[:-3]
+        elif data.endswith(b"--"):
+            data = data[:-2]
+        data = data.rstrip(b"\r\n")
+        return name, data
+    raise ValueError("no file part in multipart body")
+
+
+def _parse_test_mode(payload: dict | None) -> bool:
+    """Require explicit ``test_mode`` (UI-019 / DASH2-011 fail-closed).
+
+    Dashboard always sends the flag. Raw API callers without it get
+    ValueError → HTTP 400 instead of silently defaulting to dummy.
+    """
+    payload = payload or {}
+    if "test_mode" not in payload:
+        raise ValueError(
+            "test_mode required (true = dummy identity, false = real profile)"
+        )
+    raw = payload.get("test_mode")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    return str(raw).strip().lower() not in ("0", "false", "no", "off")
+
+
+def _parse_skip_partyrock(payload: dict | None) -> bool:
+    """True when Start should bypass PartyRock / tailor_resume.
+
+    Accepts ``skip_partyrock: true`` or ``partyrock: false``. Default False
+    (PartyRock on). Only meaningful with Test Mode — real Start still needs
+    a tailored resume.
+    """
+    payload = payload or {}
+    if "skip_partyrock" in payload:
+        raw = payload.get("skip_partyrock")
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return bool(raw)
+        return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
+    if "partyrock" in payload:
+        raw = payload.get("partyrock")
+        if isinstance(raw, bool):
+            return not raw
+        if isinstance(raw, (int, float)):
+            return not bool(raw)
+        return str(raw).strip().lower() in ("0", "false", "no", "off")
+    return False
+
+
+def _fill_mode_prefix(test_mode: bool) -> str:
+    return "[DUMMY/TEST]" if test_mode else "[REAL]"
+
+
+def _format_address_pick(pick: dict) -> str | None:
+    """Format a complete address chosen for a fill; never synthesize gaps."""
+    line1 = (pick.get("line1") or "").strip()
+    city = (pick.get("city") or "").strip()
+    state = (pick.get("state") or "").strip()
+    zip_code = (pick.get("zip") or "").strip()
+    if not all((line1, city, state, zip_code)):
+        return None
+    return f"{line1}, {city}, {state} {zip_code}"
+
+
+def _validated_applied_edit(payload: dict) -> dict:
+    """Return only user-editable Applied fields, normalized for jobs.json."""
+    limits = {
+        "title": 500,
+        "company": 500,
+        "location": 500,
+        "applied_address": 1000,
+        "status_detail": 2000,
+        "apply_url": 4000,
+        "source": 200,
+    }
+    fields = {}
+    for key, limit in limits.items():
+        if key not in payload:
+            continue
+        value = str(payload.get(key) or "").strip()
+        if len(value) > limit:
+            raise ValueError(f"{key} is too long")
+        if key == "apply_url" and value:
+            parsed = urlparse(value)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                raise ValueError("apply_url must be an http(s) URL")
+        fields[key] = value
+    if "applied_date" in payload:
+        applied_date = str(payload.get("applied_date") or "").strip()
+        if applied_date:
+            try:
+                datetime.strptime(applied_date, "%Y-%m-%d")
+            except ValueError as e:
+                raise ValueError("applied_date must be a valid YYYY-MM-DD date") from e
+        fields["applied_at"] = applied_date
+    return fields
+
+
+def _configure_fastfill_child_env(
+    env: dict,
+    *,
+    test_mode: bool,
+    address_text: str | None = None,
+) -> None:
+    """Set child env for dashboard fast fill. test_mode=True → dummy-only.
+
+    Real Start may pass ``address_text`` from the PartyRock pick_address step so
+    prepare_real_run uses the same mailing address (no second random pick).
+    """
+    env.pop("FASTFILL_ALLOW_REAL", None)
+    env.pop("FASTFILL_REAL_PROFILE", None)
+    env.pop("FASTFILL_ADDRESS_TEXT", None)
+    if test_mode:
+        env["FASTFILL_REAL_PROFILE"] = "0"
+        env["TEST_MODE"] = "1"
+        if env.get("FASTFILL_REAL_PROFILE") != "0":
+            raise RuntimeError("fast fill refuse: FASTFILL_REAL_PROFILE must be 0 in test mode")
+        if env.get("TEST_MODE") != "1":
+            raise RuntimeError("fast fill refuse: TEST_MODE must be 1 in test mode")
+    else:
+        env["FASTFILL_ALLOW_REAL"] = "1"
+        env["FASTFILL_REAL_PROFILE"] = "1"
+        env["TEST_MODE"] = "0"
+        if not (
+            env.get("FASTFILL_ALLOW_REAL") == "1"
+            and env.get("FASTFILL_REAL_PROFILE") == "1"
+            and env.get("TEST_MODE") == "0"
+        ):
+            raise RuntimeError("fast fill refuse: real-profile env incomplete")
+        addr = (address_text or "").strip()
+        if addr:
+            env["FASTFILL_ADDRESS_TEXT"] = addr
+
+
+def _playwright_fastfill_argv(
+    *,
+    py: str,
+    script: Path | str,
+    apply_url: str,
+    out_path: Path | str,
+    test_mode: bool,
+    job_id: str,
+    headed: bool,
+    flash_leftovers: bool,
+    resume_path: str | Path | None = None,
+) -> list[str]:
+    """Build Playwright fast_fill argv for dashboard Start / Fast fill.
+
+    Dummy vs real differ only on identity flags (``--test-mode`` vs
+    ``--real-profile --job-id``). Engine flags (headed/captcha/hold, flash,
+    refill) must stay identical so leftover quality does not regress in real.
+    When ``resume_path`` is set, attach that PDF (job upload / tailored).
+
+    FILL3-004 honesty matrix (dashboard headed + flash):
+      --flash-leftovers + --hold-open + --refill-passes 2
+      → inpage leftovers + same-session refill; Skyvern is deferred
+        (``flash.skyvern_deferred``). ``flash.invoked`` means LLM ran, not
+        that Skyvern ran. Do not treat invoked=false as Flash failure
+        (FILL3-001). CLI raw default is Flash OFF / refill 0 (Skyvern
+        eligible only when Flash ON without hold/refill).
+    """
+    cmd = [py, "-u", str(script), apply_url, "--out", str(out_path)]
+    if test_mode:
+        cmd.append("--test-mode")
+    else:
+        cmd.extend(["--real-profile", "--job-id", job_id])
+    if resume_path:
+        cmd.extend(["--resume-path", str(resume_path)])
+    elif not test_mode:
+        # Real mode without explicit path still uses --job-id resolution.
+        pass
+    if headed:
+        # Visible browser + captcha pause + indefinite hold for review.
+        # FILL3-004: pairing hold+refill with Flash is intentional → inpage-only.
+        cmd.extend(["--headed", "--captcha-wait", "--hold-open"])
+    else:
+        cmd.append("--headless")
+    if flash_leftovers:
+        cmd.append("--flash-leftovers")
+        cmd.extend(["--refill-passes", "2"])
+    return cmd
+
+
+def run_hybrid_fill_dummy(
+    job_id: str,
+    *,
+    test_mode: bool = True,
+    headed: bool = False,
+    flash_leftovers: bool | None = None,
+    restore_status: str | None = None,
+    preserve_activity: bool = False,
+    address_text: str | None = None,
+) -> None:
+    """Dashboard fast fill — dummy (default) or real profile when test_mode=False.
+
+    Prefers scripts/fastfill/fast_fill.py (Playwright) when present;
+    falls back to skyvern_runtime/scripts/hybrid_fill.py only if the Playwright
+    script is missing. Never submits.
+    Does not touch the real Start / run_tailor_then_fill agent path.
+
+    ``flash_leftovers``: default True for both dummy and real (DeepSeek leftovers
+    for salary/clearance/essays — same quality path as Test Mode). Pass False
+    or FASTFILL_FLASH_LEFTOVERS=0 to disable.
+
+    ``restore_status`` must be captured by the API handler *before* it claims
+    status=filling — otherwise the thread would only see filling and wrongly
+    fall back to discovered (dropping stuck / blocked_captcha / cancelled).
+    """
+    try:
+        _run_hybrid_fill_dummy_body(
+            job_id,
+            test_mode=test_mode,
+            headed=headed,
+            flash_leftovers=flash_leftovers,
+            restore_status=restore_status,
+            preserve_activity=preserve_activity,
+            address_text=address_text,
+        )
+    except Exception as e:
+        _mark_fill_thread_stuck(job_id, e, where="run_hybrid_fill_dummy")
+
+
+def _run_hybrid_fill_dummy_body(
+    job_id: str,
+    *,
+    test_mode: bool = True,
+    headed: bool = False,
+    flash_leftovers: bool | None = None,
+    restore_status: str | None = None,
+    preserve_activity: bool = False,
+    address_text: str | None = None,
+) -> None:
+    if flash_leftovers is None:
+        flash_leftovers = True
+    with _lock:
+        data = read_jobs()
+        job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+        if job is None:
+            return
+        session_key = job["session_key"]
+        apply_url = (job.get("apply_url") or job.get("job_url") or "").strip()
+        fill_job_location = (job.get("location") or "").strip()
+        fill_job_title = (job.get("title") or "").strip()
+        prev_status = job.get("status") or "discovered"
+        resume_file = resolve_job_resume_file(job)
+
+    if restore_status is None:
+        restore_status = _dummy_restore_status(prev_status)
+    else:
+        restore_status = _dummy_restore_status(restore_status)
+
+    prefix = _fill_mode_prefix(test_mode)
+
+    if _job_fill_aborted(job_id):
+        return
+
+    if not apply_url:
+        _patch_job(
+            job_id,
+            status=restore_status,
+            status_detail=f"{prefix} Fast fill aborted: no apply_url on this job.",
+        )
+        return
+
+    if not test_mode:
+        resume_candidates = [
+            resume_file,
+            ROOT / "resumes" / job_id / "resume.pdf",
+            ROOT / "skyvern_runtime" / "trusted_uploads" / "resume.pdf",
+        ]
+        if not any(p is not None and Path(p).is_file() for p in resume_candidates):
+            _patch_job(
+                job_id,
+                status=restore_status,
+                status_detail=(
+                    f"{prefix} Fast fill aborted: no resume PDF found. "
+                    "Upload a resume on the dossier, tailor via Start, or place "
+                    "resume at skyvern_runtime/trusted_uploads/resume.pdf."
+                ),
+            )
+            return
+
+    use_playwright = FASTFILL_SCRIPT.is_file()
+    if use_playwright:
+        mode = "headed" if headed else "headless"
+        engine = f"Playwright fast_fill ({mode})"
+        timeout_s = DUMMY_FILL_PLAYWRIGHT_TIMEOUT_S
+    elif HYBRID_FILL_SCRIPT.is_file() and SKYVERN_PYTHON.is_file():
+        engine = "hybrid_fill (Skyvern + DUMMY_PROFILE cheat sheet)"
+        timeout_s = DUMMY_FILL_HYBRID_TIMEOUT_S
+    else:
+        _patch_job(
+            job_id,
+            status=restore_status,
+            status_detail=(
+                f"{prefix} Fast fill aborted: neither Playwright fast_fill.py "
+                "nor hybrid_fill.py is available."
+            ),
+        )
+        return
+
+    py = str(SKYVERN_PYTHON if SKYVERN_PYTHON.is_file() else PYTHON_BIN)
+    results_dir = ROOT / "skyvern_runtime" / "real_job_results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    out_path = results_dir / f"{'dummy' if test_mode else 'real'}-fill-{job_id}.json"
+    ROOT.joinpath("logs").mkdir(exist_ok=True)
+    log_path = ROOT / "logs" / f"{'dummy' if test_mode else 'real'}_fill_{job_id}.log"
+
+    if use_playwright:
+        # Flash leftovers ON by default for dummy AND real (salary/clearance/
+        # essays). Never-submit still applies. Disable via flash_leftovers=False.
+        # Test Mode: never attach job-scoped/tailored PDF (dummy fixture only).
+        resume_arg = (
+            None
+            if test_mode
+            else (str(resume_file) if resume_file is not None else None)
+        )
+        cmd = _playwright_fastfill_argv(
+            py=py,
+            script=FASTFILL_SCRIPT,
+            apply_url=apply_url,
+            out_path=out_path,
+            test_mode=test_mode,
+            job_id=job_id,
+            headed=headed,
+            flash_leftovers=flash_leftovers,
+            resume_path=resume_arg,
+        )
+    else:
+        cmd = [py, "-u", str(HYBRID_FILL_SCRIPT), apply_url, job_id if not test_mode else f"dummy-{job_id}"]
+    flash_note = " Flash leftovers ON." if (use_playwright and flash_leftovers) else ""
+    mode_label = "dummy resume + DUMMY_PROFILE" if test_mode else "real profile.json + resume PDF"
+    if (not test_mode) and resume_file is not None:
+        mode_label += f" (attach {resume_file.name})"
+    _patch_job(
+        job_id,
+        status="filling",
+        status_detail=(
+            f"{prefix} Fast fill starting via {engine}. "
+            f"Uses {mode_label}.{flash_note} NEVER submits."
+        ),
+    )
+
+    env = os.environ.copy()
+    _configure_fastfill_child_env(
+        env, test_mode=test_mode, address_text=None if test_mode else address_text
+    )
+    env.pop("FASTFILL_JOB_LOCATION", None)
+    env.pop("FASTFILL_JOB_TITLE", None)
+    if fill_job_location:
+        env["FASTFILL_JOB_LOCATION"] = fill_job_location
+    if fill_job_title:
+        env["FASTFILL_JOB_TITLE"] = fill_job_title
+
+    cmd_joined = " ".join(cmd)
+    if test_mode and ("credentials.json" in cmd_joined or "profile.json" in cmd_joined):
+        raise RuntimeError("fast fill refuse: test-mode cmd must not reference profile/credentials")
+    if "tailor_resume" in cmd_joined:
+        raise RuntimeError("fast fill refuse: must not invoke tailor_resume")
+    if _job_fill_aborted(job_id):
+        return
+    exit_code, timed_out = _run_fill_subprocess_streaming(
+        cmd,
+        job_id=job_id,
+        session_key=session_key,
+        log_path=log_path,
+        env=env,
+        timeout_s=timeout_s,
+        preserve_activity=preserve_activity,
+    )
+
+    # Don't clobber Cancel / Skip / Delete / Applied issued while we were running.
+    with _lock:
+        data = read_jobs()
+        job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+        if job is None:
+            return
+        if job.get("status") in FILL_ABORT_STATUSES:
+            return
+
+    if timed_out:
+        detail = (
+            f"{prefix} Fast fill timed out after {timeout_s}s "
+            f"via {engine}. Never submitted. Log: {log_path.name}"
+        )
+        append_fill_activity(job_id, event="error", detail=detail, persist=True)
+        _patch_job(job_id, status=restore_status, status_detail=detail)
+        return
+
+    detail = _dummy_fill_result_detail(
+        engine=engine,
+        exit_code=exit_code,
+        out_path=out_path,
+        use_playwright=use_playwright,
+        job_id=job_id,
+        log_path=log_path,
+        test_mode=test_mode,
+    )
+    # Safety contract failures must surface as stuck — never silently restore
+    # to discovered as if the fill completed cleanly.
+    if detail.startswith(f"{prefix} SAFETY:"):
+        final_status = "stuck"
+    else:
+        # Prefer Ready only when report honestly allows it (not hold alone).
+        report_ready = False
+        if use_playwright and out_path.is_file():
+            try:
+                rep = json.loads(out_path.read_text())
+                report_ready = _report_allows_ready(rep)
+            except Exception:
+                pass
+        with _lock:
+            data = read_jobs()
+            cur = next((j for j in data["jobs"] if j["id"] == job_id), None)
+            cur_status = (cur or {}).get("status")
+        if cur_status == "ready_for_review" or report_ready:
+            final_status = "ready_for_review"
+        else:
+            final_status = restore_status
+    append_fill_activity(
+        job_id,
+        event="done" if exit_code == 0 and final_status != "stuck" else "error",
+        detail=detail,
+        persist=True,
+    )
+    _patch_job(job_id, status=final_status, status_detail=detail)
+
+
+def _dummy_fill_result_detail(
+    *,
+    engine: str,
+    exit_code: int,
+    out_path: Path,
+    use_playwright: bool,
+    job_id: str,
+    log_path: Path,
+    test_mode: bool = True,
+) -> str:
+    """Build a status_detail line from Playwright/hybrid artifacts."""
+    prefix = _fill_mode_prefix(test_mode)
+    report = None
+    if use_playwright and out_path.is_file():
+        try:
+            report = json.loads(out_path.read_text())
+        except Exception:
+            report = None
+    elif not use_playwright:
+        hybrid_candidates = [
+            ROOT / "skyvern_runtime" / "real_job_results" / f"hybrid-{job_id}.json",
+            ROOT / "skyvern_runtime" / "real_job_results" / f"hybrid-dummy-{job_id}.json",
+        ]
+        for hybrid_out in hybrid_candidates:
+            if hybrid_out.is_file():
+                try:
+                    report = json.loads(hybrid_out.read_text())
+                    break
+                except Exception:
+                    report = None
+
+    # Both engines must declare never_submit; hybrid fallback is the same
+    # dummy contract as Playwright (prepare_dummy_run + never FINAL).
+    if report is not None and report.get("never_submit") is not True:
+        return (
+            f"{prefix} SAFETY: Fast fill report via {engine} missing "
+            f"never_submit=True (got {report.get('never_submit')!r}). "
+            f"Treat as failed. Log: {log_path.name}"
+        )
+
+    if use_playwright and report:
+        unresolved = report.get("leftover_count", report.get("unresolved_count", "?"))
+        mode_note = "Dummy" if report.get("dummy") else "Real"
+        return (
+            f"{prefix} Fast fill done via {engine}: "
+            f"{report.get('filled_count', '?')} fields filled, "
+            f"{unresolved} leftovers, "
+            f"{report.get('elapsed_seconds', '?')}s, "
+            f"coverage={report.get('coverage', '?')}. "
+            f"Never submitted. {mode_note} email={report.get('identity_email', '?')} "
+            f"(test_mode={report.get('test_mode', test_mode)})."
+        )
+    if report and not use_playwright:
+        status = report.get("status") or ("ok" if exit_code == 0 else "error")
+        elapsed = report.get("elapsed_seconds")
+        elapsed_s = f"{elapsed:.1f}s" if isinstance(elapsed, (int, float)) else "?"
+        extra = ""
+        if report.get("captcha_blocked"):
+            extra = " CAPTCHA blocked."
+        if report.get("submit_alarm"):
+            extra += " SUBMIT_ALARM (run cancelled; never_submit held)."
+        if report.get("error"):
+            extra += f" error={report.get('error')!s}"[:120]
+        email = report.get("identity_email") or report.get("email") or "?"
+        return (
+            f"{prefix} Fast fill finished via {engine}: status={status}, "
+            f"elapsed={elapsed_s}.{extra} Never submitted. "
+            f"email={email} (test_mode={report.get('test_mode', test_mode)})."
+        )
+    if exit_code == 0:
+        return (
+            f"{prefix} Fast fill exited 0 via {engine} (no JSON report). "
+            f"Never submitted. Log: {log_path.name}"
+        )
+    return (
+        f"{prefix} Fast fill failed via {engine} (exit={exit_code}). "
+        f"Never submitted. See logs/{log_path.name}."
+    )
+
+
+def run_tailor_then_fill(
+    job_id: str,
+    test_mode: bool = True,
+    skip_partyrock: bool = False,
+    force_partyrock: bool = False,
+    restore_status: str | None = None,
+) -> None:
     """Resume tailoring is "paste text, wait for a web app, copy the
     result" - no judgment calls, so it runs as a plain script
     (scripts/tailor_resume.py, driving PartyRock directly over the
@@ -487,7 +4466,144 @@ def run_tailor_then_fill(job_id: str) -> None:
     Falls back to having the agent tailor manually via its own browser
     tool if the script fails for any reason (PartyRock UI change, a
     transient hiccup) - a single automation hiccup shouldn't strand the
-    job, and the agent still knows the manual steps (see PLAYBOOK.md)."""
+    job, and the agent still knows the manual steps (see PLAYBOOK.md).
+
+    test_mode=True (dashboard Test Mode ON) → PartyRock Testing app URL,
+    then Playwright fast_fill with dummy (same as Fast fill button) —
+    never the agent fill path (avoids openclaw/node PATH failures after
+    PartyRock and keeps Test Mode never-submit + dummy-only).
+    test_mode=True + skip_partyrock=True → no PartyRock / tailor_resume;
+    go straight to headed fast_fill with dummy resume + DUMMY_PROFILE.
+    test_mode=False → PartyRock Real app URL, then Playwright fast_fill
+    with real profile + tailored resume (prepare_real_run). Never agent
+    browser fill — that path hung on Ashby/Bumble analyzing the form and
+    left status=navigating after SIGTERM. Subprocess timeout fails honestly.
+    See partyrock.json.
+
+    ``restore_status`` must be captured by the Start handler *before* it
+    claims navigating/tailoring — otherwise Test Mode fill would always
+    restore to discovered and drop stuck / blocked_captcha.
+    """
+    try:
+        _run_tailor_then_fill_body(
+            job_id,
+            test_mode=test_mode,
+            skip_partyrock=skip_partyrock,
+            force_partyrock=force_partyrock,
+            restore_status=restore_status,
+        )
+    except Exception as e:
+        _mark_fill_thread_stuck(job_id, e, where="run_tailor_then_fill")
+
+
+def _run_tailor_then_fill_body(
+    job_id: str,
+    test_mode: bool = True,
+    skip_partyrock: bool = False,
+    force_partyrock: bool = False,
+    restore_status: str | None = None,
+) -> None:
+    fill_restore = _dummy_restore_status(restore_status or "discovered")
+    # Skip PartyRock when a resume is already on disk (upload or prior tailor),
+    # or when Test Mode explicitly bypasses PartyRock — unless the dashboard
+    # requested force_partyrock (Tailor + fill / regenerate).
+    with _lock:
+        data = read_jobs()
+        job0 = next((j for j in data["jobs"] if j["id"] == job_id), None)
+        if job0 is None:
+            return
+        existing_resume = resolve_job_resume_file(job0)
+        apply_url0 = (job0.get("apply_url") or job0.get("job_url") or "").strip()
+
+    skip_for_resume = existing_resume is not None and not force_partyrock
+    if skip_for_resume or (test_mode and skip_partyrock and not force_partyrock):
+        clear_fill_activity(job_id)
+        if not apply_url0:
+            pipeline_milestone(
+                job_id,
+                event="error",
+                detail="Start aborted: no apply_url — cannot start fill.",
+                status="stuck",
+                status_detail=(
+                    f"{_fill_mode_prefix(test_mode)} No apply_url/job_url; fill skipped."
+                ),
+            )
+            return
+        if existing_resume is not None:
+            try:
+                rel = str(existing_resume.relative_to(ROOT))
+            except ValueError:
+                rel = str(existing_resume)
+            with _lock:
+                data = read_jobs()
+                job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+                if job is not None:
+                    job["resume_path"] = rel
+                    job["updated_at"] = now_iso()
+                    _publish_resume_by_company(job, existing_resume, data)
+                    write_jobs(data)
+            detail = (
+                f"Using uploaded resume ({existing_resume.name}) — "
+                "skipping PartyRock / tailor."
+            )
+            pipeline_milestone(
+                job_id,
+                event="resume",
+                detail=detail,
+                status="navigating",
+                status_detail=detail,
+            )
+        else:
+            pipeline_milestone(
+                job_id,
+                event="start",
+                detail=(
+                    "Start (Test Mode): PartyRock bypassed — "
+                    "dummy resume + DUMMY_PROFILE fast_fill only."
+                ),
+                status="navigating",
+                status_detail=(
+                    "[DUMMY/TEST] PartyRock off — skipping tailor; "
+                    f"opening apply URL via fast_fill (dummy, headed). {apply_url0[:160]}"
+                ),
+            )
+        append_fill_activity(
+            job_id,
+            event="fill",
+            detail=(
+                f"{'Using on-disk resume; ' if existing_resume else 'PartyRock skipped. '}"
+                f"Opening apply URL for fast_fill: {apply_url0[:120]}"
+            ),
+        )
+        if _job_fill_aborted(job_id):
+            return
+        run_hybrid_fill_dummy(
+            job_id,
+            test_mode=test_mode,
+            headed=True,
+            flash_leftovers=_dummy_fill_flash_requested(),
+            restore_status=fill_restore,
+            preserve_activity=True,
+        )
+        return
+
+    pr_url = partyrock_url(test_mode=test_mode)
+    pr_mode = partyrock_mode_label(test_mode=test_mode)
+    if _job_fill_aborted(job_id):
+        return
+    clear_fill_activity(job_id)
+    pipeline_milestone(
+        job_id,
+        event="start",
+        detail=(
+            f"Start ({'Test Mode' if test_mode else 'Real'}): PartyRock {pr_mode}, "
+            f"then {'fast_fill (dummy)' if test_mode else 'fast_fill (real profile)'}."
+        ),
+        status="tailoring",
+        status_detail=(
+            f"Started. Opening PartyRock ({pr_mode}): {pr_url}"
+        ),
+    )
     with _lock:
         data = read_jobs()
         job = next((j for j in data["jobs"] if j["id"] == job_id), None)
@@ -499,45 +4615,44 @@ def run_tailor_then_fill(job_id: str) -> None:
         # PartyRock actually needs to tailor against lives in its own file.
         full_jd_file = RESUMES_DIR / job_id / "jd_full.txt"
         job_description = full_jd_file.read_text() if full_jd_file.exists() else (job.get("job_description") or "")
+        job_location = (job.get("location") or "").strip()
         apply_url = job.get("apply_url") or job.get("job_url") or ""
-        # Dry-run/test identity override (see api/jobs/<id>/dry_run) - must
-        # be baked into the FIRST fill-turn message, not sent as a
-        # follow-up correction after Start: observed live, the agent can
-        # reach real account creation within ~60s of the turn starting,
-        # faster than a human can react to send a correction in time.
-        dry_run_note = job.get("dry_run_identity")
 
     if not job_description.strip():
         # Manually-added jobs start with no description fetched yet - the
         # agent has to get that (and everything else) from the real apply
         # page first, so automated tailoring can't run yet this turn.
-        # This is one big unsupervised turn covering both tailoring and
-        # filling (unlike the split happy path below), so the PartyRock
-        # lock here is held coarser than ideal - through the fill step
-        # too, not just the tailor step. Acceptable since manually-added
-        # jobs are the rare path; still correct (never lets two jobs touch
-        # PartyRock at once), just not maximally concurrent.
-        _acquire_partyrock_lock(job_id, session_key)
-        try:
-            run_agent_message(
-                session_key,
-                playbook_preamble() +
-                "Follow PLAYBOOK.md above for this job. Here is its current full "
-                f"record (do NOT read jobs.json yourself - it has 800+ entries "
-                f"and reading the whole file wastes a huge number of tokens for "
-                f"one record; use scripts/get_job.py {job_id} if you ever need "
-                f"it again, and scripts/update_job.py {job_id} [--field value ...] "
-                f"to write changes, never a direct read/write of the file):"
-                f"\n\n{json.dumps(job, indent=2)}\n\n"
-                "It has no job_description yet - fetch the real posting details "
-                "from apply_url first (then save them with update_job.py's "
-                "--company/--title/--location/--job-description flags), then "
-                "continue the full pipeline (tailor resume, fill the "
-                "application) and stop at ready_for_review. Never submit.",
-                timeout_s=1800,
-            )
-        finally:
-            _partyrock_lock.release()
+        # PR-005: do NOT hold _partyrock_lock through this unsupervised
+        # agent turn (fetch JD + tailor + fill). Automated tailor below
+        # still serializes via the lock; here we only pre-warm the CDP
+        # browser so login/cookies are ready when the agent opens PartyRock.
+        if _job_fill_aborted(job_id):
+            return
+        pipeline_milestone(
+            job_id,
+            event="agent",
+            detail="No job description yet — agent will fetch posting then tailor/fill.",
+            status_detail="No JD on file; agent fetching apply page then continuing pipeline.",
+        )
+        _ensure_openclaw_managed_browser()
+        run_agent_message(
+            session_key,
+            playbook_preamble() +
+            "Follow PLAYBOOK.md above for this job. Here is its current full "
+            f"record (do NOT read jobs.json yourself - it has 800+ entries "
+            f"and reading the whole file wastes a huge number of tokens for "
+            f"one record; use scripts/get_job.py {job_id} if you ever need "
+            f"it again, and scripts/update_job.py {job_id} [--field value ...] "
+            f"to write changes, never a direct read/write of the file):"
+            f"\n\n{json.dumps(job, indent=2)}\n\n"
+            f"PartyRock app for this run ({pr_mode}): {pr_url}\n\n"
+            "It has no job_description yet - fetch the real posting details "
+            "from apply_url first (then save them with update_job.py's "
+            "--company/--title/--location/--job-description flags), then "
+            "continue the full pipeline (tailor resume, fill the "
+            "application) and stop at ready_for_review. Never submit.",
+            timeout_s=1800,
+        )
         return
 
     job_dir = RESUMES_DIR / job_id
@@ -548,37 +4663,132 @@ def run_tailor_then_fill(job_id: str) -> None:
     resume_pdf = job_dir / "resume.pdf"
     playbook_already_sent = False
 
-    if resume_pdf.exists() and resume_tex.exists():
+    if (
+        not force_partyrock
+        and resume_pdf.exists()
+        and resume_tex.exists()
+    ):
         # A resume was already produced for this job on some earlier
         # attempt (Start, then Cancel happened during/after filling, not
-        # during tailoring) - Retry shouldn't burn another PartyRock
-        # generation for content that's already sitting on disk. The mere
-        # presence of these two files is the check: a genuinely fresh job
-        # never has them yet, so this naturally falls through to the
-        # normal tailor-from-scratch path below with no extra flag needed.
+        # during tailoring) - Retry / Fill-with-resume shouldn't burn
+        # another PartyRock generation for content that's already sitting
+        # on disk. Tailor + fill sets force_partyrock and must re-run
+        # PartyRock even when tex+pdf exist. (Upload-only PDF without tex
+        # is handled earlier via resolve_job_resume_file.)
+        pipeline_milestone(
+            job_id,
+            event="resume",
+            detail="Reusing previously tailored resume (already on disk).",
+            status="navigating",
+            status_detail="Reusing previously tailored resume (already on disk). Navigating to apply URL.",
+        )
         with _lock:
             data = read_jobs()
             job = next((j for j in data["jobs"] if j["id"] == job_id), None)
             if job is not None:
                 job["resume_path"] = str(resume_pdf.relative_to(ROOT))
-                job["status"] = "navigating"
-                job["status_detail"] = "Reusing previously tailored resume (already on disk). Navigating to apply URL."
                 job["updated_at"] = now_iso()
                 write_jobs(data)
     else:
-        # PartyRock is one shared logged-in app instance - only one job may be
-        # actively tailoring against it at a time (see _partyrock_lock). This
-        # is the ONLY section of the pipeline that touches it: released right
-        # below, before the compile step, so a second job queued here starts
-        # its own tailoring the moment this one's done with PartyRock, while
-        # this job goes on to compile/fit/address-pick/fill concurrently -
-        # those steps never need the lock at all.
-        _acquire_partyrock_lock(job_id, session_key)
+        # One job may actively drive PartyRock generation at a time (see
+        # _partyrock_lock), but each run opens its own CDP tab and keeps it
+        # open after success until Mark as applied. Released before compile
+        # so job B can open a separate PartyRock tab while A compiles/fills.
+        pipeline_milestone(
+            job_id,
+            event="partyrock",
+            detail=f"Opening PartyRock ({pr_mode}): {pr_url}",
+            status="tailoring",
+            status_detail=f"Opening PartyRock ({pr_mode}): {pr_url}",
+        )
         try:
+            _acquire_partyrock_lock(job_id, session_key)
+        except PartyRockLockAborted:
+            # Cancel / Delete / Applied / Skip during lock wait — do not tailor.
+            # PR2-003: drop stale Opening/Waiting PartyRock detail if still showing.
+            with _lock:
+                data = read_jobs()
+                job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+                if job is not None:
+                    detail = job.get("status_detail") or ""
+                    if (
+                        detail.startswith("Opening PartyRock")
+                        or detail.startswith(
+                            "Waiting for another job to finish using PartyRock"
+                        )
+                    ) and job.get("status") not in FILL_ABORT_STATUSES:
+                        job["status_detail"] = (
+                            "PartyRock wait aborted before tailor started."
+                        )
+                        job["updated_at"] = now_iso()
+                        write_jobs(data)
+            return
+        except TimeoutError as e:
+            # PR2-003: clear stale Opening PartyRock detail on lock timeout.
+            if not _job_fill_aborted(job_id):
+                _patch_job(
+                    job_id,
+                    status="stuck",
+                    status_detail=(
+                        f"PartyRock lock timeout — {e}. Retry Start, or run "
+                        "`./open_partyrock.sh` if login is needed."
+                    ),
+                    question=(
+                        "PartyRock was busy too long. Retry when no other job is "
+                        "tailoring, or Skip."
+                    ),
+                )
+            return
+        try:
+            try:
+                # PR2-002: fail loud when CDP cannot start (not warn-only).
+                _ensure_openclaw_managed_browser(required=True)
+            except RuntimeError as e:
+                # PR2-003: replace stale "Opening PartyRock…" with actionable stuck.
+                if not _job_fill_aborted(job_id):
+                    _patch_job(
+                        job_id,
+                        status="stuck",
+                        status_detail=(
+                            f"PartyRock browser failed to start: {e}. "
+                            "Fix: `./open_partyrock.sh` (Chrome for Testing + "
+                            "OpenClaw CDP :18800), then Retry."
+                        ),
+                        question=(
+                            "PartyRock CDP did not come up. Run `./open_partyrock.sh` "
+                            "to re-auth/start CfT, then Retry. "
+                            "Install CfT if needed: "
+                            "python3 -m playwright install chromium"
+                        ),
+                    )
+                return
+            # Re-tailor: drop any prior held tab for this job before opening a new one.
+            try:
+                close_job_partyrock_tab(job_id, job_dir)
+            except Exception as e:
+                print(f"warn: close prior PartyRock tab for {job_id}: {e}")
+            if _job_fill_aborted(job_id):
+                return
+            tailor_flag = "--test-mode" if test_mode else "--real"
+            pipeline_milestone(
+                job_id,
+                event="partyrock",
+                detail="Waiting on resume from PartyRock…",
+                status_detail="Waiting on resume from PartyRock…",
+            )
             tailor_exit, tailor_log = _run_subprocess_step(
-                [PYTHON_BIN, "-u", str(TAILOR_SCRIPT), "--jd-file", str(jd_file), "--out", str(resume_tex),
-                 "--timeout", str(TAILOR_TIMEOUT_S - 100)],
+                [
+                    PYTHON_BIN, "-u", str(TAILOR_SCRIPT),
+                    "--jd-file", str(jd_file),
+                    "--location", job_location,
+                    "--out", str(resume_tex),
+                    "--timeout", str(TAILOR_TIMEOUT_S - 100),
+                    "--job-id", job_id,
+                    "--keep-open",
+                    tailor_flag,
+                ],
                 f"tailor_{job_id}.log", TAILOR_TIMEOUT_S, track_key=session_key,
+                activity_job_id=job_id,
             )
 
             if tailor_exit != 0 or not resume_tex.exists():
@@ -595,13 +4805,33 @@ def run_tailor_then_fill(job_id: str) -> None:
                 # through into the exact same compile/fit/address/fill pipeline the
                 # happy path already uses, instead of leaving the agent to
                 # improvise all of it.
+                if _job_fill_aborted(job_id):
+                    return
+                pipeline_milestone(
+                    job_id,
+                    event="partyrock",
+                    detail=(
+                        f"Automated PartyRock tailor failed (exit {tailor_exit}). "
+                        "Falling back to agent for resume.tex only."
+                    ),
+                    status_detail=(
+                        f"PartyRock script failed (exit {tailor_exit}); "
+                        "agent producing resume.tex manually."
+                    ),
+                )
+                if _job_fill_aborted(job_id):
+                    return
                 run_agent_message(
                     session_key,
                     playbook_preamble() +
                     f"Automated resume tailoring failed (scripts/tailor_resume.py "
                     f"exited {tailor_exit}, see {tailor_log}). Follow PLAYBOOK.md's "
-                    "manual PartyRock steps instead: open the app via your browser "
-                    "tool, paste the job description, wait for it to finish, and "
+                    "manual PartyRock steps instead: run `./open_partyrock.sh` "
+                    f"(OpenClaw Chrome-for-Testing, CDP :18800, shared login — "
+                    f"NOT a generic IDE/browser tool) for mode {pr_mode}, open "
+                    f"{pr_url}, paste the job description with a leading "
+                    f"`Location: {job_location or 'Unknown'}` line, wait for it "
+                    "to finish, and "
                     f"save the resulting LaTeX to {resume_tex}. Do NOT compile it "
                     "yourself, do NOT pick a mailing address, do NOT proceed to "
                     "filling the application, and do NOT log to the Excel tracker - "
@@ -614,27 +4844,63 @@ def run_tailor_then_fill(job_id: str) -> None:
                 )
                 playbook_already_sent = True
                 if not resume_tex.exists():
-                    # The agent didn't manage to produce it - it should have left
-                    # jobs.json in whatever state explains why (stuck with a
-                    # question, an error it already reported) via update_job.py.
-                    # Nothing further to do here; don't force a status.
+                    # DASH2-004: agent fallback left no tex — force stuck so the
+                    # job does not sit in tailoring forever with no question.
+                    append_fill_activity(
+                        job_id,
+                        event="error",
+                        detail="Manual PartyRock fallback did not produce resume.tex — stopping.",
+                    )
+                    if not _job_fill_aborted(job_id):
+                        _patch_job(
+                            job_id,
+                            status="stuck",
+                            status_detail=(
+                                "Manual PartyRock fallback did not produce resume.tex."
+                            ),
+                            question=(
+                                f"Agent PartyRock fallback finished without writing "
+                                f"{resume_tex}. Check Live Activity / PartyRock, then "
+                                "Retry or Skip."
+                            ),
+                        )
                     return
                 # else: fall through into the same compile/fit/address/fill steps
                 # below, exactly as if scripts/tailor_resume.py had succeeded.
+            else:
+                pipeline_milestone(
+                    job_id,
+                    event="partyrock",
+                    detail="Collected resume from PartyRock",
+                    status_detail="Collected resume from PartyRock. Converting to PDF…",
+                )
         finally:
             _partyrock_lock.release()
 
+        # DASH2-018: Cancel during PartyRock must not start compile/fit.
+        if _job_fill_aborted(job_id):
+            return
+
+        pipeline_milestone(
+            job_id,
+            event="pdf",
+            detail="Converting resume to PDF (tectonic)…",
+            status_detail="Converting resume to PDF…",
+        )
         compile_exit, compile_log = _run_subprocess_step(
-            ["/opt/homebrew/bin/tectonic", str(resume_tex)], f"tectonic_{job_id}.log", 120, track_key=session_key)
+            [TECTONIC_BIN, str(resume_tex)],
+            f"tectonic_{job_id}.log", 120, track_key=session_key,
+            activity_job_id=job_id,
+        )
 
         with _lock:
             data = read_jobs()
             job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-            if job is not None:
+            if job is not None and job.get("status") not in FILL_ABORT_STATUSES:
                 if compile_exit == 0 and resume_pdf.exists():
                     job["resume_path"] = str(resume_pdf.relative_to(ROOT))
                     job["status"] = "navigating"
-                    job["status_detail"] = "Resume tailored and compiled. Navigating to apply URL."
+                    job["status_detail"] = "Resume tailored and compiled. Preparing fill…"
                 else:
                     job["status"] = "stuck"
                     job["question"] = (
@@ -646,6 +4912,13 @@ def run_tailor_then_fill(job_id: str) -> None:
                 write_jobs(data)
 
         if compile_exit != 0 or not resume_pdf.exists():
+            if _job_fill_aborted(job_id):
+                return
+            append_fill_activity(
+                job_id,
+                event="error",
+                detail=f"PDF compile failed (exit {compile_exit}). See {compile_log.name}",
+            )
             run_agent_message(
                 session_key,
                 (playbook_preamble() if not playbook_already_sent else "") +
@@ -662,11 +4935,48 @@ def run_tailor_then_fill(job_id: str) -> None:
         # nonzero exit here just means it stayed over 2 pages at the tightest
         # tested layout - not worth stalling the pipeline over, so this is
         # logged, not treated as a hard failure.
+        # DASH2-018: re-check abort after compile before page-fit / publish.
+        if _job_fill_aborted(job_id):
+            return
+        pipeline_milestone(
+            job_id,
+            event="pdf",
+            detail="Fitting resume within two pages…",
+            status_detail="Fitting resume within two pages…",
+        )
         fit_exit, fit_log = _run_subprocess_step(
             [PYTHON_BIN, "-u", str(ROOT / "scripts" / "fit_resume_pages.py"), str(resume_tex)],
-            f"fit_pages_{job_id}.log", 90, track_key=session_key)
+            f"fit_pages_{job_id}.log", 90, track_key=session_key,
+            activity_job_id=job_id,
+        )
         if fit_exit != 0:
+            append_fill_activity(
+                job_id,
+                event="pdf",
+                detail=f"Page-fit best-effort exit={fit_exit} (continuing). See {fit_log.name}",
+            )
             print(f"warn: fit_resume_pages.py exit={fit_exit} for {job_id} - see {fit_log}")
+        else:
+            append_fill_activity(
+                job_id, event="pdf", detail="Resume PDF ready (≤2 pages or best effort).",
+            )
+
+    # Permanent user-facing copy for Command Center Documents/Resumes
+    # (symlink → resumes/by_company/). After fit so the published PDF is final.
+    if resume_pdf.exists():
+        with _lock:
+            data = read_jobs()
+            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+            if job is not None:
+                pub = _publish_resume_by_company(job, resume_pdf, data)
+                job["updated_at"] = now_iso()
+                write_jobs(data)
+                if pub is not None:
+                    append_fill_activity(
+                        job_id,
+                        event="resume",
+                        detail=f"Published resume → {pub.name}",
+                    )
 
     # The browser tool's file-upload only accepts paths under
     # ~/.openclaw/media/inbound - observed live, the agent tried uploading
@@ -679,71 +4989,99 @@ def run_tailor_then_fill(job_id: str) -> None:
     shutil.copyfile(resume_pdf, inbound_resume)
     _cleanup_old_inbound_resumes()
 
-    # Mailing-address selection (find the city PartyRock put in the resume
-    # header, match its metro in addresses.json, pick a nearby placeholder
-    # entry at random) is pure mechanical lookup, not a judgment call - see
-    # scripts/pick_address.py. Pre-computing it here means the agent never
-    # reads the whole addresses.json pool itself. Falls back to the manual
-    # PLAYBOOK.md instructions (still in place) if this can't find a city
-    # in the header or a matching entry - a script hiccup here shouldn't
-    # strand the job.
-    address_json = None
-    addr_exit, addr_log = _run_subprocess_step(
-        [PYTHON_BIN, "-u", str(ROOT / "scripts" / "pick_address.py"), str(resume_tex)],
-        f"pick_address_{job_id}.log", 15, track_key=session_key)
-    if addr_exit == 0:
-        try:
-            address_json = json.loads(addr_log.read_text())
-        except Exception as e:
-            print(f"warn: could not parse pick_address.py output for {job_id}: {e}")
-    else:
-        print(f"warn: pick_address.py exit={addr_exit} for {job_id} - see {addr_log}, falling back to manual address selection")
+    # -----------------------------------------------------------------
+    # After PartyRock + PDF: open apply_url via Playwright fast_fill.
+    # Test Mode → prepare_dummy_run. Real → prepare_real_run (shared policy
+    # + unique identity). Flash ON for both (same leftover quality as dummy).
+    # Never agent browser fill here — that hung on Ashby/Bumble (analyze
+    # forever / SIGTERM → status stuck at navigating).
+    # Tailored PDF kept on disk; real fill uses it via --job-id.
+    # -----------------------------------------------------------------
+    apply_url_s = (apply_url or "").strip()
+    prefix = _fill_mode_prefix(test_mode)
+    if not apply_url_s:
+        pipeline_milestone(
+            job_id,
+            event="error",
+            detail="Tailor done but job has no apply_url — cannot start fill.",
+            status="stuck",
+            status_detail=(
+                f"{prefix} Resume tailored, but no apply_url/job_url on this "
+                "job — fill skipped."
+            ),
+        )
+        return
 
-    fill_message = (
-        (playbook_preamble() if not playbook_already_sent else "") +
-        f"Here is this job's current full record (do NOT read jobs.json yourself - it has "
-        f"800+ entries and reading the whole file wastes a huge number of tokens for one "
-        f"record; use scripts/get_job.py {job_id} if you ever need it again, and "
-        f"scripts/update_job.py {job_id} [--status S] [--status-detail D] [--question Q] "
-        f"[--clear-question] [--pending-command C] [--clear-pending-command] to write "
-        f"changes during this turn, never a direct read/write of the file):"
-        f"\n\n{json.dumps(job, indent=2)}\n\n"
-        f"The resume is already tailored and compiled - upload it from {inbound_resume} "
-        "(do NOT redo tailoring or run tailor_resume.py again; do not use any other path for "
-        "the upload, it will be rejected)."
-    )
-    if address_json:
-        fill_message += (
-            "\n\nFor the mailing address fields, use exactly this pre-picked placeholder "
-            "(already matched to the city on the resume, per PLAYBOOK.md's mailing-address "
-            f"rule) - do not look anything up yourself: {json.dumps(address_json)}"
+    # Real mode: pick mailing address once and hand it to fast_fill via
+    # FASTFILL_ADDRESS_TEXT — avoids a second random suburb pick inside
+    # prepare_real_run that would disagree with Live activity.
+    address_text: str | None = None
+    if not test_mode:
+        addr_exit, addr_log = _run_subprocess_step(
+            [
+                PYTHON_BIN,
+                "-u",
+                str(ROOT / "scripts" / "pick_address.py"),
+                str(resume_tex),
+                "--location",
+                job_location,
+            ],
+            f"pick_address_{job_id}.log", 15, track_key=session_key,
+            activity_job_id=job_id,
         )
-    fill_message += (
-        " Follow PLAYBOOK.md's Fill the application step: "
-        "navigate to apply_url, upload that resume, fill the form efficiently, and stop at "
-        "ready_for_review. Ask via question/pending_command and end your turn whenever you're "
-        "unsure - never submit."
+        if addr_exit != 0:
+            print(
+                f"warn: pick_address.py exit={addr_exit} for {job_id} - "
+                f"see {addr_log}; prepare_real_run will retry"
+            )
+        else:
+            try:
+                pick = json.loads(Path(addr_log).read_text(encoding="utf-8"))
+                address_text = _format_address_pick(pick)
+                if address_text:
+                    # Persist the exact fill-time pick so Applied tracking does
+                    # not need to infer it later from profile data or activity.
+                    _patch_job(job_id, applied_address=address_text)
+                    append_fill_activity(
+                        job_id,
+                        event="address",
+                        detail=f"Mailing address for fill: {address_text}",
+                    )
+            except Exception as e:
+                print(
+                    f"warn: could not parse pick_address output for {job_id}: {e}; "
+                    "prepare_real_run will resolve address itself"
+                )
+
+    mode_bit = "dummy" if test_mode else "real profile"
+    # Same Flash default as Fast fill button (ON unless env/payload disables).
+    start_flash = _dummy_fill_flash_requested()
+    pipeline_milestone(
+        job_id,
+        event="fill",
+        detail=f"Opening apply URL for fast_fill ({mode_bit}): {apply_url_s[:120]}",
+        status="navigating",
+        status_detail=(
+            f"{prefix} Opening apply URL via Playwright fast_fill "
+            f"(headed, {mode_bit}"
+            f"{', flash ON' if start_flash else ''}). Never submits. "
+            f"{apply_url_s[:160]}"
+        ),
     )
-    ats_notes_match = ats_notes_for_url(apply_url)
-    if ats_notes_match:
-        notes_path, notes_content = ats_notes_match
-        fill_message += (
-            f"\n\nThis apply_url is on a known ATS platform - here are notes from past "
-            f"runs on this same platform (field selectors, known quirks, known blockers), "
-            f"from {notes_path}. Treat these as a strong first guess to verify with one "
-            "snapshot, not a guarantee - fall back to normal exploration if something "
-            f"doesn't match. If you learn something new and reliably repeatable, append it "
-            f"to {notes_path} directly (via exec) so future jobs on this platform benefit "
-            f"too:\n\n{notes_content}"
-        )
-    if dry_run_note:
-        fill_message = (
-            f"DRY RUN - TEST PIPELINE ONLY, NOT A REAL APPLICATION. {dry_run_note} Do not use "
-            "profile.json's real identity for any field or account creation - use only the "
-            "synthetic identity given above. Do not log this to the Excel tracker "
-            "(application_tracker.xlsx) - skip that step entirely. "
-        ) + fill_message
-    run_agent_message(session_key, fill_message, timeout_s=1800)
+    # headed=True so the form is visible for review. PartyRock tab for this
+    # job stays open until Mark as applied (separate CDP target).
+    # Flash / captcha-wait / hold-open / refill identical for dummy and real.
+    if _job_fill_aborted(job_id):
+        return
+    run_hybrid_fill_dummy(
+        job_id,
+        test_mode=test_mode,
+        headed=True,
+        flash_leftovers=start_flash,
+        restore_status=fill_restore,
+        preserve_activity=True,
+        address_text=address_text,
+    )
 
 
 def run_agent_message(session_key: str, message: str, timeout_s: int = 1200,
@@ -758,50 +5096,79 @@ def run_agent_message(session_key: str, message: str, timeout_s: int = 1200,
     jobs that difference adds up. Pass thinking="high" explicitly for a
     specific call if it's dealing with something that actually needs it."""
     turn_start = time.monotonic()
-    # stdout/stderr used to go to DEVNULL - when a turn died silently (a
-    # transient provider timeout, an unhandled CLI error) there was no way
-    # to tell why short of re-running it and hoping to catch it again.
-    # Logging here means the answer is just sitting in the file already.
+    # OpenClaw-free: the turn is a direct DeepSeek tool-loop run in-process by
+    # agent_runner (no `openclaw agent` subprocess). It writes the same human
+    # log here plus a structured events file for the reconcile loop / activity
+    # feed. Graceful degradation: with no DEEPSEEK_API_KEY (or a loop that
+    # can't proceed) it returns a non-zero exit and the block below surfaces
+    # the job as `stuck` for a human — exactly the old "exit 127" behavior.
     ROOT.joinpath("logs").mkdir(exist_ok=True)
     log_name = session_key.rsplit(":", 1)[-1]
     log_path = ROOT / "logs" / f"agent_turn_{log_name}.log"
-    with open(log_path, "w") as log_file:
-        proc = subprocess.Popen(
-            [
-                OPENCLAW_BIN, "agent",
-                "--agent", "job-hunter",
-                "--session-key", session_key,
-                "--message", message,
-                "--timeout", str(timeout_s),
-                "--thinking", thinking,
-            ],
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
+    # Truncate the human log at the start of each turn (Popen used mode "w").
+    try:
+        log_path.write_text("")
+    except OSError:
+        pass
+    # Cross-process backstop for the double-start guarantee (in-process
+    # tracking via agent_runner.active_turn_keys() is primary).
+    with run_guard.session_lock(session_key):
+        exit_code = agent_runner.run_turn(
+            session_key, message,
+            log_path=log_path, timeout_s=timeout_s, thinking=thinking,
         )
-        _running_procs[session_key] = proc
-        exit_code = proc.wait()
-    _running_procs.pop(session_key, None)
     _log_timing(f"agent_turn[{log_name}]", time.monotonic() - turn_start, f"exit={exit_code}")
+    if exit_code != 0:
+        # Surface silent CLI failures (e.g. missing node → 127) into any
+        # job activity buffer that shares this session key's job id suffix.
+        # Also fail honestly: never leave navigating/filling/tailoring forever
+        # after SIGTERM/timeout (Bumble Ashby hung → exit 143, status stuck
+        # at navigating until manual Cancel).
+        try:
+            hint = ""
+            try:
+                hint = (log_path.read_text(encoding="utf-8", errors="replace") or "")[:200]
+            except Exception:
+                pass
+            job_id_guess = log_name.removeprefix("job-") if log_name.startswith("job-") else ""
+            detail = (
+                f"Agent turn exited {exit_code}"
+                + (f": {hint.strip()}" if hint.strip() else "")
+            )[:500]
+            if job_id_guess:
+                append_fill_activity(
+                    job_id_guess,
+                    event="error",
+                    detail=detail,
+                )
+                with _lock:
+                    data = read_jobs()
+                    job = next(
+                        (j for j in data["jobs"] if j["id"] == job_id_guess), None
+                    )
+                    if job is not None and job.get("status") in IN_PROGRESS_STATUSES:
+                        job["status"] = "stuck"
+                        job["status_detail"] = (
+                            f"Agent fill aborted (exit {exit_code}). "
+                            "Never submitted. Retry Start or use Fast fill."
+                        )[:500]
+                        job["updated_at"] = now_iso()
+                        write_jobs(data)
+        except Exception:
+            pass
 
 
 def abort_gateway_session(session_key: str) -> None:
-    """The real work runs on the gateway server and can outlive the local CLI
-    client that started it. Connecting a fresh short-lived client to the same
-    session-key causes the gateway to abort whatever was previously running
-    on it (observed behavior: OPENCLAW_DIRECT_ABORT). Fire this in the
-    background and don't wait - we only need the abort side effect."""
-    def _fire():
-        subprocess.run(
-            [
-                OPENCLAW_BIN, "agent",
-                "--agent", "job-hunter",
-                "--session-key", session_key,
-                "--message", "STOP. Cancelled by user. Do not continue this turn.",
-                "--timeout", "15",
-            ],
-            capture_output=True,
-        )
-    threading.Thread(target=_fire, daemon=True).start()
+    """Cancel a running agent turn for this session key.
+
+    OpenClaw-free: turns run in-process, so we simply signal the runner's
+    per-key cancel event (checked between tool steps), replacing the old
+    OPENCLAW_DIRECT_ABORT trick of connecting a throwaway client. No-op if no
+    turn is currently running on the key. (Name kept for call sites.)"""
+    try:
+        agent_runner.cancel_turn(session_key)
+    except Exception as e:
+        print(f"warn: abort_gateway_session failed: {e}")
 
 
 _TAIL_LINE_RE = re.compile(
@@ -809,35 +5176,67 @@ _TAIL_LINE_RE = re.compile(
 )
 
 
+def _parse_openclaw_json(out: str):
+    """Parse openclaw --json stdout; tolerate rare non-JSON prefixes on stdout."""
+    text = (out or "").strip()
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        if start < 0:
+            raise
+        return json.loads(text[start:])
+
+
 def _find_cron_job() -> dict | None:
-    out = subprocess.run(
-        [OPENCLAW_BIN, "cron", "list", "--all", "--json"],
-        capture_output=True, text=True, timeout=15,
-    ).stdout
-    parsed = json.loads(out) if out.strip() else {}
-    jobs_list = parsed.get("jobs", []) if isinstance(parsed, dict) else parsed
-    return next((j for j in jobs_list if j.get("name") == CRON_JOB_NAME), None)
+    """The daily discovery schedule, as a cron-job-shaped dict.
+
+    OpenClaw-free: backed by the in-process scheduler's local settings
+    (``logs/cron_settings.json``) instead of ``openclaw cron list``. Always
+    returns a job dict (the schedule always "exists" as a local setting), so
+    the dashboard toggle/schedule controls keep working."""
+    return scheduler_mod.settings_to_job_dict()
+
+
+def _parse_cron_hm(expr: str | None) -> tuple[int, int]:
+    """Return (minute, hour) from a 5-field cron expr. Default 0 9 * * *."""
+    parts = str(expr or "").strip().split()
+    if len(parts) < 2:
+        return 0, 9
+    try:
+        minute = int(parts[0])
+        hour = int(parts[1])
+    except ValueError:
+        return 0, 9
+    if not (0 <= minute <= 59 and 0 <= hour <= 23):
+        return 0, 9
+    return minute, hour
+
+
+def _cron_job_public(job: dict) -> dict:
+    """Enrich cron job JSON with hour/minute for the dashboard UI."""
+    out = dict(job)
+    schedule = job.get("schedule") if isinstance(job.get("schedule"), dict) else {}
+    minute, hour = _parse_cron_hm(schedule.get("expr"))
+    out["minute"] = minute
+    out["hour"] = hour
+    out["time"] = f"{hour:02d}:{minute:02d}"
+    return out
 
 
 def get_activity(session_key: str, tail: int = 60) -> list[dict]:
+    """Structured lifecycle events for a session's agent turns.
+
+    OpenClaw-free: reads the events the in-process ``agent_runner`` appends to
+    ``logs/agent_events_<key>.jsonl`` (including a terminal ``session.ended``),
+    replacing ``openclaw sessions tail``. The reconcile loop keys its
+    auto-retry decision off the same ``session.ended`` event as before."""
     try:
-        out = subprocess.run(
-            [
-                OPENCLAW_BIN, "sessions", "tail",
-                "--agent", "job-hunter",
-                "--session-key", session_key,
-                "--tail", str(tail),
-            ],
-            capture_output=True, text=True, timeout=15,
-        ).stdout
+        return agent_runner.read_events(session_key, tail=tail)
     except Exception as e:
         return [{"time": "", "event": "error", "detail": str(e)}]
-    events = []
-    for line in out.splitlines():
-        m = _TAIL_LINE_RE.match(line.strip())
-        if m:
-            events.append(m.groupdict())
-    return events
 
 
 IN_PROGRESS_STATUSES = {"navigating", "filling", "tailoring", "resuming"}
@@ -845,6 +5244,9 @@ RECONCILE_INTERVAL_S = 20
 STALE_AFTER_S = 90
 NOTIFY_STATUSES = {"stuck", "blocked_captcha"}
 NOTIFY_INTERVAL_S = 5
+# Prune sweep cadence — cheap (regex over jobs.json) but not free, and new
+# listings only arrive in discovery batches, so minutes is the right order.
+AUTO_DELETE_SWEEP_INTERVAL_S = 300
 _notified_fingerprints: dict[str, str] = {}
 
 
@@ -993,6 +5395,64 @@ def notify_stuck_jobs_loop() -> None:
 _auto_retried_job_ids: set[str] = set()
 
 
+def _force_stuck_orphaned_in_progress(*, ignore_age: bool = False) -> list[str]:
+    """DASH2-002: IN_PROGRESS with no live tracked proc → stuck.
+
+    After a dashboard crash/restart, local fast-fill jobs can remain
+    ``filling``/``navigating``/``tailoring`` forever because reconcile used
+    to require an OpenClaw ``session.ended`` event. Call with
+    ``ignore_age=True`` at startup (no procs survived the restart); the
+    reconcile loop uses age > ``STALE_AFTER_S``.
+    """
+    forced: list[str] = []
+    with _lock:
+        data = read_jobs()
+        changed = False
+        for job in data.get("jobs") or []:
+            if job.get("status") not in IN_PROGRESS_STATUSES:
+                continue
+            if job.get("status") in FILL_ABORT_STATUSES:
+                continue
+            session_key = job.get("session_key")
+            proc = _running_procs.get(session_key) if session_key else None
+            if proc is not None and proc.poll() is None:
+                continue
+            if not ignore_age:
+                try:
+                    updated_ts = datetime.fromisoformat(
+                        str(job.get("updated_at") or "").replace("Z", "+00:00")
+                    )
+                except Exception:
+                    updated_ts = None
+                age_s = (now_dt() - updated_ts).total_seconds() if updated_ts else 9999
+                if age_s < STALE_AFTER_S:
+                    continue
+            jid = job.get("id") or "?"
+            job["status"] = "stuck"
+            job["status_detail"] = (
+                "No running fill/tailor process — in-progress status was orphaned "
+                "(server restart or crashed worker). Use Retry or Skip."
+            )
+            job["question"] = (
+                "This job was left in-progress with nothing running. "
+                "Check Live Activity, then Retry or Skip."
+            )
+            job["updated_at"] = now_iso()
+            _append_timeline_locked(
+                job,
+                _timeline_entry(
+                    event="stuck",
+                    detail=job["status_detail"],
+                    at=job["updated_at"],
+                ),
+            )
+            forced.append(str(jid))
+            changed = True
+        if changed:
+            write_jobs(data)
+    return forced
+
+
 def reconcile_loop():
     """Background thread: if a job's status claims it's in progress but its
     process isn't actually running anymore, surface that in the dashboard
@@ -1011,7 +5471,11 @@ def reconcile_loop():
     surfaced, on an otherwise-healthy job). Capped at one attempt per job
     id so a genuinely broken job doesn't retry forever silently; the
     second failure goes to a human exactly as before, noting a retry
-    already happened."""
+    already happened.
+
+    DASH2-002: local fast-fill orphans (no gateway ``session.ended``) are
+    force-stuck once age exceeds ``STALE_AFTER_S`` with no live proc.
+    """
     while True:
         time.sleep(RECONCILE_INTERVAL_S)
         try:
@@ -1026,7 +5490,11 @@ def reconcile_loop():
                     session_key = job.get("session_key")
                     proc = _running_procs.get(session_key)
                     if proc and proc.poll() is None:
-                        continue  # genuinely still running
+                        continue  # genuinely still running (tracked subprocess)
+                    # Agent turns run in-process (no Popen); the runner's
+                    # active-turn registry is authoritative for those.
+                    if session_key and agent_runner.is_turn_active(session_key):
+                        continue
                     try:
                         updated_ts = datetime.fromisoformat(job["updated_at"].replace("Z", "+00:00"))
                     except Exception:
@@ -1034,7 +5502,7 @@ def reconcile_loop():
                     age_s = (now_dt() - updated_ts).total_seconds() if updated_ts else 9999
                     if age_s < STALE_AFTER_S:
                         continue  # give it a moment before flagging
-                    candidates.append((job["id"], session_key))
+                    candidates.append((job["id"], session_key, job.get("status") or ""))
 
             if not candidates:
                 continue
@@ -1045,19 +5513,34 @@ def reconcile_loop():
             # would queue up behind however long these calls took.
             to_retry = []  # (job_id, session_key, detail)
             to_stuck = []  # (job_id, detail)
-            for job_id, session_key in candidates:
-                events = get_activity(session_key, tail=5)
+            to_orphan_stuck = []  # (job_id, detail) — local fill, no session.ended
+            for job_id, session_key, job_status in candidates:
+                events = get_activity(session_key, tail=5) if session_key else []
                 last = events[-1] if events else None
-                if not (last and last["event"] == "session.ended"):
-                    continue
-                detail = last["detail"]
-                if job_id not in _auto_retried_job_ids:
-                    _auto_retried_job_ids.add(job_id)
-                    to_retry.append((job_id, session_key, detail))
+                # UI-018 / DASH2-010: only agent turns (tailoring/resuming) get
+                # auto agent retry. Local fast_fill uses filling/navigating —
+                # never spawn run_agent_message for those.
+                agentish = job_status in ("tailoring", "resuming")
+                if last and last.get("event") == "session.ended" and agentish:
+                    detail = last.get("detail") or "session.ended"
+                    if job_id not in _auto_retried_job_ids:
+                        _auto_retried_job_ids.add(job_id)
+                        to_retry.append((job_id, session_key, detail))
+                    else:
+                        to_stuck.append((job_id, detail))
                 else:
-                    to_stuck.append((job_id, detail))
+                    # DASH2-002 / UI-018: no live proc + aged past STALE, or
+                    # non-agent fill with session.ended noise. Force stuck —
+                    # do not spawn an agent retry for a local fill.
+                    to_orphan_stuck.append(
+                        (
+                            job_id,
+                            "No running fill/tailor process; in-progress status "
+                            "orphaned past stale window.",
+                        )
+                    )
 
-            if not to_retry and not to_stuck:
+            if not to_retry and not to_stuck and not to_orphan_stuck:
                 continue
 
             # Phase 3 (locked, fast): apply whatever changed. Re-reads
@@ -1070,6 +5553,8 @@ def reconcile_loop():
                     job = by_id.get(job_id)
                     if job is None:
                         continue
+                    if job.get("status") not in IN_PROGRESS_STATUSES:
+                        continue
                     job["status_detail"] = (
                         f"Previous run ended ({detail}) without finishing - "
                         "automatically retrying once before asking for help."
@@ -1078,6 +5563,8 @@ def reconcile_loop():
                 for job_id, detail in to_stuck:
                     job = by_id.get(job_id)
                     if job is None:
+                        continue
+                    if job.get("status") not in IN_PROGRESS_STATUSES:
                         continue
                     job["status"] = "stuck"
                     job["status_detail"] = (
@@ -1091,6 +5578,30 @@ def reconcile_loop():
                         "manually / Skip to give up on this one."
                     )
                     job["updated_at"] = now_iso()
+                for job_id, detail in to_orphan_stuck:
+                    job = by_id.get(job_id)
+                    if job is None:
+                        continue
+                    if job.get("status") not in IN_PROGRESS_STATUSES:
+                        continue
+                    job["status"] = "stuck"
+                    job["status_detail"] = (
+                        "No running fill/tailor process — in-progress status was orphaned "
+                        "(server restart or crashed worker). Use Retry or Skip."
+                    )
+                    job["question"] = (
+                        "This job was left in-progress with nothing running. "
+                        "Check Live Activity, then Retry or Skip."
+                    )
+                    job["updated_at"] = now_iso()
+                    _append_timeline_locked(
+                        job,
+                        _timeline_entry(
+                            event="stuck",
+                            detail=job["status_detail"],
+                            at=job["updated_at"],
+                        ),
+                    )
                 write_jobs(data)
 
             # Fire retry turns after releasing the lock - each spawns its
@@ -1117,6 +5628,150 @@ def now_dt():
     return datetime.now(timezone.utc)
 
 
+def _append_deleted_timeline(job: dict, *, detail: str, at: str | None = None) -> None:
+    _append_timeline_locked(
+        job,
+        _timeline_entry(
+            event="deleted",
+            detail=detail,
+            at=at or job.get("updated_at") or now_iso(),
+        ),
+    )
+
+
+def _mark_job_soft_deleted(
+    job: dict,
+    *,
+    deleted_reason: str,
+    status_detail: str,
+    duplicate_of: str | None = None,
+) -> None:
+    """In-lock soft-delete fields (Deleted trash). Caller writes jobs.json."""
+    now = now_iso()
+    job["status"] = "deleted"
+    job["deleted_at"] = now
+    job["deleted_reason"] = deleted_reason
+    job["status_detail"] = status_detail
+    job["updated_at"] = now
+    if duplicate_of:
+        job["duplicate_of"] = duplicate_of
+    _append_deleted_timeline(job, detail=status_detail, at=now)
+
+
+def _reset_job_to_open_after_cancel(job: dict) -> None:
+    """Cancel → Open: keep resume_path / disk resume; clear in-progress markers."""
+    resume_path = job.get("resume_path")
+    now = now_iso()
+    job["status"] = "discovered"
+    job["status_detail"] = "Cancelled by user — returned to Open."
+    job["updated_at"] = now
+    job["question"] = None
+    job["pending_command"] = None
+    job.pop("ready_announced", None)
+    if resume_path:
+        job["resume_path"] = resume_path
+    _append_timeline_locked(
+        job,
+        _timeline_entry(
+            event="cancelled_reset",
+            detail=job["status_detail"],
+            at=now,
+        ),
+    )
+
+
+def _find_duplicate_merge_pair(
+    jobs: list, job: dict, preferred_id: str | None = None
+) -> tuple[dict, dict] | None:
+    """Return (winner, loser) for a duplicate skip/merge, or None if no partner."""
+    try:
+        from dedup_jobs import pick_winner, should_merge
+    except Exception as e:
+        print(f"warn: dedup_jobs import for merge failed: {e}")
+        return None
+    inactive = {"deleted", "applied"} | set(LEGACY_SKIP_STATUSES)
+    by_id = {j.get("id"): j for j in jobs if j.get("id")}
+    candidates: list[dict] = []
+    if preferred_id and preferred_id in by_id and preferred_id != job.get("id"):
+        other = by_id[preferred_id]
+        if other.get("status") not in inactive:
+            candidates.append(other)
+    if not candidates:
+        for other in jobs:
+            if other is job or other.get("id") == job.get("id"):
+                continue
+            if other.get("status") in inactive:
+                continue
+            try:
+                if should_merge(job, other):
+                    candidates.append(other)
+            except Exception:
+                continue
+    if not candidates:
+        return None
+    partner = candidates[0]
+    for other in candidates[1:]:
+        partner, _ = pick_winner(partner, other)
+    return pick_winner(job, partner)
+
+
+def migrate_triage_holding_pen_once() -> dict:
+    """Map legacy Skipped holding pen → Deleted; cancelled → Open (retry).
+
+    Choice (documented): skipped_* → deleted with reason preserved in
+    deleted_reason / status_detail; cancelled → discovered so Fill can retry
+    (resume_path kept). Idempotent.
+    """
+    counts = {"skipped_to_deleted": 0, "cancelled_to_open": 0}
+    reason_map = {
+        "skipped_manual": "skipped_manual",
+        "skipped_duplicate": "duplicate",
+        "skipped_contract": "contract",
+        "skipped_easy_apply": "easy_apply",
+    }
+    to_block: list[dict] = []
+    with _lock:
+        data = read_jobs()
+        changed = False
+        for job in data.get("jobs") or []:
+            st = job.get("status")
+            if st in LEGACY_SKIP_STATUSES:
+                detail = (job.get("status_detail") or "").strip() or (
+                    f"Migrated from {st} (Skipped holding pen removed)."
+                )
+                _mark_job_soft_deleted(
+                    job,
+                    deleted_reason=reason_map.get(st, "skipped_manual"),
+                    status_detail=detail,
+                    duplicate_of=job.get("duplicate_of"),
+                )
+                counts["skipped_to_deleted"] += 1
+                changed = True
+                if st != "skipped_duplicate":
+                    to_block.append(dict(job))
+            elif st == "cancelled":
+                _reset_job_to_open_after_cancel(job)
+                # Migration copy: clarify backlog reset (not a fresh Cancel click).
+                job["status_detail"] = (
+                    "Migrated from cancelled — returned to Open for retry."
+                )
+                counts["cancelled_to_open"] += 1
+                changed = True
+        if changed:
+            write_jobs(data)
+    for snap in to_block:
+        try:
+            block_deleted_job(snap, keep_tombstone=True)
+        except TypeError:
+            try:
+                block_deleted_job(snap)
+            except Exception as e:
+                print(f"warn: block on triage migrate {snap.get('id')}: {e}")
+        except Exception as e:
+            print(f"warn: block on triage migrate {snap.get('id')}: {e}")
+    return counts
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -1138,6 +5793,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        # HTML/JS carry the ops UI (inline CSS in index.html). Chrome --app=
+        # windows cache aggressively; no-cache keeps app-icon and browser tabs
+        # on the same live stylesheet instead of a stale washed-out shell.
+        if content_type in ("text/html", "application/javascript"):
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
         if inline_filename:
             # Without this, some browsers default to downloading a PDF
             # rather than opening it in the tab - explicit "inline" (not
@@ -1161,25 +5823,78 @@ class Handler(BaseHTTPRequestHandler):
         if parts[0] == "app.js":
             self._send_file(STATIC_DIR / "app.js", "application/javascript")
             return
+        if parts[0] == "job_sort.js":
+            self._send_file(STATIC_DIR / "job_sort.js", "application/javascript")
+            return
+        # UI-033: Classic frozen — redirect to Ops. Files kept on disk; not a live UI.
+        if parts[0] in ("classic", "classic.html", "classic.js"):
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
+        # Ops preview merged into `/` — redirect so bookmarks still work.
+        if parts[0] in ("ops-preview", "ops-preview.html"):
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
         if len(parts) == 2 and parts[0] == "resume":
             with _lock:
                 data = read_jobs()
             job = self._job(data, parts[1])
-            if not job or not job.get("resume_path"):
+            if not job:
+                self._send_json({"error": "not found"}, 404)
+                return
+            disk = resolve_job_resume_file(job)
+            if disk is None:
                 self._send_json({"error": "not found"}, 404)
                 return
             filename = f"{job.get('company') or job['id']}_resume.pdf"
-            self._send_file(ROOT / job["resume_path"], "application/pdf", inline_filename=filename)
+            self._send_file(disk, "application/pdf", inline_filename=filename)
             return
         if parts == ["api", "jobs"]:
             with _lock:
-                self._send_json(read_jobs())
+                data = read_jobs()
+            # Omit JD bodies from the list poll — full cleaned text is
+            # GET /api/jobs/<id>/description on expand.
+            self._send_json(jobs_list_response(data))
+            return
+        if parts == ["api", "status"]:
+            self._send_json(runtime_status())
+            return
+        if parts == ["api", "discover"]:
+            self._send_json(discovery_status())
+            return
+        if parts == ["api", "discover", "settings"]:
+            self._send_json(load_discovery_settings())
+            return
+        if parts == ["api", "prune", "settings"]:
+            self._send_json(load_prune_settings())
+            return
+        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "description":
+            with _lock:
+                data = read_jobs()
+            job = self._job(data, parts[2])
+            if not job:
+                self._send_json({"error": "not found"}, 404)
+                return
+            raw, source = load_raw_job_description(job)
+            cleaned = sanitize_job_description_for_display(raw)
+            self._send_json({
+                "id": job["id"],
+                "job_description": cleaned,
+                "source": source,
+                "chars": len(cleaned),
+            })
             return
         if len(parts) == 3 and parts[0:2] == ["api", "jobs"]:
             with _lock:
                 data = read_jobs()
             job = self._job(data, parts[2])
-            self._send_json(job if job else {"error": "not found"}, 200 if job else 404)
+            if not job:
+                self._send_json({"error": "not found"}, 404)
+                return
+            self._send_json(slim_job_for_list(job))
             return
         if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "activity":
             with _lock:
@@ -1188,7 +5903,9 @@ class Handler(BaseHTTPRequestHandler):
             if not job:
                 self._send_json({"error": "not found"}, 404)
                 return
-            self._send_json({"events": get_activity(job["session_key"])})
+            # Lifecycle timeline: live fill while running, else jobs.json
+            # timeline / synthesized fields. Never OpenClaw session.tail here.
+            self._send_json({"events": get_job_activity(job, tail=200)})
             return
         if parts == ["api", "profile"]:
             if PROFILE_FILE.exists():
@@ -1206,9 +5923,31 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["api", "cron"]:
             try:
                 job = _find_cron_job()
-                self._send_json(job or {"error": "not found"}, 200 if job else 404)
+                if not job:
+                    self._send_json({"error": "not found"}, 404)
+                else:
+                    self._send_json(_cron_job_public(job))
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)
+            return
+        if parts == ["api", "partyrock"]:
+            # Resolve which PartyRock app URL Test Mode would use.
+            # ?test_mode=1 (default) → Testing; ?test_mode=0 → Real.
+            q = parse_qs(parsed.query)
+            raw = (q.get("test_mode") or [None])[0]
+            if raw is None:
+                test_mode = True
+            else:
+                test_mode = str(raw).strip().lower() not in ("0", "false", "no", "off")
+            urls = load_partyrock_urls()
+            url = partyrock_url(test_mode=test_mode)
+            self._send_json({
+                "test_mode": test_mode,
+                "mode": partyrock_mode_label(test_mode=test_mode),
+                "url": url,
+                "test": urls["test"],
+                "real": urls["real"],
+            })
             return
         self._send_json({"error": "not found"}, 404)
 
@@ -1217,13 +5956,43 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
         length = int(self.headers.get("Content-Length", 0))
+        # Multipart resume upload — do not JSON-parse the body.
+        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "resume":
+            self._handle_resume_upload(parts[2], length)
+            return
         raw = self.rfile.read(length) if length else b"{}"
         try:
-            payload = json.loads(raw)
+            payload = json.loads(raw) if raw.strip() else {}
         except json.JSONDecodeError:
-            self._send_json({"error": "bad json"}, 400)
-            return
+            # sendBeacon sometimes arrives as text/plain; tolerate empty body.
+            if not raw.strip():
+                payload = {}
+            else:
+                try:
+                    payload = json.loads(raw.decode("utf-8", errors="replace"))
+                except Exception:
+                    self._send_json({"error": "bad json"}, 400)
+                    return
+        if not isinstance(payload, dict):
+            payload = {}
 
+        if parts == ["api", "heartbeat"]:
+            body, code = record_ui_heartbeat(str(payload.get("client_id") or ""))
+            self._send_json(body, code)
+            return
+        if parts == ["api", "shutdown"]:
+            body, code = request_ui_shutdown(
+                str(payload.get("client_id") or "") or None,
+                force=bool(payload.get("force")),
+            )
+            self._send_json(body, code)
+            return
+        if parts == ["api", "restart"]:
+            body, code = request_ui_restart(
+                str(payload.get("client_id") or "") or None,
+            )
+            self._send_json(body, code)
+            return
         if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "answer":
             self._handle_answer(parts[2], payload)
             return
@@ -1234,10 +6003,23 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_cancel(parts[2])
             return
         if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "skip":
-            self._handle_skip(parts[2])
+            self._handle_skip(parts[2], payload)
+            return
+        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "restore":
+            self._handle_restore(parts[2])
+            return
+        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "edit":
+            self._handle_edit_applied(parts[2], payload)
             return
         if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "submitted":
             self._handle_mark_submitted(parts[2])
+            return
+        if (
+            len(parts) == 4
+            and parts[0:2] == ["api", "jobs"]
+            and parts[3] == "claim-ready-announcement"
+        ):
+            self._handle_claim_ready_announcement(parts[2])
             return
         if parts == ["api", "profile"]:
             self._handle_profile_update(payload)
@@ -1245,14 +6027,35 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["api", "jobs", "add"]:
             self._handle_add_job(payload)
             return
+        if parts == ["api", "jobs", "empty-deleted"]:
+            self._handle_empty_deleted()
+            return
+        if parts == ["api", "prune"]:
+            self._handle_prune(payload)
+            return
+        if parts == ["api", "prune", "settings"]:
+            self._handle_prune_settings(payload)
+            return
         if parts == ["api", "discover"]:
-            self._handle_discover()
+            self._handle_discover(payload)
+            return
+        if parts == ["api", "discover", "settings"]:
+            self._handle_discover_settings(payload)
+            return
+        if parts == ["api", "discover", "abort"]:
+            self._handle_discover_abort(payload)
             return
         if parts == ["api", "cron", "toggle"]:
             self._handle_cron_toggle(payload)
             return
+        if parts == ["api", "cron", "schedule"]:
+            self._handle_cron_schedule(payload)
+            return
         if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "start":
-            self._handle_start(parts[2])
+            self._handle_start(parts[2], payload)
+            return
+        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "hybrid_fill_dummy":
+            self._handle_hybrid_fill_dummy(parts[2], payload, parse_qs(parsed.query))
             return
         if parts == ["api", "cli"]:
             self._handle_cli(payload)
@@ -1263,13 +6066,53 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         parsed = urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "resume":
+            self._handle_resume_clear(parts[2])
+            return
         if len(parts) == 3 and parts[0:2] == ["api", "jobs"]:
+            job_id = parts[2]
+            removed = None
+            blocked = []
+            session_key = None
             with _lock:
                 data = read_jobs()
-                before = len(data["jobs"])
-                data["jobs"] = [j for j in data["jobs"] if j["id"] != parts[2]]
-                write_jobs(data)
-            self._send_json({"ok": True, "deleted": before != len(data["jobs"])})
+                for j in data["jobs"]:
+                    if j.get("id") == job_id:
+                        removed = j
+                        break
+                if removed is None:
+                    self._send_json({"error": "not found"}, 404)
+                    return
+                session_key = removed.get("session_key")
+                # Soft-delete: keep row for Deleted trash view; block URLs now.
+                if removed.get("status") != "deleted":
+                    _mark_job_soft_deleted(
+                        removed,
+                        deleted_reason="user",
+                        status_detail="Deleted by user from dashboard.",
+                    )
+                    write_jobs(data)
+            # Kill any in-flight fill/tailor so it cannot undelete at fill-end.
+            proc = _running_procs.get(session_key) if session_key else None
+            _kill_process_tree(proc)
+            if session_key:
+                abort_gateway_session(session_key)
+            try:
+                close_job_partyrock_tab(job_id, RESUMES_DIR / job_id)
+            except Exception as e:
+                print(f"warn: PartyRock tab close on delete for {job_id}: {e}")
+            try:
+                blocked = block_deleted_job(removed, keep_tombstone=True)
+            except TypeError:
+                blocked = block_deleted_job(removed)
+            except Exception as e:
+                print(f"warn: block_deleted_job failed: {e}")
+            self._send_json({
+                "ok": True,
+                "deleted": True,
+                "soft": True,
+                "blocked_urls": blocked,
+            })
             return
         self._send_json({"error": "not found"}, 404)
 
@@ -1307,11 +6150,13 @@ class Handler(BaseHTTPRequestHandler):
         def resume_after_command_decision():
             if approve and command:
                 binary = command.split()[0]
-                subprocess.run(
-                    [OPENCLAW_BIN, "approvals", "allowlist", "add",
-                     "--agent", "job-hunter", f"{binary}*"],
-                    capture_output=True,
-                )
+                # OpenClaw-free: write the allowlist glob straight to the local
+                # exec-approvals JSON (approvals_store), no `openclaw approvals`.
+                try:
+                    approvals_store.allowlist_add(f"{binary}*", "job-hunter",
+                                                  path=EXEC_APPROVALS_FILE)
+                except Exception as e:
+                    print(f"warn: allowlist add failed: {e}")
                 _ensure_job_hunter_ask_off()
                 message = f"Approved. Run this exact command now: {command}"
             else:
@@ -1322,40 +6167,250 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"ok": True})
 
     def _handle_cancel(self, job_id):
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
-            if job is None:
-                self._send_json({"error": "not found"}, 404)
-                return
-            session_key = job["session_key"]
-            job["status"] = "cancelled"
-            job["status_detail"] = "Cancelled by user from dashboard."
-            job["updated_at"] = now_iso()
-            write_jobs(data)
-        proc = _running_procs.get(session_key)
-        if proc and proc.poll() is None:
-            proc.terminate()
-        abort_gateway_session(session_key)
-        self._send_json({"ok": True})
+        """Abort in-flight fill/tailor and return the job to Open.
 
-    def _handle_skip(self, job_id):
+        Does not leave status=cancelled in a Skipped pile. Keeps resume_path /
+        on-disk resume so Fill can restart cleanly after clearing proc/hold state.
+        """
         with _lock:
             data = read_jobs()
             job = self._job(data, job_id)
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
-            session_key = job["session_key"]
-            job["status"] = "skipped_manual"
-            job["status_detail"] = "Skipped by user from dashboard."
+            status = job.get("status")
+            session_key = job.get("session_key")
+            proc = _running_procs.get(session_key) if session_key else None
+            proc_alive = proc is not None and proc.poll() is None
+            # UI only offers Cancel for in-progress runs; refuse clobbering
+            # applied / ready / deleted / discovered via stale or direct calls.
+            if status not in IN_PROGRESS_STATUSES and not proc_alive:
+                self._send_json(
+                    {
+                        "error": f"job is not running (status={status})",
+                        "status": status,
+                    },
+                    409,
+                )
+                return
+            # Brief abort signal so fill daemons stop patching before reset.
+            job["status"] = "cancelled"
+            job["status_detail"] = "Cancelling — returning to Open…"
             job["updated_at"] = now_iso()
             write_jobs(data)
-        proc = _running_procs.get(session_key)
-        if proc and proc.poll() is None:
-            proc.terminate()
-        abort_gateway_session(session_key)
-        self._send_json({"ok": True})
+            resume_kept = bool(job.get("resume_path"))
+        proc = _running_procs.get(session_key) if session_key else None
+        _kill_process_tree(proc)
+        if session_key:
+            abort_gateway_session(session_key)
+        try:
+            clear_fill_activity(job_id)
+        except Exception as e:
+            print(f"warn: clear_fill_activity on cancel for {job_id}: {e}")
+        try:
+            close_job_partyrock_tab(job_id, RESUMES_DIR / job_id)
+        except Exception as e:
+            print(f"warn: PartyRock tab close on cancel for {job_id}: {e}")
+        with _lock:
+            data = read_jobs()
+            job = self._job(data, job_id)
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            # Only reset if Cancel still owns the abort (or race left in-progress).
+            cur = job.get("status")
+            if cur in ("cancelled",) or cur in IN_PROGRESS_STATUSES:
+                _reset_job_to_open_after_cancel(job)
+                write_jobs(data)
+            out_status = job.get("status")
+            out_detail = job.get("status_detail")
+            resume_kept = bool(job.get("resume_path")) or resume_kept
+        self._send_json(
+            {
+                "ok": True,
+                "status": out_status,
+                "status_detail": out_detail,
+                "resume_kept": resume_kept,
+            }
+        )
+
+    def _handle_skip(self, job_id, payload=None):
+        """Soft-delete a job (Deleted trash) — no Skipped holding pen.
+
+        Optional payload.reason:
+          duplicate → merge URLs into winner when possible, delete loser
+          contract / easy_apply / not_us / too_senior / dead_link → deleted + reason
+          omitted → deleted_reason=user ("Skipped by user")
+
+        Refuses applied / already-deleted so a stale UI cannot clobber them.
+        """
+        payload = payload or {}
+        reason = str(payload.get("reason") or "").strip().lower()
+        preferred_dup = str(payload.get("duplicate_of") or "").strip() or None
+        deleted_reason, detail = SKIP_REASON_TO_DELETED.get(
+            reason, ("user", "Skipped by user from dashboard.")
+        )
+        unskippable = {"applied", "deleted"} | set(LEGACY_SKIP_STATUSES)
+        block_urls = reason != "duplicate"
+        merged_into = None
+        deleted_id = job_id
+        survivor_id = None
+        with _lock:
+            data = read_jobs()
+            job = self._job(data, job_id)
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            cur = job.get("status")
+            if cur in unskippable:
+                self._send_json(
+                    {
+                        "error": f"cannot skip job in terminal status (status={cur})",
+                        "status": cur,
+                    },
+                    409,
+                )
+                return
+            session_key = job.get("session_key")
+            jobs_list = data.get("jobs") or []
+
+            if reason == "duplicate":
+                try:
+                    from dedup_jobs import fold_urls_into_winner
+                except Exception as e:
+                    print(f"warn: fold_urls_into_winner import failed: {e}")
+                    fold_urls_into_winner = None  # type: ignore
+                pair = _find_duplicate_merge_pair(jobs_list, job, preferred_dup)
+                if pair and fold_urls_into_winner is not None:
+                    winner, loser = pair
+                    fold_urls_into_winner(winner, loser)
+                    winner["updated_at"] = now_iso()
+                    merge_detail = (
+                        f"Duplicate of {winner.get('id')}: URLs merged onto winner; "
+                        f"loser soft-deleted."
+                    )
+                    _mark_job_soft_deleted(
+                        loser,
+                        deleted_reason="duplicate",
+                        status_detail=merge_detail,
+                        duplicate_of=winner.get("id"),
+                    )
+                    # Mirror dedup_jobs.mark_loser_merged for UI "duplicate of X".
+                    if winner.get("id"):
+                        loser["merged_from"] = winner.get("id")
+
+                    merged_into = winner.get("id")
+                    deleted_id = loser.get("id")
+                    survivor_id = winner.get("id")
+                    session_key = loser.get("session_key")
+                    if winner.get("id") == job_id:
+                        winner["status_detail"] = (
+                            f"Merged duplicate {loser.get('id')} into this job "
+                            f"(alternate apply URLs kept)."
+                        )
+                        detail = winner["status_detail"]
+                    else:
+                        detail = merge_detail
+                    write_jobs(data)
+                    removed_snap = dict(loser)
+                    block_urls = False
+                else:
+                    _mark_job_soft_deleted(
+                        job,
+                        deleted_reason="duplicate",
+                        status_detail=detail,
+                    )
+                    write_jobs(data)
+                    removed_snap = dict(job)
+                    block_urls = True
+            else:
+                _mark_job_soft_deleted(
+                    job,
+                    deleted_reason=deleted_reason,
+                    status_detail=detail,
+                )
+                write_jobs(data)
+                removed_snap = dict(job)
+
+        if session_key:
+            proc = _running_procs.get(session_key)
+            _kill_process_tree(proc)
+            abort_gateway_session(session_key)
+        # Duplicate losers must not tombstone URLs that now live on the winner.
+        blocked = []
+        if block_urls:
+            try:
+                blocked = block_deleted_job(removed_snap, keep_tombstone=True)
+            except TypeError:
+                blocked = block_deleted_job(removed_snap)
+            except Exception as e:
+                print(f"warn: block_deleted_job on skip for {job_id}: {e}")
+        job_removed = deleted_id == job_id
+        self._send_json(
+            {
+                "ok": True,
+                "status": "deleted" if job_removed else "discovered",
+                "status_detail": detail,
+                "deleted_reason": (
+                    "duplicate" if reason == "duplicate" else deleted_reason
+                ),
+                "deleted_id": deleted_id,
+                "merged_into": merged_into,
+                "survivor_id": survivor_id,
+                "blocked_urls": blocked,
+            }
+        )
+
+    def _handle_restore(self, job_id):
+        """Move a deleted (or legacy skipped/cancelled) job back to discovered."""
+        with _lock:
+            data = read_jobs()
+            job = self._job(data, job_id)
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            cur = job.get("status")
+            restorable = {
+                "skipped_manual",
+                "skipped_duplicate",
+                "skipped_contract",
+                "skipped_easy_apply",
+                "cancelled",
+                "deleted",
+            }
+            if cur not in restorable:
+                self._send_json(
+                    {
+                        "error": "only deleted (or legacy skipped/cancelled) jobs can be restored",
+                        "status": cur,
+                    },
+                    409,
+                )
+                return
+            was_deleted = cur == "deleted" or cur in LEGACY_SKIP_STATUSES
+            job["status"] = "discovered"
+            job["status_detail"] = "Restored to open from dashboard."
+            job["updated_at"] = now_iso()
+            if was_deleted or cur == "deleted":
+                job.pop("deleted_at", None)
+                job.pop("deleted_reason", None)
+            job.pop("duplicate_of", None)
+            _append_timeline_locked(
+                job,
+                _timeline_entry(
+                    event="restored",
+                    detail=job["status_detail"],
+                    at=job["updated_at"],
+                ),
+            )
+            write_jobs(data)
+            job_snapshot = dict(job)
+        if was_deleted:
+            try:
+                unblock_job(job_snapshot)
+            except Exception as e:
+                print(f"warn: unblock_job on restore for {job_id}: {e}")
+        self._send_json({"ok": True, "status": "discovered"})
 
     def _handle_mark_submitted(self, job_id):
         """The agent never clicks Submit - it can't know when a real
@@ -1367,11 +6422,28 @@ class Handler(BaseHTTPRequestHandler):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
+            session_key = job.get("session_key")
+            applied_at = now_iso()
             job["status"] = "applied"
-            job["status_detail"] = "Marked submitted by user from dashboard."
-            job["updated_at"] = now_iso()
+            job["status_detail"] = "Marked as applied by user from dashboard."
+            job["applied_at"] = applied_at
+            job["updated_at"] = applied_at
+            _append_timeline_locked(
+                job,
+                _timeline_entry(
+                    event="applied",
+                    detail=job["status_detail"],
+                    at=job["updated_at"],
+                ),
+            )
             write_jobs(data)
             company, role = job.get("company"), job.get("title")
+        # DASH2-006: kill in-flight fill/tailor like Cancel/Delete so Chromium
+        # does not keep running after status is already applied.
+        proc = _running_procs.get(session_key) if session_key else None
+        _kill_process_tree(proc)
+        if session_key:
+            abort_gateway_session(session_key)
         if company:
             try:
                 cmd = [PYTHON_BIN, str(ROOT / "scripts" / "tracker.py"), "update-status",
@@ -1386,19 +6458,234 @@ class Handler(BaseHTTPRequestHandler):
                 subprocess.run(cmd, capture_output=True, timeout=15)
             except Exception as e:
                 print(f"warn: failed to update tracker status for {job_id}: {e}")
-        self._send_json({"ok": True})
+        # Close only this job's held PartyRock tab (other jobs' tabs stay open).
+        try:
+            pr_close = close_job_partyrock_tab(job_id, RESUMES_DIR / job_id)
+            if pr_close.get("target_id"):
+                print(
+                    f"PartyRock tab for {job_id}: {pr_close.get('reason')} "
+                    f"target={pr_close.get('target_id')}"
+                )
+        except Exception as e:
+            print(f"warn: PartyRock tab close on mark-applied for {job_id}: {e}")
+        self._send_json({"ok": True, "status": "applied"})
+
+    def _handle_edit_applied(self, job_id, payload):
+        try:
+            fields = _validated_applied_edit(payload or {})
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+        if not fields:
+            self._send_json({"error": "no editable fields"}, 400)
+            return
+        with _lock:
+            data = read_jobs()
+            job = self._job(data, job_id)
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            if job.get("status") != "applied":
+                self._send_json({"error": "only applied jobs can be edited here"}, 409)
+                return
+            job.update(fields)
+            job["updated_at"] = now_iso()
+            _append_timeline_locked(
+                job,
+                _timeline_entry(
+                    event="applied_edit",
+                    detail="Applied job details edited by user.",
+                    at=job["updated_at"],
+                ),
+            )
+            write_jobs(data)
+            response_job = slim_job_for_list(job)
+        self._send_json({"ok": True, "job": response_job})
+
+    def _handle_claim_ready_announcement(self, job_id):
+        """Grant the spoken 'ready for review' announcement to one client only.
+
+        Every open dashboard tab polls independently and each has its own
+        in-page 'already spoken' set, so a single Ready event was announced
+        once per client (observed with 11 connected clients). The flag lives
+        on the job record, so exactly one client wins the claim regardless of
+        how many tabs are open or whether a page was reloaded. ``_patch_job``
+        clears it when the job leaves Ready, so a genuinely new Ready event
+        is announced again — once.
+        """
+        with _lock:
+            data = read_jobs()
+            job = self._job(data, job_id)
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            if job.get("status") != "ready_for_review":
+                self._send_json({"speak": False, "reason": "not ready"})
+                return
+            if job.get("ready_announced"):
+                self._send_json({"speak": False, "reason": "already announced"})
+                return
+            job["ready_announced"] = True
+            write_jobs(data)
+        self._send_json({"speak": True})
+
+    def _handle_resume_upload(self, job_id: str, content_length: int) -> None:
+        """Store a user-uploaded resume under resumes/<job_id>/ and set resume_path."""
+        ctype = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in ctype.lower():
+            self._send_json({"error": "expected multipart/form-data"}, 400)
+            return
+        if content_length <= 0 or content_length > 25 * 1024 * 1024:
+            self._send_json({"error": "invalid or too-large upload"}, 400)
+            return
+        with _lock:
+            data = read_jobs()
+            job = self._job(data, job_id)
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            if job.get("status") in IN_PROGRESS_STATUSES:
+                self._send_json(
+                    {
+                        "error": (
+                            "resume upload blocked while fill/tailor is in progress "
+                            "(UI-007). Cancel the run first."
+                        ),
+                    },
+                    409,
+                )
+                return
+        try:
+            body = self.rfile.read(content_length)
+            filename, file_bytes = _parse_multipart_file(body, ctype)
+        except Exception as e:
+            self._send_json({"error": f"multipart parse failed: {e}"[:200]}, 400)
+            return
+        if not file_bytes:
+            self._send_json({"error": "empty file"}, 400)
+            return
+        ext = Path(filename or "resume.pdf").suffix.lower()
+        if ext not in (".pdf", ".doc", ".docx"):
+            self._send_json(
+                {"error": "only .pdf / .doc / .docx resumes are accepted"},
+                400,
+            )
+            return
+        # Prefer resume.pdf so Start/Retry / View Resume share one path.
+        dest_name = "resume.pdf" if ext == ".pdf" else f"uploaded_resume{ext}"
+        job_dir = RESUMES_DIR / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        dest = job_dir / dest_name
+        dest.write_bytes(file_bytes)
+        try:
+            rel = str(dest.relative_to(ROOT))
+        except ValueError:
+            rel = str(dest)
+        with _lock:
+            data = read_jobs()
+            job = self._job(data, job_id)
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            if job.get("status") in IN_PROGRESS_STATUSES:
+                self._send_json(
+                    {
+                        "error": (
+                            "resume upload blocked while fill/tailor is in progress "
+                            "(UI-007). Cancel the run first."
+                        ),
+                    },
+                    409,
+                )
+                return
+            job["resume_path"] = rel
+            job["status_detail"] = f"Resume uploaded ({dest_name})."
+            job["updated_at"] = now_iso()
+            published = None
+            if dest.suffix.lower() == ".pdf":
+                published = _publish_resume_by_company(job, dest, data)
+            write_jobs(data)
+        detail = f"Uploaded resume → {rel}"
+        if published is not None:
+            detail += f"; by_company → {published.name}"
+        append_fill_activity(
+            job_id,
+            event="resume",
+            detail=detail,
+            persist=True,
+        )
+        payload = {
+            "ok": True,
+            "resume_path": rel,
+            "filename": dest_name,
+            "bytes": len(file_bytes),
+        }
+        if published is not None:
+            payload["resume_by_company_path"] = job.get("resume_by_company_path")
+        self._send_json(payload)
+
+    def _handle_resume_clear(self, job_id: str) -> None:
+        """Clear job.resume_path (and local resumes/<id> files) for dossier Clear."""
+        cleared = []
+        with _lock:
+            data = read_jobs()
+            job = self._job(data, job_id)
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            if job.get("status") in IN_PROGRESS_STATUSES:
+                self._send_json(
+                    {
+                        "error": (
+                            "resume clear blocked while fill/tailor is in progress "
+                            "(UI-007). Cancel the run first."
+                        ),
+                    },
+                    409,
+                )
+                return
+            job["resume_path"] = None
+            job.pop("resume_by_company_path", None)
+            job["status_detail"] = "Resume cleared."
+            job["updated_at"] = now_iso()
+            write_jobs(data)
+        job_dir = RESUMES_DIR / job_id
+        for name in ("resume.pdf", "uploaded_resume.pdf", "uploaded_resume.doc", "uploaded_resume.docx"):
+            p = job_dir / name
+            try:
+                if p.is_file():
+                    p.unlink()
+                    cleared.append(str(p.relative_to(ROOT)))
+            except OSError as e:
+                print(f"warn: resume clear unlink failed {p}: {e}")
+        append_fill_activity(
+            job_id,
+            event="resume",
+            detail="Cleared resume on file" + (f" ({', '.join(cleared)})" if cleared else ""),
+        )
+        self._send_json({"ok": True, "cleared": cleared})
 
     def _handle_add_job(self, payload):
         url = (payload.get("url") or "").strip()
         if not url or not url.lower().startswith(("http://", "https://")):
             self._send_json({"error": "a valid http(s) url is required"}, 400)
             return
+        if is_url_blocked(url):
+            self._send_json({
+                "error": "this URL was deleted earlier and is blocked from re-adding",
+            }, 409)
+            return
         with _lock:
             data = read_jobs()
+            norm = normalize_url(url) or url
             for job in data["jobs"]:
-                if job.get("apply_url") == url or job.get("job_url") == url:
-                    self._send_json({"error": "a job with this URL already exists", "id": job["id"]}, 409)
-                    return
+                for f in ("apply_url", "job_url"):
+                    existing = job.get(f)
+                    if not existing:
+                        continue
+                    if existing == url or (normalize_url(existing) or existing) == norm:
+                        self._send_json({"error": "a job with this URL already exists", "id": job["id"]}, 409)
+                        return
             slug_base = re.sub(r"[^a-z0-9]+", "-", urlparse(url).netloc.lower()).strip("-") or "manual"
             job_id = f"{slug_base}-{int(time.time())}"
             job = {
@@ -1420,7 +6707,16 @@ class Handler(BaseHTTPRequestHandler):
                 "created_at": now_iso(),
                 "updated_at": now_iso(),
                 "qa_log": [],
+                "timeline": [],
             }
+            _append_timeline_locked(
+                job,
+                _timeline_entry(
+                    event="added",
+                    detail=job["status_detail"],
+                    at=job["created_at"],
+                ),
+            )
             data["jobs"].append(job)
             write_jobs(data)
         threading.Thread(target=_try_extract_manual_job_details, args=(job_id, url), daemon=True).start()
@@ -1433,30 +6729,175 @@ class Handler(BaseHTTPRequestHandler):
         PROFILE_FILE.write_text(json.dumps(payload, indent=2))
         self._send_json({"ok": True})
 
-    def _handle_discover(self):
+    def _handle_discover(self, payload=None):
         # Only block a duplicate discovery run - a job actively applying
         # no longer needs to block this (jobs.json writes are properly
         # file-locked across processes now, see scripts/jobs_lock.py).
-        if is_session_running(DISCOVERY_SESSION_KEY):
-            self._send_json({"error": "discovery is already running"}, 409)
+        payload = payload if isinstance(payload, dict) else {}
+        parsed = _parse_enabled_sources(payload)
+        enabled = set(DISCOVERY_SOURCE_IDS) if parsed is None else parsed
+        # Persist any region toggles / Built In days included in the POST so a
+        # discovery kicked off from the popover uses the just-picked regions.
+        settings_patch = {
+            k: payload[k]
+            for k in ("builtin_days_since_updated", "discover_us", "discover_india")
+            if k in payload
+        }
+        if settings_patch:
+            try:
+                save_discovery_settings(settings_patch)
+            except ValueError as e:
+                self._send_json(
+                    {"error": str(e), "discovery": discovery_status()},
+                    400,
+                )
+                return
+        # Gate India-only sources: they never run unless the India region is on.
+        regions = enabled_discovery_regions()
+        if "india" not in regions:
+            enabled = {sid for sid in enabled if sid not in INDIA_ONLY_SOURCE_IDS}
+        if not enabled:
+            self._send_json(
+                {"error": "enable at least one discovery source", "discovery": discovery_status()},
+                400,
+            )
+            return
+        # Default: always continue from checkpoint. Explicit fresh=true
+        # clears leftover progress and starts a new incremental pass.
+        fresh = bool(payload.get("fresh") or payload.get("force_fresh"))
+        if is_session_running(DISCOVERY_SESSION_KEY) or not _begin_discovery(enabled, fresh=fresh):
+            self._send_json({"error": "discovery is already running", "discovery": discovery_status()}, 409)
             return
         threading.Thread(target=run_scout_scrape_then_dedup, daemon=True).start()
-        self._send_json({"ok": True, "started": True})
+        self._send_json({
+            "ok": True,
+            "started": True,
+            "resumed": bool(discovery_status().get("resumed")),
+            "fresh": fresh,
+            "discovery": discovery_status(),
+        })
 
-    def _handle_start(self, job_id):
+    def _handle_discover_settings(self, payload=None):
+        try:
+            settings = save_discovery_settings(
+                payload if isinstance(payload, dict) else {}
+            )
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+        self._send_json({"ok": True, **settings})
+
+    def _handle_discover_abort(self, payload=None):
+        payload = payload if isinstance(payload, dict) else {}
+        source_id = payload.get("source_id") or payload.get("source")
+        if payload.get("all") or (isinstance(source_id, str) and source_id.strip().lower() == "all"):
+            source_id = None
+        elif source_id is not None:
+            source_id = str(source_id).strip() or None
+        body, code = request_discovery_abort(source_id)
+        self._send_json(body, code)
+
+    def _handle_prune(self, payload=None):
+        payload = payload if isinstance(payload, dict) else {}
+        try:
+            reasons = _normalize_prune_reasons(payload.get("reasons"))
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+        moved = _auto_delete_sweep_once(set(reasons))
+        self._send_json({"ok": True, "moved": moved, "reasons": reasons})
+
+    def _handle_prune_settings(self, payload=None):
+        try:
+            settings = save_prune_settings(payload if isinstance(payload, dict) else {})
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+        self._send_json({"ok": True, **settings})
+
+    def _handle_empty_deleted(self):
+        """Hard-purge status=deleted jobs; keep URL tombstones for dedup.
+
+        Soft-delete already wrote tombstones when each job was deleted.
+        Re-calling block_deleted_job once per row rewrote blocked_urls.json
+        thousands of times (~100s+), held _lock the whole time, and made the
+        Empty Deleted request look like a no-op (UI never refreshed).
+        Batch-ensure tombstones once outside the lock, then purge rows.
+        """
+        with _lock:
+            data = read_jobs()
+            deleted = [j for j in (data.get("jobs") or []) if j.get("status") == "deleted"]
+        blocked_n = 0
+        try:
+            keys = block_deleted_jobs_batch(deleted, keep_tombstone=True)
+            blocked_n = len(keys or [])
+        except TypeError:
+            for j in deleted:
+                try:
+                    blocked_n += len(block_deleted_job(j, keep_tombstone=True) or [])
+                except TypeError:
+                    blocked_n += len(block_deleted_job(j) or [])
+                except Exception as e:
+                    print(f"warn: empty-deleted block failed for {j.get('id')}: {e}")
+        except Exception as e:
+            print(f"warn: empty-deleted batch block failed: {e}")
+        with _lock:
+            data = read_jobs()
+            before = len(data.get("jobs") or [])
+            data["jobs"] = [
+                j for j in (data.get("jobs") or []) if j.get("status") != "deleted"
+            ]
+            purged = before - len(data["jobs"])
+            write_jobs(data)
+        self._send_json({"ok": True, "purged": purged, "blocked_keys": blocked_n})
+
+    def _handle_start(self, job_id, payload=None):
         # Unlocked read first - read_jobs() has its own internal file lock
         # for safe reads, no need for the broader in-process _lock here.
+        payload = payload or {}
+        try:
+            test_mode = _parse_test_mode(payload)
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+        force_partyrock = False
+        if "force_partyrock" in payload:
+            raw = payload.get("force_partyrock")
+            if isinstance(raw, bool):
+                force_partyrock = raw
+            elif isinstance(raw, (int, float)):
+                force_partyrock = bool(raw)
+            else:
+                force_partyrock = str(raw).strip().lower() not in (
+                    "0", "false", "no", "off", "",
+                )
         job = self._job(read_jobs(), job_id)
         if job is None:
             self._send_json({"error": "not found"}, 404)
             return
+        # Skip PartyRock when resume already on disk (upload or prior tailor),
+        # or when Test Mode toggle disables PartyRock — unless Tailor + fill
+        # explicitly forces PartyRock regeneration.
+        has_resume = resolve_job_resume_file(job) is not None
+        if force_partyrock:
+            skip_partyrock = False
+        else:
+            skip_partyrock = has_resume or (
+                bool(test_mode) and _parse_skip_partyrock(payload)
+            )
+        pr_url = None if skip_partyrock else partyrock_url(test_mode=test_mode)
+        pr_mode = (
+            "bypassed"
+            if skip_partyrock
+            else partyrock_mode_label(test_mode=test_mode)
+        )
         # Only block re-starting THIS job while it's already running - other
-        # jobs and discovery no longer block Start at all. Checked OUTSIDE
-        # _lock deliberately: is_session_running() can shell out to the
-        # gateway (subprocess, up to ~15s) - doing that while holding _lock
-        # would freeze every other dashboard request (any GET/POST that
-        # needs the lock) for that whole window, not just this one.
-        if is_session_running(job["session_key"]):
+        # jobs and discovery no longer block Start at all. Uses the fast
+        # local-only check (no gateway subprocess) so clicking Start →
+        # tailoring isn't delayed by an ~15s `openclaw sessions list` round
+        # trip. The in-lock status claim below (IN_PROGRESS_STATUSES) is the
+        # authoritative double-Start guard, including for gateway agent turns.
+        if _session_running_local(job["session_key"]):
             self._send_json({"error": "this job is already running"}, 409)
             return
         with _lock:
@@ -1465,76 +6906,990 @@ class Handler(BaseHTTPRequestHandler):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
-            job["status"] = "tailoring"
-            job["status_detail"] = "Started by user from dashboard. Tailoring resume."
+            # One fill/tailor at a time — reject other jobs so PartyRock
+            # waiters cannot cascade after the first finishes. Also block
+            # when another job is Ready/CAPTCHA with a live hold window
+            # (CHR2-002) — fill layer would refuse with headed_cap anyway.
+            other = _find_blocking_start_job(data, exclude_id=job_id)
+            if other is not None:
+                oid = other.get("id") or "?"
+                ostatus = other.get("status") or "?"
+                hold_bit = (
+                    " (review/CAPTCHA browser still held)"
+                    if ostatus in _HOLD_BLOCK_STATUSES
+                    else ""
+                )
+                self._send_json(
+                    {
+                        "error": (
+                            f"another job is already running (id={oid}, "
+                            f"status={ostatus}){hold_bit}. "
+                            "Cancel it first — only one fill at a time."
+                        ),
+                        "other_job_id": oid,
+                        "other_status": ostatus,
+                    },
+                    409,
+                )
+                return
+            # Status claim closes the race vs Fast fill (dummy): both paths
+            # register _running_procs only after Popen, so a double-click
+            # could otherwise start tailor + dummy fill on the same job.
+            if job.get("status") in IN_PROGRESS_STATUSES:
+                self._send_json({"error": "this job is already running"}, 409)
+                return
+            # UI-002: refuse second Start on same job while Ready/CAPTCHA hold
+            # browser is still live.
+            if (
+                job.get("status") in _HOLD_BLOCK_STATUSES
+                and _fill_hold_browser_active()
+            ):
+                self._send_json(
+                    {
+                        "error": (
+                            "this job is still held for review/CAPTCHA — "
+                            "Mark as applied or close the fill browser before "
+                            "starting again"
+                        ),
+                    },
+                    409,
+                )
+                return
+            # Capture before claiming navigating/tailoring so Test Mode fill
+            # can restore stuck / blocked_captcha instead of always discovered.
+            prior_restore = _dummy_restore_status(job.get("status") or "discovered")
+            if skip_partyrock:
+                job["status"] = "navigating"
+                resume_on_disk = resolve_job_resume_file(job)
+                if resume_on_disk is not None:
+                    job["status_detail"] = (
+                        f"{_fill_mode_prefix(test_mode)} PartyRock bypassed "
+                        f"(resume on disk: {resume_on_disk.name}) — fill only."
+                    )
+                elif test_mode:
+                    job["status_detail"] = (
+                        "[DUMMY/TEST] PartyRock bypassed (test mode) — "
+                        "skipping tailor; starting fast_fill (dummy only)."
+                    )
+                else:
+                    job["status_detail"] = (
+                        f"{_fill_mode_prefix(test_mode)} PartyRock skipped — "
+                        "starting fast_fill."
+                    )
+            else:
+                job["status"] = "tailoring"
+                job["status_detail"] = (
+                    f"Started by user from dashboard. Tailoring resume via PartyRock "
+                    f"({pr_mode}): {pr_url}"
+                )
             job["updated_at"] = now_iso()
+            _append_timeline_locked(
+                job,
+                _timeline_entry(
+                    event=job["status"],
+                    detail=job["status_detail"],
+                    at=job["updated_at"],
+                ),
+            )
             write_jobs(data)
-        threading.Thread(target=run_tailor_then_fill, args=(job_id,), daemon=True).start()
-        self._send_json({"ok": True})
+        clear_fill_activity(job_id)
+        if not skip_partyrock:
+            # PartyRock will be used → warm the CDP browser now, concurrently,
+            # so it's ready by the time tailor_resume.py connects instead of
+            # cold-starting sequentially right before tailoring.
+            _prewarm_openclaw_browser_async()
+        if skip_partyrock:
+            start_detail = (
+                "Start queued (using uploaded resume — PartyRock skipped)."
+                if has_resume
+                else (
+                    "Start queued (PartyRock bypassed). "
+                    "Straight to fast_fill dummy (no tailor_resume)."
+                )
+            )
+        else:
+            start_detail = (
+                f"Start queued ({pr_mode}). "
+                f"{'After PartyRock → fast_fill dummy.' if test_mode else 'After PartyRock → fast_fill real.'}"
+            )
+        append_fill_activity(job_id, event="start", detail=start_detail, persist=True)
+        threading.Thread(
+            target=run_tailor_then_fill,
+            args=(job_id,),
+            kwargs={
+                "test_mode": test_mode,
+                "skip_partyrock": skip_partyrock,
+                "force_partyrock": force_partyrock,
+                "restore_status": prior_restore,
+            },
+            daemon=True,
+        ).start()
+        self._send_json({
+            "ok": True,
+            "test_mode": test_mode,
+            "skip_partyrock": skip_partyrock,
+            "force_partyrock": force_partyrock,
+            "resume_on_disk": has_resume,
+            "partyrock": not skip_partyrock,
+            "partyrock_mode": pr_mode,
+            "partyrock_url": pr_url,
+            "fill_after_tailor": (
+                "fast_fill_skip_tailor"
+                if skip_partyrock
+                else ("fast_fill_dummy" if test_mode else "fast_fill_real")
+            ),
+        })
+
+    def _handle_hybrid_fill_dummy(self, job_id, payload=None, query=None):
+        """Dashboard fast fill — dummy (default) or real profile when test_mode=false.
+
+        Child uses prepare_dummy_run (test) or prepare_real_run (production prep).
+        Does not start the real agent / tailor path. Never submits.
+        """
+        payload = payload or {}
+        job = self._job(read_jobs(), job_id)
+        if job is None:
+            self._send_json({"error": "not found"}, 404)
+            return
+        apply_url = (job.get("apply_url") or job.get("job_url") or "").strip()
+        if not apply_url:
+            self._send_json({"error": "job has no apply_url"}, 400)
+            return
+        # UI-017 / DASH2-007: same fast local check as Start (no gateway list).
+        if _session_running_local(job["session_key"]):
+            self._send_json({"error": "this job is already running"}, 409)
+            return
+        try:
+            test_mode = _parse_test_mode(payload)
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+        headed = _dummy_fill_headed_requested(payload, query)
+        # Dummy and real: Flash ON by default (same leftover quality path).
+        flash_leftovers = _dummy_fill_flash_requested(payload, query)
+        if FASTFILL_SCRIPT.is_file():
+            engine = "fast_fill"
+        else:
+            engine = "hybrid_fill"
+        prefix = _fill_mode_prefix(test_mode)
+        with _lock:
+            data = read_jobs()
+            job = self._job(data, job_id)
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            other = _find_blocking_start_job(data, exclude_id=job_id)
+            if other is not None:
+                oid = other.get("id") or "?"
+                ostatus = other.get("status") or "?"
+                hold_bit = (
+                    " (review/CAPTCHA browser still held)"
+                    if ostatus in _HOLD_BLOCK_STATUSES
+                    else ""
+                )
+                self._send_json(
+                    {
+                        "error": (
+                            f"another job is already running (id={oid}, "
+                            f"status={ostatus}){hold_bit}. "
+                            "Cancel it first — only one fill at a time."
+                        ),
+                        "other_job_id": oid,
+                        "other_status": ostatus,
+                    },
+                    409,
+                )
+                return
+            if job.get("status") in IN_PROGRESS_STATUSES:
+                self._send_json({"error": "this job is already running"}, 409)
+                return
+            # UI-002/003: same-job Ready/CAPTCHA hold blocks Fast fill too.
+            if (
+                job.get("status") in _HOLD_BLOCK_STATUSES
+                and _fill_hold_browser_active()
+            ):
+                self._send_json(
+                    {
+                        "error": (
+                            "this job is still held for review/CAPTCHA — "
+                            "Mark as applied or close the fill browser before "
+                            "starting again"
+                        ),
+                    },
+                    409,
+                )
+                return
+            restore_status = _dummy_restore_status(job.get("status") or "discovered")
+            job["status"] = "filling"
+            mode = "headed" if headed else "headless"
+            data_label = "dummy resume + DUMMY_PROFILE" if test_mode else "real profile + resume PDF"
+            flash_bit = " Flash ON." if flash_leftovers else ""
+            job["status_detail"] = (
+                f"{prefix} Queued fast fill ({engine}, {mode}). "
+                f"{data_label}.{flash_bit} Never submits."
+            )
+            job["updated_at"] = now_iso()
+            _append_timeline_locked(
+                job,
+                _timeline_entry(
+                    event="filling",
+                    detail=job["status_detail"],
+                    at=job["updated_at"],
+                ),
+            )
+            write_jobs(data)
+        clear_fill_activity(job_id)
+        append_fill_activity(
+            job_id,
+            event="start",
+            detail=(
+                f"Queued {engine} ({mode}, "
+                f"{'dummy' if test_mode else 'real-profile'}"
+                f"{', flash ON' if flash_leftovers else ''}). Never submits."
+            ),
+            persist=True,
+        )
+        threading.Thread(
+            target=run_hybrid_fill_dummy,
+            kwargs={
+                "job_id": job_id,
+                "test_mode": test_mode,
+                "headed": headed,
+                "flash_leftovers": flash_leftovers,
+                "restore_status": restore_status,
+            },
+            daemon=True,
+        ).start()
+        assert engine in ("fast_fill", "hybrid_fill")
+        self._send_json({
+            "ok": True,
+            "dummy": test_mode,
+            "test_mode": test_mode,
+            "engine": engine,
+            "headed": headed,
+            "flash_leftovers": flash_leftovers,
+            "never_submit": True,
+            "real_profile": not test_mode,
+            "fastfill_real_profile": "0" if test_mode else "1",
+        })
 
     def _handle_cli(self, payload):
+        # OpenClaw-free: the dashboard "CLI" box was a dev/debug passthrough to
+        # the `openclaw` binary, which no longer exists in this deployment.
+        # Disabled rather than shelling out to a missing binary — the response
+        # shape is preserved so the frontend handles it gracefully.
         args_str = (payload.get("args") or "").strip()
-        confirmed = bool(payload.get("confirmed"))
         if not args_str:
             self._send_json({"error": "no command given"}, 400)
             return
-        if is_risky(args_str) and not confirmed:
-            self._send_json({"requires_confirm": True})
-            return
-        try:
-            args = shlex.split(args_str)
-        except ValueError as e:
-            self._send_json({"error": f"could not parse command: {e}"}, 400)
-            return
-        try:
-            proc = subprocess.Popen(
-                [OPENCLAW_BIN, *args],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            )
-            deadline = time.time() + 45
-            try:
-                out, _ = proc.communicate(timeout=max(0.1, deadline - time.time()))
-                timed_out = False
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                out, _ = proc.communicate()
-                timed_out = True
-            if "allowlist" in args and "add" in args and "job-hunter" in args:
-                _ensure_job_hunter_ask_off()
-            self._send_json({
-                "ok": True,
-                "output": out,
-                "exit_code": proc.returncode,
-                "timed_out": timed_out,
-            })
-        except Exception as e:
-            self._send_json({"error": str(e)}, 500)
+        self._send_json({
+            "ok": False,
+            "output": (
+                "OpenClaw CLI passthrough is disabled: this deployment runs "
+                "without the `openclaw` binary. Use the dedicated dashboard "
+                "controls (Discover, cron schedule, allowlist) instead."
+            ),
+            "exit_code": 127,
+            "timed_out": False,
+            "disabled": True,
+        })
 
     def _handle_cron_toggle(self, payload):
         enable = bool(payload.get("enable"))
         try:
-            job = _find_cron_job()
-            if not job:
-                self._send_json({"error": "cron job not found"}, 404)
+            # OpenClaw-free: persist to local scheduler settings; the in-process
+            # DiscoveryScheduler re-reads them each tick, so this takes effect
+            # without a restart.
+            scheduler_mod.write_settings(enabled=enable)
+            updated = _find_cron_job()
+            self._send_json({"ok": True, "enabled": enable, "job": _cron_job_public(updated)})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    def _handle_cron_schedule(self, payload):
+        """Update job-hunter-daily cron wall-clock time (keeps daily * * *)."""
+        payload = payload or {}
+        hour = payload.get("hour")
+        minute = payload.get("minute")
+        time_raw = payload.get("time")
+        if time_raw is not None and (hour is None or minute is None):
+            try:
+                parts = str(time_raw).strip().split(":")
+                hour = int(parts[0])
+                minute = int(parts[1]) if len(parts) > 1 else 0
+            except (ValueError, IndexError):
+                self._send_json({"error": "time must be HH:MM"}, 400)
                 return
-            subprocess.run(
-                [OPENCLAW_BIN, "cron", "enable" if enable else "disable", job["id"]],
-                capture_output=True,
-            )
-            self._send_json({"ok": True})
+        try:
+            hour = int(hour if hour is not None else 9)
+            minute = int(minute if minute is not None else 0)
+        except (TypeError, ValueError):
+            self._send_json({"error": "hour/minute must be integers"}, 400)
+            return
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            self._send_json({"error": "hour 0-23, minute 0-59"}, 400)
+            return
+        expr = f"{minute} {hour} * * *"
+        try:
+            # OpenClaw-free: persist the new wall-clock time to local scheduler
+            # settings (keeps the daily cadence). The scheduler picks it up.
+            scheduler_mod.write_settings(hour=hour, minute=minute)
+            updated = _find_cron_job()
+            self._send_json({
+                "ok": True,
+                "expr": expr,
+                "hour": hour,
+                "minute": minute,
+                "time": f"{hour:02d}:{minute:02d}",
+                "job": _cron_job_public(updated),
+            })
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
 
 
+def _backfill_missing_jds_loop() -> None:
+    """One-shot: fetch missing JDs for SmartRecruiters/Breezy/Rippling/Lever.
+
+    Skips when logs/missing_jd_backfill_v1.done exists. Runs in a daemon
+    thread so startup is not blocked; network work can take several minutes.
+    """
+    marker = ROOT / "logs" / "missing_jd_backfill_v1.done"
+    if marker.exists():
+        return
+    script = ROOT / "scripts" / "backfill_missing_jds.py"
+    if not script.is_file():
+        return
+    try:
+        import subprocess
+
+        py = ROOT / ".venv" / "bin" / "python"
+        cmd = [str(py if py.is_file() else sys.executable), str(script)]
+        print("missing JD backfill: starting background run…")
+        proc = subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=60 * 45,
+        )
+        if proc.stdout:
+            print(proc.stdout[-2000:])
+        if proc.returncode != 0:
+            print(
+                f"warn: missing JD backfill exited {proc.returncode}: "
+                f"{(proc.stderr or '')[-500:]}"
+            )
+        else:
+            print("missing JD backfill: finished")
+    except Exception as e:
+        print(f"warn: missing JD backfill failed: {e}")
+
+
+def _backfill_multi_opening_loop() -> None:
+    """One-shot: mark multi_opening on jobs missing the flag (reads jd_full).
+
+    Runs in a daemon thread so list sort works for existing jobs without
+    blocking dashboard startup. Skips jobs that already have a boolean flag.
+    """
+    try:
+        from multi_opening import backfill_multi_opening_flags
+    except Exception as e:
+        print(f"warn: multi_opening import failed: {e}")
+        return
+    try:
+        changed = 0
+        true_count = 0
+        with _lock:
+            data = read_jobs()
+            needs = any(
+                not isinstance(j.get("multi_opening"), bool)
+                for j in (data.get("jobs") or [])
+            )
+            if not needs:
+                return
+            changed, true_count = backfill_multi_opening_flags(
+                data, only_missing=True
+            )
+            if changed:
+                write_jobs(data)
+        if changed:
+            print(
+                f"multi_opening backfill: changed={changed} "
+                f"true={true_count}"
+            )
+    except Exception as e:
+        print(f"warn: multi_opening backfill failed: {e}")
+
+
+def _job_desc_for_backfill(job: dict) -> str:
+    """Prefer resumes/<id>/jd_full.txt (canonical), then .md, then preview."""
+    job_id = str(job.get("id") or "")
+    for name in ("jd_full.txt", "jd_full.md"):
+        jd_path = RESUMES_DIR / job_id / name
+        if jd_path.is_file():
+            try:
+                full = jd_path.read_text(encoding="utf-8", errors="replace")
+                if full.strip():
+                    return full
+            except OSError:
+                pass
+    return job.get("job_description") or ""
+
+
+def _has_jd_full_for_backfill(job: dict) -> bool:
+    job_id = str(job.get("id") or "")
+    if not job_id:
+        return False
+    return any(
+        (RESUMES_DIR / job_id / name).is_file()
+        for name in ("jd_full.txt", "jd_full.md")
+    )
+
+
+# Bump when detection / full-JD backfill logic changes so undetermined
+# stamps get one more pass. Marker lives under logs/.
+_YOE_WM_BACKFILL_MARKER = ROOT / "logs" / "yoe_wm_full_jd_backfill_v2.done"
+# Tier-2 display fallbacks (min_yoe_fallback / work_mode_fallback) — separate
+# marker so the strict v2 pass is not re-run.
+_YOE_WM_FALLBACK_MARKER = ROOT / "logs" / "yoe_wm_fallback_v3.done"
+# Salary stamps (display only). Marker under logs/.
+_SALARY_BACKFILL_MARKER = ROOT / "logs" / "salary_full_jd_backfill_v1.done"
+
+
+def _backfill_salary_loop() -> None:
+    """Stamp salary_min/max (+ fallbacks) from full JD. Display only — never prune."""
+    try:
+        from discovery_filters import extract_salary, extract_salary_fallback
+    except Exception as e:
+        print(f"warn: discovery_filters import failed (salary): {e}")
+        return
+    try:
+        force = not _SALARY_BACKFILL_MARKER.exists()
+        changed = 0
+        strict_fixed = 0
+        fb_fixed = 0
+        with _lock:
+            data = read_jobs()
+            jobs = data.get("jobs") or []
+            needs = force or any(
+                "salary_min" not in j
+                or "salary_max" not in j
+                or "salary_min_fallback" not in j
+                or "salary_max_fallback" not in j
+                for j in jobs
+            )
+            if not needs:
+                return
+            for job in jobs:
+                missing = (
+                    "salary_min" not in job
+                    or "salary_max" not in job
+                    or "salary_min_fallback" not in job
+                    or "salary_max_fallback" not in job
+                )
+                undetermined = job.get("salary_min") is None
+                refresh = force and undetermined and _has_jd_full_for_backfill(job)
+                if not missing and not refresh:
+                    continue
+                title = job.get("title") or ""
+                desc = _job_desc_for_backfill(job)
+                sal = extract_salary(title=title, description=desc)
+                sal_fb = (
+                    extract_salary_fallback(title=title, description=desc)
+                    if sal is None
+                    else None
+                )
+                new_min = (sal or {}).get("min")
+                new_max = (sal or {}).get("max")
+                new_fb_min = (sal_fb or {}).get("min")
+                new_fb_max = (sal_fb or {}).get("max")
+                prev = (
+                    job.get("salary_min"),
+                    job.get("salary_max"),
+                    job.get("salary_min_fallback"),
+                    job.get("salary_max_fallback"),
+                )
+                job["salary_min"] = new_min
+                job["salary_max"] = new_max
+                job["salary_min_fallback"] = new_fb_min
+                job["salary_max_fallback"] = new_fb_max
+                cur = (new_min, new_max, new_fb_min, new_fb_max)
+                if cur != prev or missing:
+                    changed += 1
+                    if new_min is not None and prev[0] != new_min:
+                        strict_fixed += 1
+                    if new_fb_min is not None and prev[2] != new_fb_min:
+                        fb_fixed += 1
+            if changed:
+                write_jobs(data)
+        if force:
+            try:
+                _SALARY_BACKFILL_MARKER.parent.mkdir(parents=True, exist_ok=True)
+                _SALARY_BACKFILL_MARKER.write_text(
+                    f"strict_fixed={strict_fixed} fb_fixed={fb_fixed} "
+                    f"fields_touched={changed}\n",
+                    encoding="utf-8",
+                )
+            except OSError as e:
+                print(f"warn: could not write salary backfill marker: {e}")
+        if changed:
+            print(
+                f"salary backfill: fields_set={changed} "
+                f"strict_fixed={strict_fixed} fb_fixed={fb_fixed}"
+            )
+    except Exception as e:
+        print(f"warn: salary backfill failed: {e}")
+
+
+def _backfill_yoe_work_mode_loop() -> None:
+    """Stamp min_yoe / work_mode (strict) and display fallbacks from full JD.
+
+    v1 only filled missing keys and read jd_full.md (files are .txt), so many
+    jobs kept unknown/null from the truncated jobs.json preview. v2 marker
+    forces one recompute pass for undetermined fields when jd_full exists.
+    Fallback marker stamps min_yoe_fallback / work_mode_fallback for UI ``~``
+    labels without changing prune/excessive strict YOE.
+    """
+    try:
+        from discovery_filters import (
+            detect_work_mode,
+            detect_work_mode_fallback,
+            extract_min_required_yoe,
+            extract_min_required_yoe_fallback,
+        )
+    except Exception as e:
+        print(f"warn: discovery_filters import failed: {e}")
+        return
+    try:
+        changed = 0
+        mode_fixed = 0
+        yoe_fixed = 0
+        force_undetermined = not _YOE_WM_BACKFILL_MARKER.exists()
+        force_fallback = not _YOE_WM_FALLBACK_MARKER.exists()
+        fb_yoe_fixed = 0
+        fb_mode_fixed = 0
+        fb_changed = 0
+        with _lock:
+            data = read_jobs()
+            jobs = data.get("jobs") or []
+            needs_strict = any(
+                "min_yoe" not in j
+                or "work_mode" not in j
+                or (
+                    force_undetermined
+                    and _has_jd_full_for_backfill(j)
+                    and (
+                        j.get("work_mode") in (None, "unknown")
+                        or j.get("min_yoe") is None
+                    )
+                )
+                for j in jobs
+            )
+            needs_fallback = force_fallback or any(
+                "min_yoe_fallback" not in j or "work_mode_fallback" not in j
+                for j in jobs
+            )
+            if not needs_strict and not force_undetermined and not needs_fallback:
+                return
+            for job in jobs:
+                title = job.get("title") or ""
+                location = job.get("location") or ""
+                missing_yoe = "min_yoe" not in job
+                missing_mode = "work_mode" not in job
+                undetermined_mode = job.get("work_mode") in (None, "unknown")
+                undetermined_yoe = job.get("min_yoe") is None
+                refresh = force_undetermined and _has_jd_full_for_backfill(job)
+                want_strict = (
+                    missing_yoe
+                    or missing_mode
+                    or (refresh and (undetermined_mode or undetermined_yoe))
+                )
+                missing_yoe_fb = "min_yoe_fallback" not in job
+                missing_mode_fb = "work_mode_fallback" not in job
+                want_fallback = force_fallback or missing_yoe_fb or missing_mode_fb
+                if not want_strict and not want_fallback:
+                    continue
+                desc = _job_desc_for_backfill(job)
+                if want_strict:
+                    if missing_mode or (refresh and undetermined_mode):
+                        mode = detect_work_mode(
+                            title=title, location=location, description=desc
+                        )
+                        prev = job.get("work_mode")
+                        if missing_mode or mode != "unknown" or prev != mode:
+                            if mode != prev:
+                                if mode != "unknown":
+                                    mode_fixed += 1
+                                changed += 1
+                            job["work_mode"] = mode
+                    if missing_yoe or (refresh and undetermined_yoe):
+                        yoe = extract_min_required_yoe(
+                            title=title, description=desc
+                        )
+                        prev_y = job.get("min_yoe")
+                        if missing_yoe or yoe is not None:
+                            if yoe != prev_y:
+                                if yoe is not None:
+                                    yoe_fixed += 1
+                                changed += 1
+                            job["min_yoe"] = yoe
+                if want_fallback:
+                    # Re-read after possible strict stamps in this same pass.
+                    strict_yoe = job.get("min_yoe")
+                    strict_mode = job.get("work_mode")
+                    yoe_fb = None
+                    if strict_yoe is None:
+                        yoe_fb = extract_min_required_yoe_fallback(
+                            title=title, description=desc
+                        )
+                    prev_yfb = job.get("min_yoe_fallback")
+                    if missing_yoe_fb or force_fallback or yoe_fb != prev_yfb:
+                        if yoe_fb != prev_yfb:
+                            if yoe_fb is not None:
+                                fb_yoe_fixed += 1
+                            fb_changed += 1
+                        job["min_yoe_fallback"] = yoe_fb
+                    mode_fb = None
+                    if strict_mode in (None, "unknown"):
+                        wm = detect_work_mode_fallback(
+                            title=title, location=location, description=desc
+                        )
+                        if wm != "unknown":
+                            mode_fb = wm
+                    prev_mfb = job.get("work_mode_fallback")
+                    if missing_mode_fb or force_fallback or mode_fb != prev_mfb:
+                        if mode_fb != prev_mfb:
+                            if mode_fb is not None:
+                                fb_mode_fixed += 1
+                            fb_changed += 1
+                        job["work_mode_fallback"] = mode_fb
+            if changed or fb_changed:
+                write_jobs(data)
+        if force_undetermined:
+            try:
+                _YOE_WM_BACKFILL_MARKER.parent.mkdir(parents=True, exist_ok=True)
+                _YOE_WM_BACKFILL_MARKER.write_text(
+                    f"mode_fixed={mode_fixed} yoe_fixed={yoe_fixed} "
+                    f"fields_touched={changed}\n",
+                    encoding="utf-8",
+                )
+            except OSError as e:
+                print(f"warn: could not write yoe/wm backfill marker: {e}")
+        if force_fallback:
+            try:
+                _YOE_WM_FALLBACK_MARKER.parent.mkdir(parents=True, exist_ok=True)
+                _YOE_WM_FALLBACK_MARKER.write_text(
+                    f"mode_fb_fixed={fb_mode_fixed} yoe_fb_fixed={fb_yoe_fixed} "
+                    f"fields_touched={fb_changed}\n",
+                    encoding="utf-8",
+                )
+            except OSError as e:
+                print(f"warn: could not write yoe/wm fallback marker: {e}")
+        if changed:
+            print(
+                f"min_yoe/work_mode backfill: fields_set={changed} "
+                f"mode_fixed={mode_fixed} yoe_fixed={yoe_fixed}"
+            )
+        if fb_changed:
+            print(
+                f"min_yoe_fallback/work_mode_fallback backfill: "
+                f"fields_set={fb_changed} mode_fb_fixed={fb_mode_fixed} "
+                f"yoe_fb_fixed={fb_yoe_fixed}"
+            )
+    except Exception as e:
+        print(f"warn: min_yoe/work_mode backfill failed: {e}")
+
+
+def _normalize_prune_reasons(raw) -> list[str]:
+    if raw is None:
+        return list(PRUNE_REASON_CODES)
+    if not isinstance(raw, (list, tuple, set)):
+        raise ValueError("reasons must be a list")
+    requested = {str(reason).strip() for reason in raw}
+    unknown = requested.difference(PRUNE_REASON_CODES)
+    if unknown:
+        raise ValueError(f"unknown prune reason: {sorted(unknown)[0]}")
+    return [reason for reason in PRUNE_REASON_CODES if reason in requested]
+
+
+def load_prune_settings() -> dict:
+    defaults = {
+        "interval_s": AUTO_DELETE_SWEEP_INTERVAL_S,
+        "reasons": list(PRUNE_REASON_CODES),
+    }
+    with _prune_settings_lock:
+        try:
+            raw = json.loads(PRUNE_SETTINGS_FILE.read_text())
+        except (OSError, json.JSONDecodeError, TypeError):
+            return defaults
+    try:
+        interval_s = int(raw.get("interval_s", defaults["interval_s"]))
+        if interval_s not in PRUNE_INTERVALS_S:
+            interval_s = defaults["interval_s"]
+        reasons = _normalize_prune_reasons(raw.get("reasons"))
+    except (AttributeError, TypeError, ValueError):
+        return defaults
+    return {"interval_s": interval_s, "reasons": reasons}
+
+
+def save_prune_settings(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("expected a JSON object")
+    try:
+        interval_s = int(payload.get("interval_s"))
+    except (TypeError, ValueError):
+        raise ValueError("interval_s must be one of the supported intervals")
+    if interval_s not in PRUNE_INTERVALS_S:
+        raise ValueError("interval_s must be one of 0, 300, 900, 3600, 86400")
+    reasons = _normalize_prune_reasons(payload.get("reasons"))
+    settings = {"interval_s": interval_s, "reasons": reasons}
+    with _prune_settings_lock:
+        PRUNE_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = PRUNE_SETTINGS_FILE.with_suffix(PRUNE_SETTINGS_FILE.suffix + ".tmp")
+        tmp.write_text(json.dumps(settings, indent=2) + "\n")
+        tmp.replace(PRUNE_SETTINGS_FILE)
+    _prune_schedule_wakeup.set()
+    return settings
+
+
+def _auto_delete_sweep_once(reasons: set[str] | None = None) -> int:
+    """Move untouched discovered jobs that match prune rules into Deleted."""
+    enabled_reasons = set(PRUNE_REASON_CODES if reasons is None else reasons)
+    if not enabled_reasons:
+        return 0
+    try:
+        from discovery_filters import auto_delete_reason
+    except Exception as e:
+        print(f"warn: auto_delete_reason import failed: {e}")
+        return 0
+    try:
+        moved = 0
+        with _lock:
+            data = read_jobs()
+            now = datetime.now(timezone.utc).isoformat()
+            for job in data.get("jobs") or []:
+                if job.get("status") != "discovered":
+                    continue
+                reason = auto_delete_reason(
+                    title=job.get("title"),
+                    location=job.get("location"),
+                    company=job.get("company"),
+                    description=_job_desc_for_backfill(job),
+                    url=job.get("apply_url") or job.get("job_url"),
+                )
+                if not reason or reason not in enabled_reasons:
+                    continue
+                job["status"] = "deleted"
+                job["deleted_at"] = now
+                job["deleted_reason"] = reason
+                job["updated_at"] = now
+                moved += 1
+                try:
+                    block_deleted_job(job, keep_tombstone=True)
+                except TypeError:
+                    block_deleted_job(job)
+                except Exception as e:
+                    print(f"warn: block on auto-delete {job.get('id')}: {e}")
+            if moved:
+                write_jobs(data)
+        if moved:
+            print(f"auto-delete sweep: moved={moved}")
+        return moved
+    except Exception as e:
+        print(f"warn: auto-delete sweep failed: {e}")
+        return 0
+
+
+def _backfill_auto_delete_loop() -> None:
+    """Re-sweep prune rules on a timer, not just once at boot.
+
+    Jobs keep arriving while the dashboard runs (discovery batches, manual
+    add, JD/location enrichment that fills an empty location field after
+    ingest), and a startup-only pass never sees any of them — non-US
+    listings stayed visible for the whole life of a long-running server.
+    """
+    while True:
+        _prune_schedule_wakeup.clear()
+        settings = load_prune_settings()
+        interval_s = int(settings["interval_s"])
+        if interval_s <= 0:
+            _prune_schedule_wakeup.wait()
+            continue
+        changed = _prune_schedule_wakeup.wait(interval_s)
+        if not changed:
+            _run_scheduled_prune_once(settings)
+
+
+def _run_scheduled_prune_once(settings: dict) -> int:
+    """Run one timer-triggered sweep with the persisted rule selection."""
+    return _auto_delete_sweep_once(set(settings.get("reasons") or []))
+
+
+def _install_lifecycle_signal_handlers() -> None:
+    """SIGTERM/SIGINT → same teardown as /api/shutdown (tracked child trees).
+
+    launch_dashboard.sh may kill this process when the Desktop applet gets
+    Cmd+Q; without handlers, start_new_session children (fills/discovery)
+    would be orphaned.
+    """
+
+    def _on_signal(signum: int, _frame) -> None:
+        try:
+            name = signal.Signals(signum).name
+        except (ValueError, AttributeError):
+            name = str(signum)
+        # Run teardown off the signal handler so killpg/wait are safer.
+        threading.Thread(
+            target=shutdown_dashboard_stack,
+            args=(f"signal {name}",),
+            daemon=True,
+            name="dashboard-signal-shutdown",
+        ).start()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _on_signal)
+        except (ValueError, OSError) as e:
+            print(f"warn: could not install handler for {sig}: {e}")
+
+
 def main():
-    # No-op if already running - but the browser tool silently hangs every
-    # navigation if it's ever not running, so make sure on every start.
-    subprocess.run([OPENCLAW_BIN, "browser", "start"], capture_output=True)
+    global _http_server
+    # Do NOT start OpenClaw/PartyRock CDP or Chrome-for-Testing here —
+    # only dashboard UI Chrome is opened by launch_dashboard.sh. PartyRock
+    # CDP starts on demand via _ensure_openclaw_managed_browser() when a
+    # Start/tailor path needs it; CfT is launched by Playwright fill.
+    _install_lifecycle_signal_handlers()
+    # DASH2-002: crash/restart leaves no _running_procs — force orphan stuck now.
+    try:
+        orphaned = _force_stuck_orphaned_in_progress(ignore_age=True)
+        if orphaned:
+            print(
+                f"reconcile startup: force-stuck {len(orphaned)} orphaned "
+                f"in-progress job(s): {', '.join(orphaned[:8])}"
+                + ("…" if len(orphaned) > 8 else "")
+            )
+    except Exception as e:
+        print(f"warn: startup orphan reconcile failed: {e}")
+    try:
+        triage = migrate_triage_holding_pen_once()
+        if triage.get("skipped_to_deleted") or triage.get("cancelled_to_open"):
+            print(
+                "triage migrate: "
+                f"{triage.get('skipped_to_deleted', 0)} skipped_* → deleted, "
+                f"{triage.get('cancelled_to_open', 0)} cancelled → open"
+            )
+    except Exception as e:
+        print(f"warn: triage holding-pen migration failed: {e}")
     threading.Thread(target=reconcile_loop, daemon=True).start()
     threading.Thread(target=notify_stuck_jobs_loop, daemon=True).start()
-    server = ThreadingHTTPServer(("127.0.0.1", 8787), Handler)
-    print("job-hunter dashboard: http://127.0.0.1:8787")
-    server.serve_forever()
+    # OpenClaw-free daily discovery scheduler (replaces `openclaw cron`). POSTs
+    # /api/discover at the configured local time while the dashboard is up.
+    try:
+        _bind_host_env = (os.environ.get("JOBHUNTER_DASHBOARD_HOST") or "127.0.0.1").strip()
+        _sched_host = "127.0.0.1" if _bind_host_env in ("", "0.0.0.0") else _bind_host_env
+        try:
+            _sched_port = int((os.environ.get("JOBHUNTER_DASHBOARD_PORT") or "8787").strip())
+        except ValueError:
+            _sched_port = 8787
+        scheduler_mod.DiscoveryScheduler(host=_sched_host, port=_sched_port).start()
+    except Exception as e:
+        print(f"warn: could not start discovery scheduler: {e}")
+    threading.Thread(target=_ui_watchdog_loop, daemon=True, name="ui-lifecycle-watchdog").start()
+    threading.Thread(
+        target=_backfill_missing_jds_loop,
+        daemon=True,
+        name="missing-jd-backfill",
+    ).start()
+    threading.Thread(
+        target=_backfill_multi_opening_loop,
+        daemon=True,
+        name="multi-opening-backfill",
+    ).start()
+    threading.Thread(
+        target=_backfill_yoe_work_mode_loop,
+        daemon=True,
+        name="yoe-work-mode-backfill",
+    ).start()
+    threading.Thread(
+        target=_backfill_salary_loop,
+        daemon=True,
+        name="salary-backfill",
+    ).start()
+    threading.Thread(
+        target=_backfill_auto_delete_loop,
+        daemon=True,
+        name="auto-delete-backfill",
+    ).start()
+    # PID file for launch_dashboard.sh wait/cleanup (best-effort).
+    # Companion files (also under logs/): dashboard_launcher.pid,
+    # dashboard_chrome.pid — see launch_dashboard.sh header.
+    try:
+        pid_path = ROOT / "logs" / "dashboard_server.pid"
+        pid_path.parent.mkdir(parents=True, exist_ok=True)
+        pid_path.write_text(str(os.getpid()))
+    except OSError as e:
+        print(f"warn: could not write dashboard pid file: {e}")
+    # Host/port default to loopback:8787 (unchanged macOS behavior). Containers
+    # set JOBHUNTER_DASHBOARD_HOST=0.0.0.0 so the port is reachable from the host.
+    _bind_host = (os.environ.get("JOBHUNTER_DASHBOARD_HOST") or "127.0.0.1").strip()
+    try:
+        _bind_port = int((os.environ.get("JOBHUNTER_DASHBOARD_PORT") or "8787").strip())
+    except ValueError:
+        _bind_port = 8787
+    server = ThreadingHTTPServer((_bind_host, _bind_port), Handler)
+    _http_server = server
+    print(f"job-hunter dashboard: http://{_bind_host}:{_bind_port}")
+    if ui_lifecycle_enabled():
+        print(
+            "UI lifecycle on: heartbeats track connected tabs; quit only via "
+            "explicit POST /api/shutdown (header × / last window close / "
+            "Cmd+Q) or POST /api/restart (Refresh). Idle heartbeat stall "
+            "does not shut down the stack."
+        )
+    try:
+        server.serve_forever()
+    finally:
+        # Belt-and-suspenders: kill any children still registered if shutdown
+        # raced or HTTP stopped without going through shutdown_dashboard_stack.
+        # CHR3-001/002: Refresh + hold must keep fill procs and fill CfT.
+        preserve_fill = bool(_preserve_fill_cft_on_exit)
+        if _restart_requested and not preserve_fill:
+            try:
+                preserve_fill = _fill_hold_browser_active()
+            except Exception:
+                preserve_fill = True
+        try:
+            _kill_all_tracked_child_procs(preserve_fill_procs=preserve_fill)
+        except Exception as e:
+            print(f"warn: final child cleanup: {e}")
+        try:
+            # Final quit path: always stop PartyRock CDP too (restart already
+            # ran shutdown_dashboard_stack with stop_openclaw_browser=False).
+            if not _restart_requested:
+                _kill_jh_associated_browsers(
+                    stop_openclaw_browser=True, preserve_fill_cft=False
+                )
+            else:
+                _kill_jh_associated_browsers(
+                    stop_openclaw_browser=False, preserve_fill_cft=preserve_fill
+                )
+        except Exception as e:
+            print(f"warn: final JH browser cleanup: {e}")
+        try:
+            server.server_close()
+        except Exception:
+            pass
+        try:
+            (ROOT / "logs" / "dashboard_server.pid").unlink(missing_ok=True)
+        except TypeError:
+            # py<3.8 compat — not expected here, but keep cleanup best-effort
+            p = ROOT / "logs" / "dashboard_server.pid"
+            if p.exists():
+                p.unlink()
+        except OSError:
+            pass
+        print(f"dashboard stopped ({_shutdown_reason or 'serve_forever returned'})")
 
 
 if __name__ == "__main__":

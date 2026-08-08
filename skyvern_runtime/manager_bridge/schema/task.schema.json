@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://job-hunter.local/manager_bridge/task.schema.json",
+  "title": "ManagerBridgeTask",
+  "type": "object",
+  "required": [
+    "id",
+    "priority",
+    "title",
+    "context",
+    "acceptance_criteria",
+    "constraints",
+    "files_to_touch",
+    "done_when"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^TASK-\\d{8}-\\d{6}-[a-z0-9-]+$",
+      "description": "Task id, e.g. TASK-20260731-103000-airwallex-zip"
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["P0", "P1", "P2"]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "context": {
+      "type": "string",
+      "description": "Background, links to artifacts, prior runs"
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "constraints": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Safety and ops constraints (dummy only, never submit, 1 chrome, etc.)"
+    },
+    "files_to_touch": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "done_when": {
+      "type": "string",
+      "description": "Plain-language completion signal for the executor"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "created_by": {
+      "type": "string",
+      "default": "claude-manager"
+    }
+  },
+  "additionalProperties": false
+}

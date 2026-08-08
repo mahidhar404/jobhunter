@@ -35,7 +35,9 @@ so the caller knows it didn't fully succeed - never silently ships
 something claiming to fit when it doesn't.
 """
 import argparse
+import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -43,7 +45,13 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-TECTONIC_BIN = "/opt/homebrew/bin/tectonic"
+# Resolve tectonic: explicit env override → PATH → macOS Homebrew default.
+# Keeps the original macOS path as the final fallback.
+TECTONIC_BIN = (
+    (os.environ.get("JOBHUNTER_TECTONIC_BIN") or "").strip()
+    or shutil.which("tectonic")
+    or "/opt/homebrew/bin/tectonic"
+)
 
 # A few points of overfull hbox is common in ordinary LaTeX documents and
 # invisible in practice (font metrics rounding, not a real overflow).

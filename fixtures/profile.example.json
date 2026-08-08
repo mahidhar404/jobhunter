@@ -1,0 +1,90 @@
+{
+  "_comment": "TEMPLATE — copy to the repo root as profile.json (git-ignored) and replace with YOUR data. All values here are the shared 'Test Dummy' fixture identity; never commit a real profile.json.",
+  "personal": {
+    "full_name": "Test Dummy"
+  },
+  "contact": {
+    "email": "randommail6969@gmail.com",
+    "phone": "405-555-0100"
+  },
+  "links": {
+    "github": "https://github.com/test-dummy-account",
+    "linkedin": "https://www.linkedin.com/in/test-dummy-000000000"
+  },
+  "work_authorization": {
+    "us_authorized_without_sponsorship": true,
+    "requires_visa_for_us": false,
+    "requires_visa_outside_us": false,
+    "_note": "Set to match your real authorization before any live use."
+  },
+  "experience": {
+    "total_years_of_experience": 3.0,
+    "_note": "Fictional value for the dummy identity.",
+    "year_questions_rule": "Answer years-of-experience questions from this number."
+  },
+  "eeo_demographic": {
+    "_note": "EEO answers are optional. The agent never invents these — leave blank or 'Decline to self-identify' unless you set them yourself.",
+    "gender": "Decline to self-identify",
+    "hispanic_or_latino": "Decline to self-identify",
+    "race_ethnicity": "Decline to self-identify",
+    "veteran_status": "Decline to self-identify",
+    "disability_status": "Decline to self-identify"
+  },
+  "education": {
+    "degrees": [
+      {
+        "degree": "Master's Degree",
+        "discipline": "Computer Science",
+        "school": "University of Alabama, Tuscaloosa",
+        "graduation_date": "May 2019"
+      },
+      {
+        "degree": "Bachelor's Degree",
+        "discipline": "Computer Science",
+        "school": "GITAM, Visakhapatnam, India",
+        "graduation_date": "May 2017"
+      }
+    ],
+    "graduation_date_rule": "Use the matching degree's graduation_date.",
+    "graduation_dates": {
+      "_status": "example",
+      "masters": "May 2019",
+      "bachelors": "May 2017"
+    }
+  },
+  "work_preferences": {
+    "relocation": "Open to relocation",
+    "location_type_priority": ["Remote", "Hybrid", "On-site"],
+    "location_type_note": "Ordered preference.",
+    "notice_period": "2 weeks",
+    "notice_period_dropdown_note": "Pick the closest option to 2 weeks."
+  },
+  "salary_expectation": {
+    "rule": "Give a market range for the role/location; never a single hard number if a range is allowed.",
+    "_note": "Example only."
+  },
+  "current_salary": {
+    "rule": "Decline where legal; otherwise give a reasonable placeholder."
+  },
+  "standard_screening_answers": {
+    "age_18_or_older": true,
+    "worked_here_before_or_relative_employed": "No",
+    "felony_conviction": "No",
+    "former_employee_of_this_company": "No",
+    "_former_employee_note": "Answer per your real history."
+  },
+  "custom_question_answers": {
+    "how_did_you_hear_about_this_job": {
+      "priority": ["Company website", "LinkedIn", "Job board"],
+      "never": ["Employee referral"],
+      "_note": "Pick the first available option in priority order; never claim a referral you don't have."
+    },
+    "referred_by": ""
+  },
+  "resume_is_source_of_truth": {
+    "_note": "These mirror the resume so form answers stay consistent with it.",
+    "current_company": "Example Corp",
+    "current_title": "Applied AI/ML Analyst",
+    "current_city_state": "Springfield, IL"
+  }
+}

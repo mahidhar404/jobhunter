@@ -1,8 +1,10 @@
 #!/bin/bash
-# Wrapper for launchd to supervise the job-hunter dashboard server. Mirrors
-# skyvern_runtime/run_server_supervised.sh - this process was only ever
-# started manually (nohup+disown), which survives a closed terminal but
-# does nothing if the process itself dies, and it was found dead with no
-# one noticing for over a day.
-cd /Users/job/.openclaw/workspace/job-hunter
+# Optional launchd wrapper for the job-hunter dashboard server.
+# Prefer dashboard/launch_dashboard.sh (Desktop app) — that path ties the
+# server lifetime to open UI tabs via heartbeat/shutdown. Do NOT use
+# KeepAlive=true with UI lifecycle: launchd would resurrect the server after
+# the dashboard window closes.
+# CHR2-009: resolve repo from this script (no hardcoded absolute path).
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 exec /opt/homebrew/bin/python3 dashboard/server.py

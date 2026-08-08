@@ -19,20 +19,15 @@ fan out more than that.
   user doesn't need to be told through any other channel.
 - **Never guess EEO/demographic/work-authorization answers.** If
   `profile.json` doesn't have it, ask the user, then save the answer.
-- **For mailing address fields, never ask me.** Use the city PartyRock
-  itself put in the compiled resume's header line (under your name,
-  formatted as `phone | City, ST | email`) as the anchor - not the job
-  posting's own city. PartyRock's chosen city varies per resume and isn't
-  tied to a fixed real address, so anchoring here keeps the whole
-  application internally consistent (the resume and the mailing address
-  agree) instead of the resume saying one city and the form another. Find
-  that city's metro area in `addresses.json` and pick one entry at random
-  from that metro whose city is not the exact one on the resume (a nearby
-  suburb/city in the same metro is what you want - close by, not far
-  away). If it isn't in any listed metro, pick any entry with a matching
-  `state`. Use the entry's line1/city/state/zip as-is - do not invent your
-  own address. Do
-  NOT save the pick to `profile.json` - use a fresh random one per job.
+- **For mailing address fields, never ask me.** Use the exact city PartyRock
+  put in the compiled resume header as the anchor, then resolve a synthetic
+  apartment from `scripts/fastfill/fixtures/us_apartment_addresses.json`.
+  `street/city/state/zip/unit` always come from that synthetic bank in both
+  dummy and explicitly enabled real-profile modes; name/email/phone continue
+  to follow their existing mode gates. Unknown `City, ST` pairs are generated
+  as deterministic synthetic privacy placeholders and persisted in the bank.
+  `Remote`/`Remote, US` maps to Chicago, IL. Never copy an address from
+  `profile.json`, and never save the synthetic pick there.
 - **Never apply to the same company twice.** The Excel tracker
   (`application_tracker.xlsx`, via `scripts/tracker.py check --company
   "..."`) is the single source of truth - it's already checked for you
@@ -52,17 +47,21 @@ fan out more than that.
    - `scripts/scout.py` pulls fresh listings from Indeed/LinkedIn into
      `listings/<date>.json`.
    - `scripts/scrape_ats.py` fetches full company job boards directly from
-     Greenhouse/Lever/Ashby/Recruitee/Personio's public APIs into
+     Greenhouse/Lever/Ashby/Recruitee/Personio/SmartRecruiters/Workable/
+     Rippling/Breezy/BambooHR public board JSON (or Personio XML) into
      `listings/<date>-ats.json`. It self-expands its own company registry
      (`ats_companies.json`) by scanning listings for known-platform URLs
      it hasn't seen before - this is how it catches roles a company never
      syndicated to Indeed at all (observed: one company's own board had
-     24x the qualifying roles Indeed had indexed for them). Workday and
-     iCIMS are deliberately excluded from this (Akamai bot-protection -
-     see Hard Rules); several other platforms were checked and excluded
-     too (SmartRecruiters, Workable, Jobvite, Breezy HR, Taleo,
-     SuccessFactors, Avature all require a per-employer API key or have no
-     reliable public access).
+     24x the qualifying roles Indeed had indexed for them). Coverage still
+     depends on having (or guessing) each employer's board slug.
+     **Still excluded from board scrape:** Workday and iCIMS (Akamai /
+     CAPTCHA - see Hard Rules; never bypass); Jobvite, Gem, Dover, Comeet
+     (HTML SPA or token-gated; no free unauthenticated board list);
+     ZipRecruiter / Glassdoor (aggregators / anti-bot / paid); Taleo,
+     SuccessFactors, Avature (no public cross-company board API).
+     Teamtailor `/jobs.json` is a free feed candidate not yet wired (host
+     can be `slug.teamtailor.com` or `slug.na.teamtailor.com`).
    - `scripts/scrape_builtin.py` scrapes Built In (builtin.com) directly -
      no public API and no JobSpy support, so this reverse-engineers the
      site's own server-rendered search pages and a JSON init blob each
@@ -87,6 +86,16 @@ fan out more than that.
      copy) - into `listings/<date>-qualified.json`.
    Don't re-implement any of this filtering ad-hoc in a turn - if one of
    these scripts has a bug, fix the script itself so the fix persists.
+
+   **Region (US default, India opt-in):** discovery is US-only unless India is
+   turned on in the Discover popover (`discover_us`/`discover_india` in
+   `logs/discovery_settings.json`; never both false). When India is on, scout
+   also runs an India pass (`location=India`, `country_indeed=india`), the
+   India-only sources (Internshala/Hirist/Cutshort/Adzuna) run, and the region
+   gate keeps India / remote-India roles (including India roles from the ATS
+   boards) instead of dropping them. Built In stays US-only. Ops has a **Region**
+   filter (`All`/`US`/`India`); each job is stamped with `region`. Full details:
+   `ats_notes/INDIA_DISCOVERY.md`.
 2. **Dedup + qualify**: this is now fully mechanical, no agent turn needed
    in the normal case - the dashboard already ran
    `scripts/tracker.py list-companies` (the Excel tracker replaced Notion
@@ -107,23 +116,27 @@ fan out more than that.
    this before your turn starts, the same way discovery's scraping runs
    before that turn starts:
    - `scripts/tailor_resume.py` drives the PartyRock app
-     (https://partyrock.aws/u/yo68749/mICSZlMtv/Ultron-Resume-v1) directly
-     over the browser's own CDP port - it shares the same authenticated
-     session your browser tool uses, no separate login needed. It pastes
-     the job description, clicks Play, polls for the generated LaTeX to
-     finish (checked via length-stability + `\end{document}` present, not a
-     fixed wait), fixes PartyRock's own recurring LaTeX bugs (it sometimes
-     emits a stray extra closing brace after an `\mbox{...}`, and can't
-     render a raw em-dash in this font), and writes the result.
+     (Test Mode → Ultron-Resume-v3-Testing; Real → Ultron-Resume-v3;
+     URLs in `partyrock.json`) over OpenClaw's managed Chrome-for-Testing
+     CDP (`~/.openclaw/browser/openclaw/user-data`, port `:18800`). That is
+     the **same** profile/`./open_partyrock.sh` uses — not Cursor's IDE
+     browser tool and not daily Google Chrome. Re-auth there if you see a
+     PartyRock sign-in wall. It pastes the job description, clicks Play,
+     polls for the generated LaTeX to finish (checked via length-stability
+     + `\end{document}` present, not a fixed wait), fixes PartyRock's own
+     recurring LaTeX bugs (it sometimes emits a stray extra closing brace
+     after an `\mbox{...}`, and can't render a raw em-dash in this font),
+     and writes the result.
    - `tectonic` then compiles it to `resumes/<id>/resume.pdf`.
    You'll normally be resumed with the resume **already tailored and
    compiled** - don't redo either step or re-run `tailor_resume.py`
    yourself. The one exception: if a resumed message tells you automated
    tailoring or compiling failed, that's your cue to do it manually via
-   your own browser tool (open the PartyRock URL, paste the JD, wait for
-   the widgets to finish, extract and save the LaTeX yourself, then
-   compile with `tectonic`) - a single automation hiccup shouldn't strand
-   the job, so fall back to doing it by hand rather than getting stuck.
+   `./open_partyrock.sh` (OpenClaw CfT only — never a generic browser tool):
+   open the PartyRock URL, paste the JD, wait for the widgets to finish,
+   extract and save the LaTeX yourself, then compile with `tectonic` — a
+   single automation hiccup shouldn't strand the job, so fall back to doing
+   it by hand rather than getting stuck.
 4. **Fill the application**: navigate to the real apply URL, fill fields
    from `profile.json`.
    - **Check `ats_notes/` for this platform first.** If `apply_url` is on
@@ -193,38 +206,25 @@ fan out more than that.
    section of `profile.json` so it's never asked twice. Upload the compiled
    PDF. Stop before final submit.
    - **If the site requires creating an account first**: use email
-     `yogesh.bollampalli2@gmail.com`. Generate a strong random password
-     yourself (16+ chars, mixed case/digits/symbols). Creating the account
+     `yogesh.bollampalli2@gmail.com` (real) or the per-run dummy alias (Test Mode).
+     Generate / reuse ATS password via `scripts/fastfill/web_keys.py`
+     (`Pswdpswd@912*{CompanySanitized}`), stored in workspace `web_keys.json`
+     (Desktop Command Center symlink; gitignored). Creating the account
      is fine to complete (it's a prerequisite, not the application submit
      itself) - but the actual job application submit at the end is still
-     never allowed. Immediately save the credential to `credentials.json`
-     at the workspace root, keyed by the site's domain:
-     `{"sites": {"<domain>": {"email": "...", "password": "...", "created_at": "..."}}}`.
-     Before creating a new account anywhere, check `credentials.json` first
+     never allowed. Autofill looks up/upserts `web_keys.json` by host —
+     prefer Sign In when a site key already exists. Keep `credentials.json`
+     as a manual/legacy store only (not the autofill source of truth).
+     Before creating a new account anywhere, check `web_keys.json` first
      - reuse the existing login if that domain is already there (e.g. two
      jobs at the same company's Workday instance) rather than creating a
      second account.
-   - **Mailing address fields (street/city/state/zip)**: never ask the user
-     for this. This is normally already pre-picked and handed to you
-     directly in your fill message (via `scripts/pick_address.py`, run
-     before your turn starts) - use that value as-is and skip everything
-     below. Only if it's genuinely missing from your message (the script
-     couldn't find a city in the resume header, or hit some other issue),
-     fall back to doing it yourself: read `addresses.json` at the
-     workspace root - entries are grouped by `metro`, each a real
-     city/zip pairing with a generic apartment-style street address, used
-     as a privacy placeholder (not the user's real address). Anchor on
-     the city PartyRock put in the compiled resume's header
-     (`phone | City, ST | email`, under your name) - not the job
-     posting's own city - so the resume and the mailing address agree
-     instead of stating two different cities. Find that metro in
-     `addresses.json` and pick one entry at random from it whose city isn't
-     the exact one on the resume (nearby/same-metro, not far away). If no
-     metro matches, pick any entry with the same `state`. Use its
-     `line1`/`city`/`state`/`zip` as-is. Do not invent your own address,
-     don't reuse the same pick
-     across jobs, and don't persist a choice into `profile.json` - a fresh
-     random pick per job is intentional.
+  - **Mailing address fields (street/unit/city/state/zip)**: never ask the
+    user for this and never read their real address. `scripts/pick_address.py`
+    parses the city under the resume name and uses the exact-city synthetic
+    apartment bank. If the city is absent, PartyRock's supplied job location
+    is the derivation fallback; Remote/US uses Chicago, IL. Unknown cities are
+    persisted as synthetic placeholders. Do not write picks to `profile.json`.
 5. **Log to the Excel tracker**: run
    `scripts/tracker.py add --job-id <id> --company "..." --role "..." --status "..." [--location L] [--address A] [--source S] [--url U] [--resume-path resumes/<id>/resume.pdf] [--jd-path resumes/<id>/jd_full.txt] [--date-posted D] [--work-type remote|hybrid|onsite] [--salary S] [--notes N]`
    (via exec). Always pass `--job-id` (the jobs.json id) - it's what lets
@@ -265,12 +265,17 @@ fan out more than that.
 
 - Application tracker (replaces Notion): `application_tracker.xlsx` +
   `scripts/tracker.py`
-- PartyRock resume tailoring app: https://partyrock.aws/u/yo68749/mICSZlMtv/Ultron-Resume-v1
+- PartyRock resume tailoring app (URLs in `partyrock.json`):
+  - Test: https://partyrock.aws/u/yo68749/qmkzfuEtp/Ultron-Resume-v3-Testing
+  - Real: https://partyrock.aws/u/yo68749/VLnKjx0N6/Ultron-Resume-v3
+  - Resolver: `scripts/partyrock_config.py`; **canonical human login:** `./open_partyrock.sh` only (OpenClaw CfT + `:18800` — not raw `openclaw browser start`, not IDE browser)
 - Applicant profile: `profile.json`
-- Site login credentials (created accounts): `credentials.json`
+- ATS autofill passwords: `web_keys.json` (via `scripts/fastfill/web_keys.py`)
+- Site login credentials (manual/legacy): `credentials.json`
 - Aggregator scraper: `scripts/scout.py` (venv at `.venv/`)
 - Direct-ATS scraper: `scripts/scrape_ats.py` + its company registry
-  `ats_companies.json` (Greenhouse/Lever/Ashby/Recruitee/Personio)
+  `ats_companies.json` (Greenhouse/Lever/Ashby/Recruitee/Personio/
+  SmartRecruiters/Workable/Rippling/Breezy/BambooHR)
 - Built In scraper (no public API, no JobSpy support): `scripts/scrape_builtin.py`
 - Manual-add URL extractor (runs automatically, no agent involved - see
   User-added jobs above): `scripts/extract_job_posting.py`
@@ -290,13 +295,16 @@ fan out more than that.
 - Timing diagnostics: `logs/timing.log` (shared, one line per pipeline
   step) and `scripts/session_timing_report.py JOB_ID` (per-action
   breakdown of an agent turn - use this if something feels slow)
-- Address placeholder pool: `addresses.json`
+- Synthetic apartment bank: `scripts/fastfill/fixtures/us_apartment_addresses.json`
 - Per-ATS-platform form-filling notes (Workday/Greenhouse/Lever/Ashby/
   iCIMS): `ats_notes/<platform>.md` - auto-injected into the fill turn when
   `apply_url` matches a known platform (see `ats_notes_for_url` in
   server.py); append new lessons here, not to a job-specific note
 - Command-center dashboard: `dashboard/server.py` (start with
-  `python3 dashboard/server.py`, view at http://127.0.0.1:8787)
+  `python3 dashboard/server.py`, view at http://127.0.0.1:8787 — **Ops `/` only**; Classic is frozen and `/classic` redirects here)
+- **Dummy autofill (never submit):** `PRODUCTION.md` + `./scripts/fastfill/run_fill_visible.sh`
+  for headed fills; `scripts/fastfill/fast_fill.py` for batch/CI. Real applications use
+  dashboard **Start** (agent + `profile.json`), not fastfill.
 
 ## Command-center dashboard (jobs.json)
 
@@ -325,8 +333,11 @@ entry per job looks like:
   "source": "indeed|linkedin|manual",
   "date_posted": "the listing's own posted-date string, or null if unknown",
   "job_url": "...", "apply_url": "...",
+  "source_url": "optional aggregator discovery URL when apply_url was upgraded to ATS/company",
+  "alternate_urls": ["optional other URLs preserved across conservative dedup merges"],
   "job_description": "the full JD text used for tailoring - always fill this in at discovery time",
-  "status": "discovered|tailoring|navigating|filling|stuck|blocked_captcha|ready_for_review|applied|cancelled|skipped_manual|skipped_duplicate|skipped_contract|skipped_easy_apply",
+  "status": "discovered|tailoring|navigating|filling|stuck|blocked_captcha|ready_for_review|applied|deleted",
+  "deleted_reason": "optional when status=deleted (user|contract|easy_apply|duplicate|…)",
   "status_detail": "one-line human-readable current sub-step",
   "question": "what you're stuck on, or null",
   "pending_command": "exact command needing approval, or null (see Exec commands section below)",
@@ -336,6 +347,10 @@ entry per job looks like:
 }
 ```
 
+**Application link:** dashboard and fill paths use `apply_url` when it is the
+employer/ATS apply page; aggregator listings (LinkedIn/Indeed) are kept as
+`job_url`/`source_url` and used as the Application link only when no company/ATS
+URL is known. Never drop a job because URL resolution failed.
 When you create a `discovered` entry during the Discover/Dedup step, carry
 over `source` (the site it came from, e.g. `"indeed"`) and `date_posted`
 (the listing's own posted-date field) from the raw scraped listing - the

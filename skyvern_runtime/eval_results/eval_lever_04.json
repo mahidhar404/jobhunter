@@ -1,0 +1,330 @@
+{
+  "url": "https://jobs.lever.co/paralleldomain/d885068b-3c08-4d74-bc6d-b249c967bdc8",
+  "platform": "lever",
+  "coverage_path": "selector_pack+generic_dom",
+  "universal_attempt": true,
+  "dummy": true,
+  "never_submit": true,
+  "submit_clicked": false,
+  "headed": false,
+  "headless": true,
+  "identity_email": "randommail6969+0ca47fa2fd79@gmail.com",
+  "email": "randommail6969+0ca47fa2fd79@gmail.com",
+  "email_alias": "randommail6969+0ca47fa2fd79@gmail.com",
+  "alias_token": "0ca47fa2fd79",
+  "resume_pdf": "/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/fastfill_run_6e7s26yk/dummy_resume_run_0ca47fa2fd79.pdf",
+  "resume_compiled": true,
+  "entry_prepass": {
+    "clicked": [
+      {
+        "text": "APPLY FOR THIS JOB",
+        "kind": "ENTRY",
+        "ok": true,
+        "round": 0,
+        "in_iframe": false
+      }
+    ],
+    "refused_final": [],
+    "final_clicks": 0,
+    "form_reached": true,
+    "time_to_form_seconds": 4.21,
+    "buttons_seen_count": 3,
+    "switched_tab": false,
+    "spa_wait": null,
+    "fill_kind": "page",
+    "fill_url": "https://jobs.lever.co/paralleldomain/d885068b-3c08-4d74-bc6d-b249c967bdc8/apply"
+  },
+  "filled": [
+    {
+      "via": "lever_selector_pack",
+      "layer": "0.5",
+      "selector": "[name='name']",
+      "type": "NAME_FULL",
+      "mode": "fill",
+      "ok": true,
+      "value": "Test Dummy",
+      "fill_ctx": "page",
+      "fill_ctx_url": "https://jobs.lever.co/paralleldomain/d885068b-3c08-4d74-bc6d-b249c967bdc8/apply"
+    },
+    {
+      "via": "lever_selector_pack",
+      "layer": "0.5",
+      "selector": "[name='email']",
+      "type": "EMAIL",
+      "mode": "fill",
+      "ok": true,
+      "value": "randommail6969+0ca47fa2fd79@gmail.com",
+      "fill_ctx": "page",
+      "fill_ctx_url": "https://jobs.lever.co/paralleldomain/d885068b-3c08-4d74-bc6d-b249c967bdc8/apply"
+    },
+    {
+      "via": "lever_selector_pack",
+      "layer": "0.5",
+      "selector": "[name='phone']",
+      "type": "PHONE",
+      "mode": "fill",
+      "ok": true,
+      "value": "405-555-0100",
+      "fill_ctx": "page",
+      "fill_ctx_url": "https://jobs.lever.co/paralleldomain/d885068b-3c08-4d74-bc6d-b249c967bdc8/apply"
+    },
+    {
+      "via": "lever_selector_pack",
+      "layer": "0.5",
+      "selector": "[name='org']",
+      "type": "CURRENT_COMPANY",
+      "mode": "fill",
+      "ok": true,
+      "value": "Example Corp",
+      "fill_ctx": "page",
+      "fill_ctx_url": "https://jobs.lever.co/paralleldomain/d885068b-3c08-4d74-bc6d-b249c967bdc8/apply"
+    },
+    {
+      "via": "lever_selector_pack",
+      "layer": "0.5",
+      "selector": "[name='urls[LinkedIn]']",
+      "type": "LINKEDIN",
+      "mode": "fill",
+      "ok": true,
+      "value": "https://www.linkedin.com/in/test-dummy-000000000",
+      "fill_ctx": "page",
+      "fill_ctx_url": "https://jobs.lever.co/paralleldomain/d885068b-3c08-4d74-bc6d-b249c967bdc8/apply"
+    },
+    {
+      "via": "lever_selector_pack",
+      "layer": "0.5",
+      "selector": "[name='urls[GitHub]']",
+      "type": "GITHUB",
+      "mode": "fill",
+      "ok": true,
+      "value": "https://github.com/test-dummy-account",
+      "fill_ctx": "page",
+      "fill_ctx_url": "https://jobs.lever.co/paralleldomain/d885068b-3c08-4d74-bc6d-b249c967bdc8/apply"
+    },
+    {
+      "via": "lever_selector_pack",
+      "layer": "0.5",
+      "selector": "[name='urls[Portfolio]']",
+      "type": "PORTFOLIO",
+      "mode": "fill",
+      "ok": true,
+      "value": "https://github.com/test-dummy-account",
+      "fill_ctx": "page",
+      "fill_ctx_url": "https://jobs.lever.co/paralleldomain/d885068b-3c08-4d74-bc6d-b249c967bdc8/apply"
+    },
+    {
+      "via": "lever_selector_pack",
+      "layer": "0.5",
+      "selector": "input[type=file]",
+      "type": "RESUME_UPLOAD",
+      "mode": "file",
+      "ok": true,
+      "value": "dummy_resume_run_0ca47fa2fd79.pdf",
+      "fill_ctx": "page",
+      "fill_ctx_url": "https://jobs.lever.co/paralleldomain/d885068b-3c08-4d74-bc6d-b249c967bdc8/apply"
+    },
+    {
+      "via": "replay",
+      "layer": "replay",
+      "selector": "input[name=\"location\"]:visible",
+      "type": "ADDRESS_CITY",
+      "value": "Springfield",
+      "readback": "Springfield",
+      "ok": true,
+      "verified": true
+    },
+    {
+      "via": "extract+classify",
+      "layer": "layer1_regex",
+      "label": "Portfolio URL",
+      "selector": "input[name=\"urls[Portfolio]\"]:visible",
+      "type": "PORTFOLIO",
+      "value": "https://github.com/test-dummy-account"
+    },
+    {
+      "via": "extract+classify",
+      "layer": "layer1_regex",
+      "label": "Other website",
+      "selector": "input[name=\"urls[Other]\"]:visible",
+      "type": "PORTFOLIO",
+      "value": "https://github.com/test-dummy-account"
+    },
+    {
+      "via": "extract+classify",
+      "layer": "layer1_regex",
+      "label": "What is your age range?",
+      "selector": "input[name=\"surveysResponses[6d065a13-2eb2-40f0-b5d4-b0349cb25bd7][responses][field0]\"][value=\"17 or younger\"]",
+      "type": "AGE_RANGE",
+      "value": "Prefer not to disclose"
+    },
+    {
+      "via": "extract+classify",
+      "layer": "layer1_regex",
+      "label": "What is your race or ethnicity?Select all that apply",
+      "selector": "input[name=\"surveysResponses[6d065a13-2eb2-40f0-b5d4-b0349cb25bd7][responses][field1]\"][value=\"White / Caucasian\"]",
+      "type": "RACE",
+      "value": "Prefer not to disclose"
+    },
+    {
+      "via": "extract+classify",
+      "layer": "layer1_regex",
+      "label": "What is your gender identity?",
+      "selector": "input[name=\"surveysResponses[6d065a13-2eb2-40f0-b5d4-b0349cb25bd7][responses][field2]\"][value=\"Woman\"]",
+      "type": "GENDER",
+      "value": "Prefer not to disclose"
+    }
+  ],
+  "leftovers": [],
+  "errors": [],
+  "blocker": null,
+  "extracted_count": 14,
+  "flash_called": false,
+  "flash_leftovers_requested": false,
+  "flash_note": "leftovers only \u2014 pass flash_leftovers=True / --flash-leftovers to invoke thin DeepSeek-V4-Flash handoff (default OFF)",
+  "fill_context": {
+    "kind": "page",
+    "url": "https://jobs.lever.co/paralleldomain/d885068b-3c08-4d74-bc6d-b249c967bdc8/apply"
+  },
+  "iframe_login": {
+    "ran": false,
+    "is_login": false,
+    "filled": [],
+    "clicks": [],
+    "blocker": null,
+    "reached_app_fields": false,
+    "rounds": 0,
+    "fill_url": "https://jobs.lever.co/paralleldomain/d885068b-3c08-4d74-bc6d-b249c967bdc8/apply",
+    "final_url": "",
+    "skipped": "not_login_context"
+  },
+  "replay_filled_count": 8,
+  "elapsed_seconds": 6.94,
+  "filled_count": 14,
+  "leftover_count": 0,
+  "coverage": 1.0,
+  "coverage_note": "filled_count / max(extracted, filled+leftovers); selector-pack-only fills may exceed extract count",
+  "replay_recorded": 13,
+  "replay_fingerprint": "f3bbd181a48e96c333c38e84",
+  "flash": {
+    "mode": "leftovers_only",
+    "invoked": false,
+    "never_submit": true,
+    "submit_clicked": false,
+    "dummy": true,
+    "flash_default_on": false,
+    "url": "https://jobs.lever.co/paralleldomain/d885068b-3c08-4d74-bc6d-b249c967bdc8",
+    "platform": "lever",
+    "model_hint": "DeepSeek-V4-Flash",
+    "identity_email": "randommail6969+0ca47fa2fd79@gmail.com",
+    "already_filled": [
+      {
+        "type": "NAME_FULL",
+        "label": "",
+        "selector": "[name='name']",
+        "value": "Test Dummy",
+        "via": "lever_selector_pack"
+      },
+      {
+        "type": "EMAIL",
+        "label": "",
+        "selector": "[name='email']",
+        "value": "randommail6969+0ca47fa2fd79@gmail.com",
+        "via": "lever_selector_pack"
+      },
+      {
+        "type": "PHONE",
+        "label": "",
+        "selector": "[name='phone']",
+        "value": "405-555-0100",
+        "via": "lever_selector_pack"
+      },
+      {
+        "type": "CURRENT_COMPANY",
+        "label": "",
+        "selector": "[name='org']",
+        "value": "Example Corp",
+        "via": "lever_selector_pack"
+      },
+      {
+        "type": "LINKEDIN",
+        "label": "",
+        "selector": "[name='urls[LinkedIn]']",
+        "value": "https://www.linkedin.com/in/test-dummy-000000000",
+        "via": "lever_selector_pack"
+      },
+      {
+        "type": "GITHUB",
+        "label": "",
+        "selector": "[name='urls[GitHub]']",
+        "value": "https://github.com/test-dummy-account",
+        "via": "lever_selector_pack"
+      },
+      {
+        "type": "PORTFOLIO",
+        "label": "",
+        "selector": "[name='urls[Portfolio]']",
+        "value": "https://github.com/test-dummy-account",
+        "via": "lever_selector_pack"
+      },
+      {
+        "type": "RESUME_UPLOAD",
+        "label": "",
+        "selector": "input[type=file]",
+        "value": "dummy_resume_run_0ca47fa2fd79.pdf",
+        "via": "lever_selector_pack"
+      },
+      {
+        "type": "ADDRESS_CITY",
+        "label": "",
+        "selector": "input[name=\"location\"]:visible",
+        "value": "Springfield",
+        "via": "replay"
+      },
+      {
+        "type": "PORTFOLIO",
+        "label": "Portfolio URL",
+        "selector": "input[name=\"urls[Portfolio]\"]:visible",
+        "value": "https://github.com/test-dummy-account",
+        "via": "extract+classify"
+      },
+      {
+        "type": "PORTFOLIO",
+        "label": "Other website",
+        "selector": "input[name=\"urls[Other]\"]:visible",
+        "value": "https://github.com/test-dummy-account",
+        "via": "extract+classify"
+      },
+      {
+        "type": "AGE_RANGE",
+        "label": "What is your age range?",
+        "selector": "input[name=\"surveysResponses[6d065a13-2eb2-40f0-b5d4-b0349cb25bd7][responses][field0]\"][value=\"17 or younger\"]",
+        "value": "Prefer not to disclose",
+        "via": "extract+classify"
+      },
+      {
+        "type": "RACE",
+        "label": "What is your race or ethnicity?Select all that apply",
+        "selector": "input[name=\"surveysResponses[6d065a13-2eb2-40f0-b5d4-b0349cb25bd7][responses][field1]\"][value=\"White / Caucasian\"]",
+        "value": "Prefer not to disclose",
+        "via": "extract+classify"
+      },
+      {
+        "type": "GENDER",
+        "label": "What is your gender identity?",
+        "selector": "input[name=\"surveysResponses[6d065a13-2eb2-40f0-b5d4-b0349cb25bd7][responses][field2]\"][value=\"Woman\"]",
+        "value": "Prefer not to disclose",
+        "via": "extract+classify"
+      }
+    ],
+    "already_filled_count": 14,
+    "leftovers": [],
+    "leftover_count": 0,
+    "leftovers_truncated": false,
+    "max_steps": 5,
+    "max_leftover_fields": 5,
+    "cheat_sheet": "ALREADY FILLED (do not re-fill / do not ask about):\n  - NAME_FULL: 'Test Dummy'\n  - EMAIL: 'randommail6969+0ca47fa2fd79@gmail.com'\n  - PHONE: '405-555-0100'\n  - CURRENT_COMPANY: 'Example Corp'\n  - LINKEDIN: 'https://www.linkedin.com/in/test-dummy-000000000'\n  - GITHUB: 'https://github.com/test-dummy-account'\n  - PORTFOLIO: 'https://github.com/test-dummy-account'\n  - RESUME_UPLOAD: 'dummy_resume_run_0ca47fa2fd79.pdf'\n  - ADDRESS_CITY: 'Springfield'\n  - Portfolio URL: 'https://github.com/test-dummy-account'\n  - Other website: 'https://github.com/test-dummy-account'\n  - What is your age range?: 'Prefer not to disclose'\n  - What is your race or ethnicity?Select all that apply: 'Prefer not to disclose'\n  - What is your gender identity?: 'Prefer not to disclose'",
+    "prompt": "Continue this job application form. Deterministic layers already filled what they could. Use dummy applicant data only.\n\nALREADY FILLED (do not re-fill / do not ask about):\n  - NAME_FULL: 'Test Dummy'\n  - EMAIL: 'randommail6969+0ca47fa2fd79@gmail.com'\n  - PHONE: '405-555-0100'\n  - CURRENT_COMPANY: 'Example Corp'\n  - LINKEDIN: 'https://www.linkedin.com/in/test-dummy-000000000'\n  - GITHUB: 'https://github.com/test-dummy-account'\n  - PORTFOLIO: 'https://github.com/test-dummy-account'\n  - RESUME_UPLOAD: 'dummy_resume_run_0ca47fa2fd79.pdf'\n  - ADDRESS_CITY: 'Springfield'\n  - Portfolio URL: 'https://github.com/test-dummy-account'\n  - Other website: 'https://github.com/test-dummy-account'\n  - What is your age range?: 'Prefer not to disclose'\n  - What is your race or ethnicity?Select all that apply: 'Prefer not to disclose'\n  - What is your gender identity?: 'Prefer not to disclose'\n\nLEFTOVER FIELDS (fill these only \u2014 nothing else):\n  (none \u2014 nothing for Flash to do)\n\nLEFTOVERS-ONLY MODE (DeepSeek-V4-Flash, cost-aware):\n1. Fields listed under ALREADY FILLED are done \u2014 do NOT clear, retype, ask about,\n   or re-derive them. Treat the cheat sheet as ground truth.\n2. Fill ONLY the LEFTOVER fields listed below. One action per field.\n3. Prefer Decline/No for EEO/demographics when unsure \u2014 never invent personal facts.\n4. Never press Enter to confirm a dropdown (can submit the form) \u2014 click the option.\n5. Resume upload path if needed: use the dummy resume already known to the harness.\n6. Stay within 5 actions maximum.\n7. ABSOLUTE HARD RULE: never click Submit / Submit application / Apply-final / Send / Finish / Confirm. Stop at ready-for-review. Account Create/Sign In and Next/Continue are allowed. Never solve CAPTCHA \u2014 terminate if one appears.",
+    "prompt_chars": 1759,
+    "cheat_sheet_chars": 766
+  }
+}

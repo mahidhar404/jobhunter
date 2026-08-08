@@ -1,0 +1,1828 @@
+{
+  "url": "https://cisco.wd5.myworkdayjobs.com/Cisco_Careers/job/RTP-North-Carolina-US/Data-Engineer_2019222",
+  "platform": "workday",
+  "coverage_path": "workday_multipage",
+  "universal_attempt": true,
+  "dummy": true,
+  "never_submit": true,
+  "submit_clicked": false,
+  "headed": false,
+  "headless": true,
+  "identity_email": "randommail6969+bd5eb7ead4b7@gmail.com",
+  "email": "randommail6969+bd5eb7ead4b7@gmail.com",
+  "email_alias": "randommail6969+bd5eb7ead4b7@gmail.com",
+  "alias_token": "bd5eb7ead4b7",
+  "resume_pdf": "/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/fastfill_run_1vmhvfxj/dummy_resume_run_bd5eb7ead4b7.pdf",
+  "resume_compiled": true,
+  "entry_prepass": {
+    "clicked": [
+      {
+        "text": "Apply",
+        "kind": "ENTRY",
+        "ok": true
+      },
+      {
+        "text": "Apply Manually",
+        "kind": "ENTRY",
+        "ok": true
+      },
+      {
+        "text": "Create Account",
+        "kind": "ADVANCE",
+        "ok": true
+      },
+      {
+        "text": "Save and Continue",
+        "kind": "ADVANCE",
+        "ok": true
+      }
+    ],
+    "refused_final": [],
+    "final_clicks": 0,
+    "form_reached": true,
+    "workday_metrics": {
+      "account_created": true,
+      "signed_in": true,
+      "already_registered": false,
+      "create_account_filled": 4,
+      "sign_in_filled": 0,
+      "contact_filled_verified": 22,
+      "contact_stuck": 22,
+      "contact_missed": 0,
+      "contact_page_present": true,
+      "reached_contact": true,
+      "advanced": true,
+      "advance_blocked_reason": "required_dates_empty",
+      "advanced_incomplete": false,
+      "validation_errors": false,
+      "experience_present": true,
+      "eeo_present": false,
+      "self_id_present": false,
+      "ready_for_review": false,
+      "verdict": "FAIL",
+      "blocker": "page_incomplete"
+    }
+  },
+  "filled": [
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "legalNameSection_firstName",
+      "selector": "input[name=\"legalName--firstName\"]",
+      "value": "Test",
+      "readback": "Test",
+      "mode": "fill",
+      "ok": true,
+      "verified": true,
+      "automation_id": "legalNameSection_firstName"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "legalNameSection_lastName",
+      "selector": "input[name=\"legalName--lastName\"]",
+      "value": "Dummy",
+      "readback": "Dummy",
+      "mode": "fill",
+      "ok": true,
+      "verified": true,
+      "automation_id": "legalNameSection_lastName"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "addressSection_country",
+      "selector": "[data-automation-id=\"formField-country\"] button",
+      "value": "United States",
+      "readback": "United States of America",
+      "mode": "combobox",
+      "ok": true,
+      "verified": true,
+      "automation_id": "addressSection_country"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "addressSection_addressLine1",
+      "selector": "input[name=\"addressLine1\"]",
+      "value": "100 Example Ave, Apt 1A",
+      "readback": "100 Example Ave, Apt 1A",
+      "mode": "fill",
+      "ok": true,
+      "verified": true,
+      "automation_id": "addressSection_addressLine1"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "addressSection_city",
+      "selector": "input[name=\"city\"]",
+      "value": "Springfield",
+      "readback": "Springfield",
+      "mode": "fill",
+      "ok": true,
+      "verified": true,
+      "automation_id": "addressSection_city"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "addressSection_countryRegion",
+      "selector": "[data-automation-id=\"formField-countryRegion\"] button",
+      "value": "IL",
+      "readback": "Illinois",
+      "mode": "combobox",
+      "ok": true,
+      "verified": true,
+      "automation_id": "addressSection_countryRegion"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "addressSection_postalCode",
+      "selector": "input[name=\"postalCode\"]",
+      "value": "62701",
+      "readback": "62701",
+      "mode": "fill",
+      "ok": true,
+      "verified": true,
+      "automation_id": "addressSection_postalCode"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "phone-device-type",
+      "selector": "[data-automation-id=\"formField-phoneType\"] button",
+      "value": "Mobile",
+      "readback": "Mobile",
+      "mode": "combobox",
+      "ok": true,
+      "verified": true,
+      "automation_id": "phone-device-type"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "phone-number",
+      "selector": "[data-automation-id=\"formField-phoneNumber\"] input[type=\"text\"]",
+      "value": "405-555-0100",
+      "readback": "405-555-0100",
+      "mode": "fill",
+      "ok": true,
+      "verified": true,
+      "automation_id": "phone-number"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "how_heard",
+      "selector": "[data-automation-id=\"formField-source\"] button",
+      "value": "Indeed",
+      "readback": "Job Posting (e.g. Indeed)",
+      "mode": "combobox",
+      "ok": true,
+      "verified": true,
+      "automation_id": "how_heard"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "worked_here_before",
+      "selector": "fieldset",
+      "value": "No",
+      "readback": null,
+      "mode": "radio",
+      "ok": true,
+      "verified": true,
+      "automation_id": "worked_here_before"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "file-upload-input-ref",
+      "selector": null,
+      "value": "/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/fastfill_run_1vmhvfxj/dummy_resume_run_bd5eb7ead4b7.pdf",
+      "readback": null,
+      "mode": "file",
+      "ok": true,
+      "verified": true,
+      "automation_id": "file-upload-input-ref"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "workExperience-1/jobTitle",
+      "selector": null,
+      "value": "Applied AI/ML Analyst",
+      "readback": null,
+      "mode": "fill",
+      "ok": true,
+      "verified": true,
+      "automation_id": "workExperience-1/jobTitle"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "workExperience-1/company",
+      "selector": null,
+      "value": "Example Corp",
+      "readback": null,
+      "mode": "fill",
+      "ok": true,
+      "verified": true,
+      "automation_id": "workExperience-1/company"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "workExperience-1/location",
+      "selector": null,
+      "value": "Remote",
+      "readback": null,
+      "mode": "fill",
+      "ok": true,
+      "verified": true,
+      "automation_id": "workExperience-1/location"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "workExperience-1/startDate",
+      "selector": null,
+      "value": null,
+      "readback": {
+        "month_input": "1",
+        "month_display": "01",
+        "year_input": "2022",
+        "year_display": "2022",
+        "mode": "from",
+        "nth": 0
+      },
+      "mode": "date_spin",
+      "ok": true,
+      "verified": true,
+      "automation_id": "workExperience-1/startDate"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "workExperience-1/endDate",
+      "selector": null,
+      "value": null,
+      "readback": {
+        "month_input": "1",
+        "month_display": "01",
+        "year_input": "2023",
+        "year_display": "2023",
+        "mode": "to",
+        "nth": 0
+      },
+      "mode": "date_spin",
+      "ok": true,
+      "verified": true,
+      "automation_id": "workExperience-1/endDate"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "workExperience-2/jobTitle",
+      "selector": null,
+      "value": "Data Engineer (Contract)",
+      "readback": null,
+      "mode": "fill",
+      "ok": true,
+      "verified": true,
+      "automation_id": "workExperience-2/jobTitle"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "workExperience-2/company",
+      "selector": null,
+      "value": "Sample Industries LLC",
+      "readback": null,
+      "mode": "fill",
+      "ok": true,
+      "verified": true,
+      "automation_id": "workExperience-2/company"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "workExperience-2/location",
+      "selector": null,
+      "value": "Springfield, IL",
+      "readback": null,
+      "mode": "fill",
+      "ok": true,
+      "verified": true,
+      "automation_id": "workExperience-2/location"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "workExperience-2/startDate",
+      "selector": null,
+      "value": null,
+      "readback": {
+        "month_input": "1",
+        "month_display": "01",
+        "year_input": "2022",
+        "year_display": "2022",
+        "mode": "from",
+        "nth": 1
+      },
+      "mode": "date_spin",
+      "ok": true,
+      "verified": true,
+      "automation_id": "workExperience-2/startDate"
+    },
+    {
+      "via": "workday_contact_pack",
+      "layer": "0.5",
+      "type": "workExperience-2/endDate",
+      "selector": null,
+      "value": null,
+      "readback": {
+        "month_input": "1",
+        "month_display": "01",
+        "year_input": "2023",
+        "year_display": "2023",
+        "mode": "to",
+        "nth": 1
+      },
+      "mode": "date_spin",
+      "ok": true,
+      "verified": true,
+      "automation_id": "workExperience-2/endDate"
+    },
+    {
+      "via": "workday_auth_create",
+      "layer": "0.5",
+      "type": "email",
+      "selector": "[data-automation-id=\"email\"]",
+      "value": "randommail6969+bd5eb7ead4b7@gmail.com",
+      "ok": true,
+      "automation_id": "email"
+    },
+    {
+      "via": "workday_auth_create",
+      "layer": "0.5",
+      "type": "password",
+      "selector": "[data-automation-id=\"password\"]",
+      "value": "TestDummy!2026x",
+      "ok": true,
+      "automation_id": "password"
+    },
+    {
+      "via": "workday_auth_create",
+      "layer": "0.5",
+      "type": "verifyPassword",
+      "selector": "[data-automation-id=\"verifyPassword\"]",
+      "value": "TestDummy!2026x",
+      "ok": true,
+      "automation_id": "verifyPassword"
+    },
+    {
+      "via": "workday_auth_create",
+      "layer": "0.5",
+      "type": "text=Agree to",
+      "selector": "[data-automation-id=\"text=Agree to\"]",
+      "value": null,
+      "ok": true,
+      "automation_id": "text=Agree to"
+    },
+    {
+      "via": "workday_selector_pack",
+      "layer": "0.5",
+      "selector": "[data-automation-id=\"file-upload-input-ref\"]",
+      "type": "RESUME_UPLOAD",
+      "mode": "file",
+      "ok": true,
+      "value": "dummy_resume_run_bd5eb7ead4b7.pdf"
+    },
+    {
+      "via": "extract+classify",
+      "layer": "layer1_regex",
+      "label": "Job Title*",
+      "selector": "input[name=\"jobTitle\"]:visible",
+      "type": "CURRENT_TITLE",
+      "value": "Applied AI/ML Analyst"
+    },
+    {
+      "via": "extract+classify",
+      "layer": "layer1_regex",
+      "label": "Company*",
+      "selector": "input[name=\"companyName\"]:visible",
+      "type": "CURRENT_COMPANY",
+      "value": "Example Corp"
+    },
+    {
+      "via": "extract+classify",
+      "layer": "layer1_regex",
+      "label": "Location",
+      "selector": "input[name=\"location\"]:visible",
+      "type": "ADDRESS_CITY",
+      "value": "Springfield"
+    }
+  ],
+  "leftovers": [
+    {
+      "index": 3,
+      "label": "Month \u2014 From*",
+      "html_type": "text",
+      "selector": "input[data-automation-id=\"dateSectionMonth-input\"]:visible",
+      "reason": "unclassified",
+      "flash_candidate": true
+    },
+    {
+      "index": 4,
+      "label": "Year \u2014 From*",
+      "html_type": "text",
+      "selector": "input[data-automation-id=\"dateSectionYear-input\"]:visible",
+      "reason": "unclassified",
+      "flash_candidate": true
+    },
+    {
+      "index": 5,
+      "label": "Month",
+      "html_type": "text",
+      "selector": "input[data-automation-id=\"dateSectionMonth-input\"]:visible",
+      "reason": "unclassified",
+      "flash_candidate": true
+    },
+    {
+      "index": 6,
+      "label": "Year",
+      "html_type": "text",
+      "selector": "input[data-automation-id=\"dateSectionYear-input\"]:visible",
+      "reason": "unclassified",
+      "flash_candidate": true
+    },
+    {
+      "index": 7,
+      "label": "Role Description",
+      "html_type": "textarea",
+      "selector": "label:has-text('Role Description') textarea:visible",
+      "reason": "unclassified",
+      "flash_candidate": true
+    },
+    {
+      "index": 8,
+      "label": "Month \u2014 From*",
+      "html_type": "text",
+      "selector": "input[data-automation-id=\"dateSectionMonth-input\"]:visible",
+      "reason": "unclassified",
+      "flash_candidate": true
+    },
+    {
+      "index": 9,
+      "label": "Year \u2014 From*",
+      "html_type": "text",
+      "selector": "input[data-automation-id=\"dateSectionYear-input\"]:visible",
+      "reason": "unclassified",
+      "flash_candidate": true
+    },
+    {
+      "index": 10,
+      "label": "Month",
+      "html_type": "text",
+      "selector": "input[data-automation-id=\"dateSectionMonth-input\"]:visible",
+      "reason": "unclassified",
+      "flash_candidate": true
+    },
+    {
+      "index": 11,
+      "label": "Year",
+      "html_type": "text",
+      "selector": "input[data-automation-id=\"dateSectionYear-input\"]:visible",
+      "reason": "unclassified",
+      "flash_candidate": true
+    },
+    {
+      "index": 12,
+      "label": "Role Description",
+      "html_type": "textarea",
+      "selector": "label:has-text('Role Description') textarea:visible",
+      "reason": "unclassified",
+      "flash_candidate": true
+    },
+    {
+      "index": 14,
+      "label": "From*",
+      "html_type": "checkbox_group",
+      "selector": "input[name=\"currentlyWorkHere\"][value=\"on\"]",
+      "reason": "unclassified",
+      "flash_candidate": true
+    }
+  ],
+  "errors": [],
+  "blocker": "page_incomplete",
+  "extracted_count": 15,
+  "flash_called": false,
+  "flash_leftovers_requested": false,
+  "flash_note": "leftovers only \u2014 pass flash_leftovers=True / --flash-leftovers to invoke thin DeepSeek-V4-Flash handoff (default OFF)",
+  "workday": {
+    "phase_a": {
+      "name": "A_auth",
+      "create_account": {
+        "attempted": true,
+        "filled": [
+          {
+            "automation_id": "email",
+            "status": "filled",
+            "reason": null,
+            "mode": "fill",
+            "value": "randommail6969+bd5eb7ead4b7@gmail.com",
+            "readback": "randommail6969+bd5eb7ead4b7@gmail.com",
+            "selector": "[data-automation-id=\"email\"]",
+            "verified": true
+          },
+          {
+            "automation_id": "password",
+            "status": "filled",
+            "reason": null,
+            "mode": "fill",
+            "value": "TestDummy!2026x",
+            "readback": "TestDummy!2026x",
+            "selector": "[data-automation-id=\"password\"]",
+            "verified": true
+          },
+          {
+            "automation_id": "verifyPassword",
+            "status": "filled",
+            "reason": null,
+            "mode": "fill",
+            "value": "TestDummy!2026x",
+            "readback": "TestDummy!2026x",
+            "selector": "[data-automation-id=\"verifyPassword\"]",
+            "verified": true
+          },
+          {
+            "automation_id": "text=Agree to",
+            "status": "filled",
+            "mode": "label_click",
+            "verified": true
+          }
+        ],
+        "missed": [],
+        "clicks": [
+          {
+            "selector": "[data-automation-id=\"createAccountSubmitButton\"]",
+            "text": "Create Account",
+            "action": "clicked",
+            "kind": "ADVANCE"
+          }
+        ],
+        "path": "create_account"
+      },
+      "sign_in": null,
+      "already_registered": false,
+      "account_created": true,
+      "signed_in": true
+    },
+    "phase_b": {
+      "name": "B_contact",
+      "present": true,
+      "filled": [
+        {
+          "automation_id": "legalNameSection_firstName",
+          "status": "filled",
+          "reason": null,
+          "mode": "fill",
+          "value": "Test",
+          "readback": "Test",
+          "selector": "input[name=\"legalName--firstName\"]",
+          "verified": true
+        },
+        {
+          "automation_id": "legalNameSection_lastName",
+          "status": "filled",
+          "reason": null,
+          "mode": "fill",
+          "value": "Dummy",
+          "readback": "Dummy",
+          "selector": "input[name=\"legalName--lastName\"]",
+          "verified": true
+        },
+        {
+          "automation_id": "addressSection_country",
+          "status": "filled",
+          "reason": null,
+          "mode": "combobox",
+          "value": "United States",
+          "readback": "United States of America",
+          "selector": "[data-automation-id=\"formField-country\"] button",
+          "option_clicked": true,
+          "option_text": "United States of America (+1)",
+          "verified": true
+        },
+        {
+          "automation_id": "addressSection_addressLine1",
+          "status": "filled",
+          "reason": null,
+          "mode": "fill",
+          "value": "100 Example Ave, Apt 1A",
+          "readback": "100 Example Ave, Apt 1A",
+          "selector": "input[name=\"addressLine1\"]",
+          "verified": true
+        },
+        {
+          "automation_id": "addressSection_city",
+          "status": "filled",
+          "reason": null,
+          "mode": "fill",
+          "value": "Springfield",
+          "readback": "Springfield",
+          "selector": "input[name=\"city\"]",
+          "verified": true
+        },
+        {
+          "automation_id": "addressSection_countryRegion",
+          "status": "filled",
+          "reason": null,
+          "mode": "combobox",
+          "value": "IL",
+          "readback": "Illinois",
+          "selector": "[data-automation-id=\"formField-countryRegion\"] button",
+          "option_clicked": true,
+          "option_text": "Illinois",
+          "verified": true
+        },
+        {
+          "automation_id": "addressSection_postalCode",
+          "status": "filled",
+          "reason": null,
+          "mode": "fill",
+          "value": "62701",
+          "readback": "62701",
+          "selector": "input[name=\"postalCode\"]",
+          "verified": true
+        },
+        {
+          "automation_id": "phone-device-type",
+          "status": "filled",
+          "reason": null,
+          "mode": "combobox",
+          "value": "Mobile",
+          "readback": "Mobile",
+          "selector": "[data-automation-id=\"formField-phoneType\"] button",
+          "option_clicked": true,
+          "option_text": "Mobile",
+          "verified": true
+        },
+        {
+          "automation_id": "phone-number",
+          "status": "filled",
+          "reason": null,
+          "mode": "fill",
+          "value": "405-555-0100",
+          "readback": "405-555-0100",
+          "selector": "[data-automation-id=\"formField-phoneNumber\"] input[type=\"text\"]",
+          "verified": true
+        },
+        {
+          "automation_id": "how_heard",
+          "status": "filled",
+          "reason": null,
+          "mode": "combobox",
+          "value": "Indeed",
+          "readback": "Job Posting (e.g. Indeed)",
+          "selector": "[data-automation-id=\"formField-source\"] button",
+          "option_clicked": true,
+          "option_text": "Job Posting (e.g. Indeed)",
+          "verified": true
+        },
+        {
+          "automation_id": "worked_here_before",
+          "status": "filled",
+          "mode": "radio",
+          "value": "No",
+          "selector": "fieldset",
+          "verified": true
+        },
+        {
+          "automation_id": "file-upload-input-ref",
+          "status": "filled",
+          "mode": "file",
+          "value": "/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/fastfill_run_1vmhvfxj/dummy_resume_run_bd5eb7ead4b7.pdf",
+          "verified": true
+        },
+        {
+          "automation_id": "workExperience-1/jobTitle",
+          "status": "filled",
+          "value": "Applied AI/ML Analyst",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "automation_id": "workExperience-1/company",
+          "status": "filled",
+          "value": "Example Corp",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "automation_id": "workExperience-1/location",
+          "status": "filled",
+          "value": "Remote",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "status": "filled",
+          "verified": true,
+          "month": "01",
+          "year": "2022",
+          "nth": 0,
+          "from_only": true,
+          "to_only": false,
+          "pool_month": 2,
+          "pool_year": 2,
+          "readback": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2022",
+            "year_display": "2022",
+            "mode": "from",
+            "nth": 0
+          },
+          "techniques": [
+            "month:display:press_sequentially",
+            "year:display:press_sequentially"
+          ],
+          "mode": "date_spin",
+          "automation_id": "workExperience-1/startDate",
+          "readback_final": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2022",
+            "year_display": "2022",
+            "mode": "from",
+            "nth": 0
+          }
+        },
+        {
+          "status": "filled",
+          "verified": true,
+          "month": "01",
+          "year": "2023",
+          "nth": 0,
+          "from_only": false,
+          "to_only": true,
+          "pool_month": 1,
+          "pool_year": 1,
+          "readback": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2023",
+            "year_display": "2023",
+            "mode": "to",
+            "nth": 0
+          },
+          "techniques": [
+            "month:display:press_sequentially",
+            "year:display:press_sequentially"
+          ],
+          "mode": "date_spin",
+          "automation_id": "workExperience-1/endDate",
+          "to_pool": 1,
+          "readback_final": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2022",
+            "year_display": "2022",
+            "mode": "to",
+            "nth": 0
+          },
+          "retry": {
+            "verified": true,
+            "readback": {
+              "month_input": "1",
+              "month_display": "01",
+              "year_input": "2023",
+              "year_display": "2023",
+              "mode": "to",
+              "nth": 0
+            },
+            "techniques": [
+              "month:display:press_sequentially",
+              "year:display:press_sequentially"
+            ],
+            "reason": null
+          }
+        },
+        {
+          "automation_id": "workExperience-2/jobTitle",
+          "status": "filled",
+          "value": "Data Engineer (Contract)",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "automation_id": "workExperience-2/company",
+          "status": "filled",
+          "value": "Sample Industries LLC",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "automation_id": "workExperience-2/location",
+          "status": "filled",
+          "value": "Springfield, IL",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "status": "filled",
+          "verified": true,
+          "month": "01",
+          "year": "2022",
+          "nth": 1,
+          "from_only": true,
+          "to_only": false,
+          "pool_month": 4,
+          "pool_year": 4,
+          "readback": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2022",
+            "year_display": "2022",
+            "mode": "from",
+            "nth": 1
+          },
+          "techniques": [
+            "month:display:press_sequentially",
+            "year:display:press_sequentially"
+          ],
+          "mode": "date_spin",
+          "automation_id": "workExperience-2/startDate",
+          "readback_final": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2023",
+            "year_display": "2023",
+            "mode": "from",
+            "nth": 1
+          },
+          "retry": {
+            "verified": true,
+            "readback": {
+              "month_input": "1",
+              "month_display": "01",
+              "year_input": "2022",
+              "year_display": "2022",
+              "mode": "from",
+              "nth": 1
+            },
+            "techniques": [
+              "month:display:press_sequentially",
+              "year:display:press_sequentially"
+            ],
+            "reason": null
+          }
+        },
+        {
+          "status": "filled",
+          "verified": true,
+          "month": "01",
+          "year": "2023",
+          "nth": 1,
+          "from_only": false,
+          "to_only": true,
+          "pool_month": 2,
+          "pool_year": 2,
+          "readback": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2023",
+            "year_display": "2023",
+            "mode": "to",
+            "nth": 1
+          },
+          "techniques": [
+            "month:display:press_sequentially",
+            "year:display:press_sequentially"
+          ],
+          "mode": "date_spin",
+          "automation_id": "workExperience-2/endDate",
+          "to_pool": 2,
+          "readback_final": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2023",
+            "year_display": "2023",
+            "mode": "to",
+            "nth": 1
+          }
+        }
+      ],
+      "stuck": [
+        {
+          "automation_id": "legalNameSection_firstName",
+          "status": "filled",
+          "reason": null,
+          "mode": "fill",
+          "value": "Test",
+          "readback": "Test",
+          "selector": "input[name=\"legalName--firstName\"]",
+          "verified": true
+        },
+        {
+          "automation_id": "legalNameSection_lastName",
+          "status": "filled",
+          "reason": null,
+          "mode": "fill",
+          "value": "Dummy",
+          "readback": "Dummy",
+          "selector": "input[name=\"legalName--lastName\"]",
+          "verified": true
+        },
+        {
+          "automation_id": "addressSection_country",
+          "status": "filled",
+          "reason": null,
+          "mode": "combobox",
+          "value": "United States",
+          "readback": "United States of America",
+          "selector": "[data-automation-id=\"formField-country\"] button",
+          "option_clicked": true,
+          "option_text": "United States of America (+1)",
+          "verified": true
+        },
+        {
+          "automation_id": "addressSection_addressLine1",
+          "status": "filled",
+          "reason": null,
+          "mode": "fill",
+          "value": "100 Example Ave, Apt 1A",
+          "readback": "100 Example Ave, Apt 1A",
+          "selector": "input[name=\"addressLine1\"]",
+          "verified": true
+        },
+        {
+          "automation_id": "addressSection_city",
+          "status": "filled",
+          "reason": null,
+          "mode": "fill",
+          "value": "Springfield",
+          "readback": "Springfield",
+          "selector": "input[name=\"city\"]",
+          "verified": true
+        },
+        {
+          "automation_id": "addressSection_countryRegion",
+          "status": "filled",
+          "reason": null,
+          "mode": "combobox",
+          "value": "IL",
+          "readback": "Illinois",
+          "selector": "[data-automation-id=\"formField-countryRegion\"] button",
+          "option_clicked": true,
+          "option_text": "Illinois",
+          "verified": true
+        },
+        {
+          "automation_id": "addressSection_postalCode",
+          "status": "filled",
+          "reason": null,
+          "mode": "fill",
+          "value": "62701",
+          "readback": "62701",
+          "selector": "input[name=\"postalCode\"]",
+          "verified": true
+        },
+        {
+          "automation_id": "phone-device-type",
+          "status": "filled",
+          "reason": null,
+          "mode": "combobox",
+          "value": "Mobile",
+          "readback": "Mobile",
+          "selector": "[data-automation-id=\"formField-phoneType\"] button",
+          "option_clicked": true,
+          "option_text": "Mobile",
+          "verified": true
+        },
+        {
+          "automation_id": "phone-number",
+          "status": "filled",
+          "reason": null,
+          "mode": "fill",
+          "value": "405-555-0100",
+          "readback": "405-555-0100",
+          "selector": "[data-automation-id=\"formField-phoneNumber\"] input[type=\"text\"]",
+          "verified": true
+        },
+        {
+          "automation_id": "how_heard",
+          "status": "filled",
+          "reason": null,
+          "mode": "combobox",
+          "value": "Indeed",
+          "readback": "Job Posting (e.g. Indeed)",
+          "selector": "[data-automation-id=\"formField-source\"] button",
+          "option_clicked": true,
+          "option_text": "Job Posting (e.g. Indeed)",
+          "verified": true
+        },
+        {
+          "automation_id": "worked_here_before",
+          "status": "filled",
+          "mode": "radio",
+          "value": "No",
+          "selector": "fieldset",
+          "verified": true
+        },
+        {
+          "automation_id": "file-upload-input-ref",
+          "status": "filled",
+          "mode": "file",
+          "value": "/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/fastfill_run_1vmhvfxj/dummy_resume_run_bd5eb7ead4b7.pdf",
+          "verified": true
+        },
+        {
+          "automation_id": "workExperience-1/jobTitle",
+          "status": "filled",
+          "value": "Applied AI/ML Analyst",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "automation_id": "workExperience-1/company",
+          "status": "filled",
+          "value": "Example Corp",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "automation_id": "workExperience-1/location",
+          "status": "filled",
+          "value": "Remote",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "status": "filled",
+          "verified": true,
+          "month": "01",
+          "year": "2022",
+          "nth": 0,
+          "from_only": true,
+          "to_only": false,
+          "pool_month": 2,
+          "pool_year": 2,
+          "readback": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2022",
+            "year_display": "2022",
+            "mode": "from",
+            "nth": 0
+          },
+          "techniques": [
+            "month:display:press_sequentially",
+            "year:display:press_sequentially"
+          ],
+          "mode": "date_spin",
+          "automation_id": "workExperience-1/startDate",
+          "readback_final": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2022",
+            "year_display": "2022",
+            "mode": "from",
+            "nth": 0
+          }
+        },
+        {
+          "status": "filled",
+          "verified": true,
+          "month": "01",
+          "year": "2023",
+          "nth": 0,
+          "from_only": false,
+          "to_only": true,
+          "pool_month": 1,
+          "pool_year": 1,
+          "readback": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2023",
+            "year_display": "2023",
+            "mode": "to",
+            "nth": 0
+          },
+          "techniques": [
+            "month:display:press_sequentially",
+            "year:display:press_sequentially"
+          ],
+          "mode": "date_spin",
+          "automation_id": "workExperience-1/endDate",
+          "to_pool": 1,
+          "readback_final": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2022",
+            "year_display": "2022",
+            "mode": "to",
+            "nth": 0
+          },
+          "retry": {
+            "verified": true,
+            "readback": {
+              "month_input": "1",
+              "month_display": "01",
+              "year_input": "2023",
+              "year_display": "2023",
+              "mode": "to",
+              "nth": 0
+            },
+            "techniques": [
+              "month:display:press_sequentially",
+              "year:display:press_sequentially"
+            ],
+            "reason": null
+          }
+        },
+        {
+          "automation_id": "workExperience-2/jobTitle",
+          "status": "filled",
+          "value": "Data Engineer (Contract)",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "automation_id": "workExperience-2/company",
+          "status": "filled",
+          "value": "Sample Industries LLC",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "automation_id": "workExperience-2/location",
+          "status": "filled",
+          "value": "Springfield, IL",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "status": "filled",
+          "verified": true,
+          "month": "01",
+          "year": "2022",
+          "nth": 1,
+          "from_only": true,
+          "to_only": false,
+          "pool_month": 4,
+          "pool_year": 4,
+          "readback": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2022",
+            "year_display": "2022",
+            "mode": "from",
+            "nth": 1
+          },
+          "techniques": [
+            "month:display:press_sequentially",
+            "year:display:press_sequentially"
+          ],
+          "mode": "date_spin",
+          "automation_id": "workExperience-2/startDate",
+          "readback_final": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2023",
+            "year_display": "2023",
+            "mode": "from",
+            "nth": 1
+          },
+          "retry": {
+            "verified": true,
+            "readback": {
+              "month_input": "1",
+              "month_display": "01",
+              "year_input": "2022",
+              "year_display": "2022",
+              "mode": "from",
+              "nth": 1
+            },
+            "techniques": [
+              "month:display:press_sequentially",
+              "year:display:press_sequentially"
+            ],
+            "reason": null
+          }
+        },
+        {
+          "status": "filled",
+          "verified": true,
+          "month": "01",
+          "year": "2023",
+          "nth": 1,
+          "from_only": false,
+          "to_only": true,
+          "pool_month": 2,
+          "pool_year": 2,
+          "readback": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2023",
+            "year_display": "2023",
+            "mode": "to",
+            "nth": 1
+          },
+          "techniques": [
+            "month:display:press_sequentially",
+            "year:display:press_sequentially"
+          ],
+          "mode": "date_spin",
+          "automation_id": "workExperience-2/endDate",
+          "to_pool": 2,
+          "readback_final": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2023",
+            "year_display": "2023",
+            "mode": "to",
+            "nth": 1
+          }
+        }
+      ],
+      "missed": [],
+      "next_clicks": [
+        {
+          "selector": "button:has-text(\"Save and Continue\")",
+          "text": "Save and Continue",
+          "action": "clicked",
+          "kind": "ADVANCE"
+        }
+      ],
+      "advanced": true,
+      "advance_blocked_reason": null,
+      "validation_after_advance": null,
+      "required_empty_before_advance": []
+    },
+    "metrics": {
+      "account_created": true,
+      "signed_in": true,
+      "already_registered": false,
+      "create_account_filled": 4,
+      "sign_in_filled": 0,
+      "contact_filled_verified": 22,
+      "contact_stuck": 22,
+      "contact_missed": 0,
+      "contact_page_present": true,
+      "reached_contact": true,
+      "advanced": true,
+      "advance_blocked_reason": "required_dates_empty",
+      "advanced_incomplete": false,
+      "validation_errors": false,
+      "experience_present": true,
+      "eeo_present": false,
+      "self_id_present": false,
+      "ready_for_review": false,
+      "verdict": "FAIL",
+      "blocker": "page_incomplete"
+    },
+    "blocker": "page_incomplete",
+    "verdict": "FAIL",
+    "identity_email": "randommail6969+bd5eb7ead4b7@gmail.com",
+    "final_url": "https://cisco.wd5.myworkdayjobs.com/en-US/Cisco_Careers/job/RTP%2C-North-Carolina%2C-US/Data-Engineer_2019222/apply/applyManually",
+    "page_title": "Data Engineer",
+    "validation_after_advance": null,
+    "advance_blocked_reason": "required_dates_empty",
+    "advanced_incomplete": false,
+    "ready_for_review": null,
+    "phase_c": {
+      "name": "C_experience",
+      "present": true,
+      "filled": [
+        {
+          "automation_id": "file-upload-input-ref",
+          "status": "filled",
+          "mode": "file",
+          "value": "/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/fastfill_run_1vmhvfxj/dummy_resume_run_bd5eb7ead4b7.pdf",
+          "verified": true
+        },
+        {
+          "automation_id": "workExperience-1/jobTitle",
+          "status": "filled",
+          "value": "Applied AI/ML Analyst",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "automation_id": "workExperience-1/company",
+          "status": "filled",
+          "value": "Example Corp",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "automation_id": "workExperience-1/location",
+          "status": "filled",
+          "value": "Remote",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "status": "filled",
+          "verified": true,
+          "month": "01",
+          "year": "2022",
+          "nth": 0,
+          "from_only": true,
+          "to_only": false,
+          "pool_month": 2,
+          "pool_year": 2,
+          "readback": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2022",
+            "year_display": "2022",
+            "mode": "from",
+            "nth": 0
+          },
+          "techniques": [
+            "month:display:press_sequentially",
+            "year:display:press_sequentially"
+          ],
+          "mode": "date_spin",
+          "automation_id": "workExperience-1/startDate",
+          "readback_final": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2022",
+            "year_display": "2022",
+            "mode": "from",
+            "nth": 0
+          }
+        },
+        {
+          "status": "filled",
+          "verified": true,
+          "month": "01",
+          "year": "2023",
+          "nth": 0,
+          "from_only": false,
+          "to_only": true,
+          "pool_month": 1,
+          "pool_year": 1,
+          "readback": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2023",
+            "year_display": "2023",
+            "mode": "to",
+            "nth": 0
+          },
+          "techniques": [
+            "month:display:press_sequentially",
+            "year:display:press_sequentially"
+          ],
+          "mode": "date_spin",
+          "automation_id": "workExperience-1/endDate",
+          "to_pool": 1,
+          "readback_final": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2022",
+            "year_display": "2022",
+            "mode": "to",
+            "nth": 0
+          },
+          "retry": {
+            "verified": true,
+            "readback": {
+              "month_input": "1",
+              "month_display": "01",
+              "year_input": "2023",
+              "year_display": "2023",
+              "mode": "to",
+              "nth": 0
+            },
+            "techniques": [
+              "month:display:press_sequentially",
+              "year:display:press_sequentially"
+            ],
+            "reason": null
+          }
+        },
+        {
+          "automation_id": "workExperience-2/jobTitle",
+          "status": "filled",
+          "value": "Data Engineer (Contract)",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "automation_id": "workExperience-2/company",
+          "status": "filled",
+          "value": "Sample Industries LLC",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "automation_id": "workExperience-2/location",
+          "status": "filled",
+          "value": "Springfield, IL",
+          "verified": true,
+          "mode": "fill"
+        },
+        {
+          "status": "filled",
+          "verified": true,
+          "month": "01",
+          "year": "2022",
+          "nth": 1,
+          "from_only": true,
+          "to_only": false,
+          "pool_month": 4,
+          "pool_year": 4,
+          "readback": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2022",
+            "year_display": "2022",
+            "mode": "from",
+            "nth": 1
+          },
+          "techniques": [
+            "month:display:press_sequentially",
+            "year:display:press_sequentially"
+          ],
+          "mode": "date_spin",
+          "automation_id": "workExperience-2/startDate",
+          "readback_final": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2023",
+            "year_display": "2023",
+            "mode": "from",
+            "nth": 1
+          },
+          "retry": {
+            "verified": true,
+            "readback": {
+              "month_input": "1",
+              "month_display": "01",
+              "year_input": "2022",
+              "year_display": "2022",
+              "mode": "from",
+              "nth": 1
+            },
+            "techniques": [
+              "month:display:press_sequentially",
+              "year:display:press_sequentially"
+            ],
+            "reason": null
+          }
+        },
+        {
+          "status": "filled",
+          "verified": true,
+          "month": "01",
+          "year": "2023",
+          "nth": 1,
+          "from_only": false,
+          "to_only": true,
+          "pool_month": 2,
+          "pool_year": 2,
+          "readback": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2023",
+            "year_display": "2023",
+            "mode": "to",
+            "nth": 1
+          },
+          "techniques": [
+            "month:display:press_sequentially",
+            "year:display:press_sequentially"
+          ],
+          "mode": "date_spin",
+          "automation_id": "workExperience-2/endDate",
+          "to_pool": 2,
+          "readback_final": {
+            "month_input": "1",
+            "month_display": "01",
+            "year_input": "2023",
+            "year_display": "2023",
+            "mode": "to",
+            "nth": 1
+          }
+        }
+      ],
+      "missed": [],
+      "advanced": false,
+      "date_fallbacks": [
+        "workExperience-1/start",
+        "workExperience-1/end",
+        "workExperience-2/start",
+        "workExperience-2/end"
+      ],
+      "required_empty_before_advance": [
+        {
+          "id": "dateSectionMonth-display",
+          "reason": "empty_required_date_display"
+        },
+        {
+          "id": "dateSectionYear-display",
+          "reason": "empty_required_date_display"
+        },
+        {
+          "id": "formField-startDate",
+          "reason": "empty_required_date_field"
+        }
+      ],
+      "advance_blocked_reason": "required_dates_empty"
+    },
+    "phase_d": null,
+    "phase_e": null
+  },
+  "verdict": "FAIL",
+  "elapsed_seconds": 83.66,
+  "filled_count": 30,
+  "leftover_count": 11,
+  "coverage": 0.732,
+  "coverage_note": "filled_count / max(extracted, filled+leftovers); selector-pack-only fills may exceed extract count",
+  "replay_recorded": 18,
+  "replay_fingerprint": "57ab61c31dce045860c5d776",
+  "flash": {
+    "mode": "leftovers_only",
+    "invoked": false,
+    "never_submit": true,
+    "submit_clicked": false,
+    "dummy": true,
+    "flash_default_on": false,
+    "url": "https://cisco.wd5.myworkdayjobs.com/Cisco_Careers/job/RTP-North-Carolina-US/Data-Engineer_2019222",
+    "platform": "workday",
+    "model_hint": "DeepSeek-V4-Flash",
+    "identity_email": "randommail6969+bd5eb7ead4b7@gmail.com",
+    "already_filled": [
+      {
+        "type": "legalNameSection_firstName",
+        "label": "legalNameSection_firstName",
+        "selector": "input[name=\"legalName--firstName\"]",
+        "value": "Test",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "legalNameSection_lastName",
+        "label": "legalNameSection_lastName",
+        "selector": "input[name=\"legalName--lastName\"]",
+        "value": "Dummy",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "addressSection_country",
+        "label": "addressSection_country",
+        "selector": "[data-automation-id=\"formField-country\"] button",
+        "value": "United States",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "addressSection_addressLine1",
+        "label": "addressSection_addressLine1",
+        "selector": "input[name=\"addressLine1\"]",
+        "value": "100 Example Ave, Apt 1A",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "addressSection_city",
+        "label": "addressSection_city",
+        "selector": "input[name=\"city\"]",
+        "value": "Springfield",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "addressSection_countryRegion",
+        "label": "addressSection_countryRegion",
+        "selector": "[data-automation-id=\"formField-countryRegion\"] button",
+        "value": "IL",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "addressSection_postalCode",
+        "label": "addressSection_postalCode",
+        "selector": "input[name=\"postalCode\"]",
+        "value": "62701",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "phone-device-type",
+        "label": "phone-device-type",
+        "selector": "[data-automation-id=\"formField-phoneType\"] button",
+        "value": "Mobile",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "phone-number",
+        "label": "phone-number",
+        "selector": "[data-automation-id=\"formField-phoneNumber\"] input[type=\"text\"]",
+        "value": "405-555-0100",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "how_heard",
+        "label": "how_heard",
+        "selector": "[data-automation-id=\"formField-source\"] button",
+        "value": "Indeed",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "worked_here_before",
+        "label": "worked_here_before",
+        "selector": "fieldset",
+        "value": "No",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "file-upload-input-ref",
+        "label": "file-upload-input-ref",
+        "selector": "",
+        "value": "/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/fastfill_run_1vmhvfxj/dummy_resume_run_bd5eb7ead4b7.pdf",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "workExperience-1/jobTitle",
+        "label": "workExperience-1/jobTitle",
+        "selector": "",
+        "value": "Applied AI/ML Analyst",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "workExperience-1/company",
+        "label": "workExperience-1/company",
+        "selector": "",
+        "value": "Example Corp",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "workExperience-1/location",
+        "label": "workExperience-1/location",
+        "selector": "",
+        "value": "Remote",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "workExperience-1/startDate",
+        "label": "workExperience-1/startDate",
+        "selector": "",
+        "value": null,
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "workExperience-1/endDate",
+        "label": "workExperience-1/endDate",
+        "selector": "",
+        "value": null,
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "workExperience-2/jobTitle",
+        "label": "workExperience-2/jobTitle",
+        "selector": "",
+        "value": "Data Engineer (Contract)",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "workExperience-2/company",
+        "label": "workExperience-2/company",
+        "selector": "",
+        "value": "Sample Industries LLC",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "workExperience-2/location",
+        "label": "workExperience-2/location",
+        "selector": "",
+        "value": "Springfield, IL",
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "workExperience-2/startDate",
+        "label": "workExperience-2/startDate",
+        "selector": "",
+        "value": null,
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "workExperience-2/endDate",
+        "label": "workExperience-2/endDate",
+        "selector": "",
+        "value": null,
+        "via": "workday_contact_pack"
+      },
+      {
+        "type": "email",
+        "label": "email",
+        "selector": "[data-automation-id=\"email\"]",
+        "value": "randommail6969+bd5eb7ead4b7@gmail.com",
+        "via": "workday_auth_create"
+      },
+      {
+        "type": "password",
+        "label": "password",
+        "selector": "[data-automation-id=\"password\"]",
+        "value": "TestDummy!2026x",
+        "via": "workday_auth_create"
+      },
+      {
+        "type": "verifyPassword",
+        "label": "verifyPassword",
+        "selector": "[data-automation-id=\"verifyPassword\"]",
+        "value": "TestDummy!2026x",
+        "via": "workday_auth_create"
+      },
+      {
+        "type": "text=Agree to",
+        "label": "text=Agree to",
+        "selector": "[data-automation-id=\"text=Agree to\"]",
+        "value": null,
+        "via": "workday_auth_create"
+      },
+      {
+        "type": "RESUME_UPLOAD",
+        "label": "",
+        "selector": "[data-automation-id=\"file-upload-input-ref\"]",
+        "value": "dummy_resume_run_bd5eb7ead4b7.pdf",
+        "via": "workday_selector_pack"
+      },
+      {
+        "type": "CURRENT_TITLE",
+        "label": "Job Title*",
+        "selector": "input[name=\"jobTitle\"]:visible",
+        "value": "Applied AI/ML Analyst",
+        "via": "extract+classify"
+      },
+      {
+        "type": "CURRENT_COMPANY",
+        "label": "Company*",
+        "selector": "input[name=\"companyName\"]:visible",
+        "value": "Example Corp",
+        "via": "extract+classify"
+      },
+      {
+        "type": "ADDRESS_CITY",
+        "label": "Location",
+        "selector": "input[name=\"location\"]:visible",
+        "value": "Springfield",
+        "via": "extract+classify"
+      }
+    ],
+    "already_filled_count": 30,
+    "leftovers": [
+      {
+        "label": "Month \u2014 From*",
+        "type": null,
+        "selector": "input[data-automation-id=\"dateSectionMonth-input\"]:visible",
+        "reason": "unclassified",
+        "automation_id": null,
+        "flash_candidate": true
+      },
+      {
+        "label": "Year \u2014 From*",
+        "type": null,
+        "selector": "input[data-automation-id=\"dateSectionYear-input\"]:visible",
+        "reason": "unclassified",
+        "automation_id": null,
+        "flash_candidate": true
+      },
+      {
+        "label": "Month",
+        "type": null,
+        "selector": "input[data-automation-id=\"dateSectionMonth-input\"]:visible",
+        "reason": "unclassified",
+        "automation_id": null,
+        "flash_candidate": true
+      },
+      {
+        "label": "Year",
+        "type": null,
+        "selector": "input[data-automation-id=\"dateSectionYear-input\"]:visible",
+        "reason": "unclassified",
+        "automation_id": null,
+        "flash_candidate": true
+      },
+      {
+        "label": "Role Description",
+        "type": null,
+        "selector": "label:has-text('Role Description') textarea:visible",
+        "reason": "unclassified",
+        "automation_id": null,
+        "flash_candidate": true
+      }
+    ],
+    "leftover_count": 5,
+    "leftovers_truncated": true,
+    "max_steps": 5,
+    "max_leftover_fields": 5,
+    "cheat_sheet": "ALREADY FILLED (do not re-fill / do not ask about):\n  - legalNameSection_firstName: 'Test'\n  - legalNameSection_lastName: 'Dummy'\n  - addressSection_country: 'United States'\n  - addressSection_addressLine1: '100 Example Ave, Apt 1A'\n  - addressSection_city: 'Springfield'\n  - addressSection_countryRegion: 'IL'\n  - addressSection_postalCode: '62701'\n  - phone-device-type: 'Mobile'\n  - phone-number: '405-555-0100'\n  - how_heard: 'Indeed'\n  - worked_here_before: 'No'\n  - file-upload-input-ref: '/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/fastfill_run_1vmhvfxj/dummy_resume_run_bd5eb7ead4b7.pdf'\n  - workExperience-1/jobTitle: 'Applied AI/ML Analyst'\n  - workExperience-1/company: 'Example Corp'\n  - workExperience-1/location: 'Remote'\n  - workExperience-1/startDate: (set)\n  - workExperience-1/endDate: (set)\n  - workExperience-2/jobTitle: 'Data Engineer (Contract)'\n  - workExperience-2/company: 'Sample Industries LLC'\n  - workExperience-2/location: 'Springfield, IL'\n  - workExperience-2/startDate: (set)\n  - workExperience-2/endDate: (set)\n  - email: 'randommail6969+bd5eb7ead4b7@gmail.com'\n  - password: <redacted-dummy-password>\n  - verifyPassword: <redacted-dummy-password>\n  - text=Agree to: (set)\n  - RESUME_UPLOAD: 'dummy_resume_run_bd5eb7ead4b7.pdf'\n  - Job Title*: 'Applied AI/ML Analyst'\n  - Company*: 'Example Corp'\n  - Location: 'Springfield'",
+    "prompt": "Continue this job application form. Deterministic layers already filled what they could. Use dummy applicant data only.\n\nALREADY FILLED (do not re-fill / do not ask about):\n  - legalNameSection_firstName: 'Test'\n  - legalNameSection_lastName: 'Dummy'\n  - addressSection_country: 'United States'\n  - addressSection_addressLine1: '100 Example Ave, Apt 1A'\n  - addressSection_city: 'Springfield'\n  - addressSection_countryRegion: 'IL'\n  - addressSection_postalCode: '62701'\n  - phone-device-type: 'Mobile'\n  - phone-number: '405-555-0100'\n  - how_heard: 'Indeed'\n  - worked_here_before: 'No'\n  - file-upload-input-ref: '/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/fastfill_run_1vmhvfxj/dummy_resume_run_bd5eb7ead4b7.pdf'\n  - workExperience-1/jobTitle: 'Applied AI/ML Analyst'\n  - workExperience-1/company: 'Example Corp'\n  - workExperience-1/location: 'Remote'\n  - workExperience-1/startDate: (set)\n  - workExperience-1/endDate: (set)\n  - workExperience-2/jobTitle: 'Data Engineer (Contract)'\n  - workExperience-2/company: 'Sample Industries LLC'\n  - workExperience-2/location: 'Springfield, IL'\n  - workExperience-2/startDate: (set)\n  - workExperience-2/endDate: (set)\n  - email: 'randommail6969+bd5eb7ead4b7@gmail.com'\n  - password: <redacted-dummy-password>\n  - verifyPassword: <redacted-dummy-password>\n  - text=Agree to: (set)\n  - RESUME_UPLOAD: 'dummy_resume_run_bd5eb7ead4b7.pdf'\n  - Job Title*: 'Applied AI/ML Analyst'\n  - Company*: 'Example Corp'\n  - Location: 'Springfield'\n\nLEFTOVER FIELDS (fill these only \u2014 nothing else):\n  1. label='Month \u2014 From*' type=None reason='unclassified' selector='input[data-automation-id=\"dateSectionMonth-input\"]:visible'\n  2. label='Year \u2014 From*' type=None reason='unclassified' selector='input[data-automation-id=\"dateSectionYear-input\"]:visible'\n  3. label='Month' type=None reason='unclassified' selector='input[data-automation-id=\"dateSectionMonth-input\"]:visible'\n  4. label='Year' type=None reason='unclassified' selector='input[data-automation-id=\"dateSectionYear-input\"]:visible'\n  5. label='Role Description' type=None reason='unclassified' selector=\"label:has-text('Role Description') textarea:visible\"\n\nLEFTOVERS-ONLY MODE (DeepSeek-V4-Flash, cost-aware):\n1. Fields listed under ALREADY FILLED are done \u2014 do NOT clear, retype, ask about,\n   or re-derive them. Treat the cheat sheet as ground truth.\n2. Fill ONLY the LEFTOVER fields listed below. One action per field.\n3. Prefer Decline/No for EEO/demographics when unsure \u2014 never invent personal facts.\n4. Never press Enter to confirm a dropdown (can submit the form) \u2014 click the option.\n5. Resume upload path if needed: use the dummy resume already known to the harness.\n6. Stay within 5 actions maximum.\n7. ABSOLUTE HARD RULE: never click Submit / Submit application / Apply-final / Send / Finish / Confirm. Stop at ready-for-review. Account Create/Sign In and Next/Continue are allowed. Never solve CAPTCHA \u2014 terminate if one appears.",
+    "prompt_chars": 2943,
+    "cheat_sheet_chars": 1364
+  }
+}

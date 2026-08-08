@@ -16,13 +16,25 @@ company's form - the most consistent/simple of the platforms
   question containing "authorized to work" / "require sponsorship," with a
   radio button or select right after - match by that text, not a fixed
   selector, since exact wording varies slightly by company.
+- EEO Gender / Race / Veteran / Disability are often native `<select>`
+  elements (`eeo[gender]` etc.) — Decline to self identify only.
 - A university/school field is often a searchable combobox: click it, type
   into the resulting `input[type="search"]`, press Enter to select.
+
+## Prefill path (2026-07-31)
+
+1. `LEVER_SELECTOR_PACK` — contact + LinkedIn/GitHub + EEO `<select>` Decline
+2. `lever_widgets.fill_lever_widgets` — label-scoped WORK_AUTH=Yes /
+   SPONSORSHIP=No radios + EEO Decline when pack misses; **runs even if
+   CAPTCHA blocks extract** (Utility Global class: contact filled, screening
+   unchecked while captcha at bottom)
+3. extract+classify when not blocked
 
 ## Known blocker
 Lever shows an hCaptcha for traffic it considers suspicious. If one
 appears, this is a stop-and-report situation per the Hard Rules (never
 solve a CAPTCHA or bypass bot-detection) - not something to work around.
+Screening/EEO above the captcha should still be filled by `lever_widgets`.
 
 ## Source
 Selector/structure knowledge verified against real, working automation

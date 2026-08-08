@@ -1,0 +1,13 @@
+{
+  "_comment": "TEMPLATE — copy to the repo root as web_keys.json (git-ignored). Per-site ATS account passwords used by fastfill. All values below are FAKE. Never commit real passwords.",
+  "sites": {
+    "jobs.example-ashby.com": {
+      "company": "Example Corp",
+      "email": "randommail6969@gmail.com",
+      "password": "TestDummy!2026x",
+      "created_at": "2026-01-01T00:00:00Z",
+      "job_id": "example-000",
+      "source": "example"
+    }
+  }
+}

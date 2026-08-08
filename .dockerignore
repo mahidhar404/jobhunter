@@ -1,0 +1,99 @@
+# .dockerignore — keep the build context PII-free and small.
+#
+# Mirrors export.sh / .gitignore: only code, docs, and the fixtures/*.example
+# templates should enter the image. Real PII, secrets, browser sessions, big
+# regenerable artifacts, and local envs are all excluded so nothing sensitive
+# is ever baked into a layer. Runtime state is provided at run time via a
+# mounted volume (see docker/entrypoint.sh + docker-compose.yml).
+
+# --- VCS / editor / OS ---
+.git/
+.gitignore
+.cursor/
+.cursorignore
+.firecrawl/
+.idea/
+.vscode/
+**/.DS_Store
+.DS_Store
+
+# --- Python envs / caches ---
+.venv/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- Secrets / PII (real config lives on the host; dummies come from fixtures/) ---
+credentials.json
+web_keys.json
+profile.json
+profile.json.bak*
+option_mappings.json
+**/credentials.json
+**/web_keys.json
+**/profile.json
+**/profile.json.bak*
+**/option_mappings.json
+.env
+.env.*
+!fixtures/.env.example
+**/.secrets.env
+
+# --- Personal data / regenerable artifacts ---
+jobs.json
+jobs.json.bak*
+jobs.json.lock
+blocked_urls.json
+blocked_urls.json.lock
+application_tracker.xlsx
+application_tracker.xlsx.lock
+listings/
+logs/
+resumes/
+
+# --- Agent-personal memory / identity notes ---
+MEMORY.md
+memory/
+USER.md
+
+# --- Dedicated private folder (never ship) ---
+private/
+
+# --- Browser session profiles (cookies/logins) ---
+*_chrome_profile/
+*_ui_profile/
+partyrock_chrome_profile/
+dashboard_chrome_profile/
+dashboard_ui_profile/
+
+# --- Skyvern runtime: heavy + its own env/secrets/artifacts (own image if used) ---
+skyvern_runtime/venv/
+skyvern_runtime/.env
+skyvern_runtime/.env.*
+skyvern_runtime/.secrets.env
+skyvern_runtime/credential_vault/
+skyvern_runtime/pgdata/
+skyvern_runtime/postgres_data/
+skyvern_runtime/videos/
+skyvern_runtime/downloads/
+skyvern_runtime/trusted_uploads/
+skyvern_runtime/har/
+skyvern_runtime/log/
+skyvern_runtime/temp/
+skyvern_runtime/archived_logs/
+skyvern_runtime/real_job_results/
+skyvern_runtime/*.log
+skyvern_runtime/*.marker
+
+# --- Workspace agent state ---
+.openclaw/
+openclaw-workspace-state.json
+
+# --- Docker / export outputs ---
+export_build/
+*.export.zip
+
+# --- Dashboard runtime logs ---
+dashboard/*.log
+dashboard/discovery_last_run.json

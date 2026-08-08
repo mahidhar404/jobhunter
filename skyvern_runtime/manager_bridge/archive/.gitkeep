@@ -1,0 +1,16 @@
+# Archive — completed task pairs
+
+Move here when a task is finished:
+
+- `TASK-*.md` or `TASK-*.json` (from `in_progress/`)
+- matching `RESULT-TASK-*.md` (copy from `outbox/` optional — outbox can keep latest for Manager)
+
+Naming: optional subfolder per task id for cleanliness:
+
+```
+archive/TASK-20260731-103000-slug/
+  task.md
+  result.md
+```
+
+Or flat files: `archive/TASK-....md` + `archive/RESULT-TASK-....md`

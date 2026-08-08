@@ -18,13 +18,20 @@ gap since the previous one, then the N slowest gaps at the end (default
 """
 import argparse
 import json
+import os
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 JOBS_FILE = ROOT / "jobs.json"
-OPENCLAW_BIN = "/opt/homebrew/bin/openclaw"
+# Resolve openclaw: explicit env override → PATH → macOS Homebrew default.
+OPENCLAW_BIN = (
+    (os.environ.get("JOBHUNTER_OPENCLAW_BIN") or "").strip()
+    or shutil.which("openclaw")
+    or "/opt/homebrew/bin/openclaw"
+)
 
 
 def find_session_key(job_id: str) -> str:

@@ -1,14 +1,24 @@
 # Personio - known form structure
 
-Not yet learned from a real run - `scrape_ats.py` was only just extended to
-scrape Personio's public XML listing feed
-(`scripts/scrape_ats.py:scrape_personio`), which covers discovery, not the
-candidate-facing application form itself. Note that Personio's own
-listing feed has no per-job URL - the job_url you'll navigate to is the
-company's careers page root (e.g. `https://{company}.jobs.personio.de/`),
-so you may need to find and click into the specific role by title first.
+Candidate apply lives on `{company}.jobs.personio.{com,de}/job/{id}?…&apply`
+(listing roots like `/?language=en#id` need a job click first).
 
-If you fill an application on a `*.jobs.personio.com`/`.de` domain, note
-what you find here afterward (field selectors, known quirks, known
-blockers) so the next job on this platform benefits - same pattern as
-workday.md/greenhouse.md/lever.md/ashby.md/icims.md.
+## Stable selectors (Layer 0.5 `PERSONIO_PACK`)
+
+Observed on Ultralytics (`ultralytics.jobs.personio.de`, 2026-07-30):
+
+| Field | Selector |
+|-------|----------|
+| First name | `#field-first_name` / `name=first_name` |
+| Last name | `#field-last_name` / `name=last_name` |
+| Email | `#field-email` / `name=email` |
+| Phone | `#field-phone` / `name=phone` |
+| Resume | `#doc-input-cv` / `name=documents.cv` (often CSS-hidden; `set_input_files` still works) |
+| LinkedIn / GitHub | custom `custom_attribute_*` inputs with matching **placeholders** |
+
+Submit stays disabled until required fields + CV — never click Submit / Apply-final.
+
+## Discovery note
+
+`scrape_ats.py:scrape_personio` hits the public XML listing feed only; it does
+not describe the apply form. Prefer `/job/{id}?…&apply` URLs for fill smoke.

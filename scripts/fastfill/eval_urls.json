@@ -1,0 +1,191 @@
+{
+  "version": 3,
+  "description": "Fixed eval suite for dummy Fast fill SLOs (Flash OFF by default). Ordered diversity-first: one URL per ATS/non-ATS platform, then extras. Universal = known ATS packs + unknown generic DOM.",
+  "slo": {
+    "greenhouse": {
+      "min_coverage": 0.9,
+      "max_seconds": 20,
+      "flash_tokens": 0
+    },
+    "workday_contact": {
+      "page_complete_or_fail_before_advance": true,
+      "validation_banners_on_advance": 0,
+      "max_seconds": 120
+    },
+    "ashby": {
+      "max_seconds": 25
+    },
+    "cross_suite": {
+      "advanced_incomplete": 0,
+      "flash_tokens_when_off": 0,
+      "never_submit": true
+    }
+  },
+  "urls": [
+    {
+      "url": "https://job-boards.greenhouse.io/dragos/jobs/5364876008",
+      "platform": "greenhouse",
+      "notes": "GH board — disability + US residence regression target"
+    },
+    {
+      "url": "https://quantiphi.wd1.myworkdayjobs.com/Careers_at_Quantiphi/job/USA---Remote/Senior-Data-Engineer---AWS---Quicksight_JR11459",
+      "platform": "workday",
+      "notes": "WD Quantiphi — cisco Data-Engineer_2019222 404; contact multipage (how-heard + previous-worker)"
+    },
+    {
+      "url": "https://jobs.lever.co/utilityglobal/ba22d077-faeb-4665-8b49-a178a66c9021",
+      "platform": "lever",
+      "notes": "Lever — replaced dead Parallel Domain 404"
+    },
+    {
+      "url": "https://jobs.ashbyhq.com/socure/c102743f-f368-4393-8776-3a83a461fd0d",
+      "platform": "ashby",
+      "notes": "Ashby"
+    },
+    {
+      "url": "https://careers-cotiviti.icims.com/jobs/19808/job",
+      "platform": "icims",
+      "notes": "iCIMS iframe apply"
+    },
+    {
+      "url": "https://jobs.smartrecruiters.com/ServiceNow/744000139371929-machine-learning-engineer-agentic-ai-systems-moveworks",
+      "platform": "smartrecruiters",
+      "notes": "SmartRecruiters"
+    },
+    {
+      "url": "https://apply.workable.com/j/5FDA6B7FB2",
+      "platform": "workable",
+      "notes": "Workable"
+    },
+    {
+      "url": "https://saphobio.bamboohr.com/careers/36",
+      "platform": "bamboohr",
+      "notes": "BambooHR"
+    },
+    {
+      "url": "https://basispathinc.recruitee.com/o/senior-data-engineer",
+      "platform": "recruitee",
+      "notes": "Recruitee"
+    },
+    {
+      "url": "https://ats.rippling.com/rev-robotics/jobs/e0eab7f2-91fa-42f2-bf3b-dfc5bb293dcf",
+      "platform": "rippling",
+      "notes": "Rippling ATS"
+    },
+    {
+      "url": "https://jobs.dayforcehcm.com/en-US/ccok/CCOK/jobs/5838",
+      "platform": "dayforce",
+      "notes": "Dayforce"
+    },
+    {
+      "url": "https://freshconsulting.applytojob.com/apply/L2WS0ed27M/Senior-Electrical-Engineer",
+      "platform": "applytojob",
+      "notes": "JazzHR / applytojob"
+    },
+    {
+      "url": "https://ebwi.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/requisitions/preview/351",
+      "platform": "oracle",
+      "notes": "Oracle Cloud HCM"
+    },
+    {
+      "url": "https://careers.norstella.com/jobs/18031937-senior-life-sciences-analyst-ai-model-training",
+      "platform": "unknown",
+      "notes": "non-ATS company careers — generic DOM (preferred unknown smoke)"
+    },
+    {
+      "url": "https://careers.rockco.com/jobs/5353/job",
+      "platform": "unknown",
+      "notes": "may redirect to iCIMS — still exercises iframe/generic path"
+    },
+    {
+      "url": "https://job-boards.greenhouse.io/dragos/jobs/5311375008",
+      "platform": "greenhouse",
+      "notes": "GH board extra"
+    },
+    {
+      "url": "https://job-boards.greenhouse.io/taxreliefadvocates/jobs/4759563008",
+      "platform": "greenhouse",
+      "notes": "GH board extra"
+    },
+    {
+      "url": "https://boards.greenhouse.io/airbnb/jobs/7881448",
+      "platform": "greenhouse",
+      "notes": "GH classic boards"
+    },
+    {
+      "url": "https://job-boards.greenhouse.io/stripe/jobs/5515078",
+      "platform": "greenhouse",
+      "notes": "GH stripe-style"
+    },
+    {
+      "url": "https://salesforce.wd12.myworkdayjobs.com/en-US/External_Career_Site",
+      "platform": "workday",
+      "notes": "WD salesforce site root"
+    },
+    {
+      "url": "https://bbh.wd5.myworkdayjobs.com/BBH/job/Boston/Senior-AI-Engineer_72160",
+      "platform": "workday",
+      "notes": "WD BBH"
+    },
+    {
+      "url": "https://oneok.wd1.myworkdayjobs.com/ONEOK/job/Tulsa-OK/Engineer-II_R7948-1",
+      "platform": "workday",
+      "notes": "WD ONEOK"
+    },
+    {
+      "url": "https://modernatx.wd1.myworkdayjobs.com/en-US/M_tx",
+      "platform": "workday",
+      "notes": "WD moderna careers"
+    },
+    {
+      "url": "https://jobs.lever.co/utilityglobal/ba22d077-faeb-4665-8b49-a178a66c9021",
+      "platform": "lever",
+      "notes": "Lever extra"
+    },
+    {
+      "url": "https://jobs.lever.co/egen/1b870652-5768-45e9-b55b-4420e6402314",
+      "platform": "lever",
+      "notes": "Lever extra"
+    },
+    {
+      "url": "https://jobs.lever.co/Grid/835ebab1-aa70-44da-be98-2329b32eba4c",
+      "platform": "lever",
+      "notes": "Lever extra"
+    },
+    {
+      "url": "https://jobs.ashbyhq.com/artificialanalysis/cd994fd1-a0ea-4d72-ae2b-41b85901accf",
+      "platform": "ashby",
+      "notes": "Ashby extra"
+    },
+    {
+      "url": "https://jobs.ashbyhq.com/LAI/796b3ef2-c7c5-438a-8b4f-5ee1ee316668",
+      "platform": "ashby",
+      "notes": "Ashby extra"
+    },
+    {
+      "url": "https://jobs.ashbyhq.com/artificialanalysis/b7fe99a0-9425-4534-9172-14f4a691b0a6",
+      "platform": "ashby",
+      "notes": "Ashby extra"
+    },
+    {
+      "url": "https://careers-teksynap.icims.com/jobs/9495/job",
+      "platform": "icims",
+      "notes": "iCIMS extra"
+    },
+    {
+      "url": "https://www.capitalonecareers.com/job/-/-/1732/98233422256",
+      "platform": "unknown",
+      "notes": "non-ATS / white-label career page — generic DOM"
+    },
+    {
+      "url": "https://careers.serco-na.com/us/en/job/34418/Software-Engineer",
+      "platform": "unknown",
+      "notes": "non-ATS company careers — generic DOM"
+    },
+    {
+      "url": "https://jobs.pge.com/job/-/-/29673/98252884240",
+      "platform": "unknown",
+      "notes": "non-ATS company careers — generic DOM"
+    }
+  ]
+}

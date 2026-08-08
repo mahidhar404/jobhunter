@@ -1,0 +1,42 @@
+# requirements.txt — dashboard + scripts (the MAIN .venv)
+#
+# Scope: covers dashboard/server.py and everything it shells out to under
+# scripts/ and scripts/fastfill/ (the interpreter is ROOT/.venv/bin/python3;
+# see PYTHON_BIN in dashboard/server.py). The Skyvern runtime under
+# skyvern_runtime/ has its OWN separate venv and is NOT covered here — see the
+# note at the bottom and docs/PORTABILITY.md.
+#
+# Versions are pinned to the exact versions installed in the working .venv
+# (captured via `.venv/bin/python3 -m pip freeze` on 2026-08-08, CPython 3.14.6).
+# Python 3.10+ is required (the code uses PEP 604 `X | None` union types);
+# 3.12+ is what this project actually runs on.
+#
+# Install:
+#   python3 -m venv .venv
+#   . .venv/bin/activate
+#   pip install -r requirements.txt
+#   python -m playwright install chromium   # browsers are a separate download
+
+# --- Direct third-party dependencies (imported by scripts/ + dashboard/) ---
+beautifulsoup4==4.15.0     # bs4 — scrape_builtin.py, scrape_ats.py, scrape_internshala.py
+fpdf2==2.8.7               # fpdf — scripts/text_to_pdf.py
+lxml==6.1.1                # scripts/fastfill/offline/build_corpus.py (also a trafilatura dep)
+openpyxl==3.1.5            # scripts/tracker.py (application_tracker.xlsx)
+playwright==1.61.0         # browser automation: fast_fill.py, tailor_resume.py, pw_fetch_html.py, extract_job_posting.py, dashboard tests
+pypdf==6.14.2              # scripts/fit_resume_pages.py, scripts/fastfill/resume_parser.py
+python-jobspy==1.1.82      # jobspy — scripts/scout.py (pulls pandas, numpy, requests, tls-client, markdownify transitively)
+trafilatura==2.1.0         # scripts/extract_job_posting.py (JD text extraction)
+
+# --- Optional / feature-gated (NOT installed in the current .venv) ---
+# Uncomment only if you use the specific feature. The code degrades gracefully
+# without these (documented in docs/PORTABILITY.md).
+#
+# httpx                      # scripts/fast_discovery.py — standalone JSON-API discovery tool (top-level import). Not wired into the dashboard.
+# pdfplumber                 # scripts/fastfill/resume_parser.py — nicer PDF text extraction; falls back to pypdf if absent (guarded import).
+# psycopg[binary]            # scripts/fastfill/learning.py — reads the Skyvern Postgres DB (function-local import; only used by the learn-from-Skyvern path).
+
+# --- NOT part of this file (out-of-band) ---
+# Skyvern runtime: skyvern_runtime/ ships its own venv (CPython 3.12) with the
+# `skyvern` package + its heavy deps, plus a Postgres instance and
+# skyvern_runtime/.env / .secrets.env. Reinstall it per Skyvern's own docs; do
+# NOT merge its dependency set into this file.

@@ -1,19 +1,16 @@
 % ============================================================
 % Synthetic fixture #2 - real fit_resume.py output format.
 %
-% Derived from a genuine tailored resume with ONLY the identifying values
-% swapped (name, phone, email, university, college, GPAs). Employers, bullet
-% content, job locations and dates are deliberately UNCHANGED: per the user
-% those details are not his real history anyway (PartyRock tailors them per
-% job), and keeping the authentic text makes this a far stronger parser test
-% than invented placeholder prose.
+% Identity MUST match DUMMY_PROFILE / DUMMY_ADDRESS in field_map.py
+% (Test Dummy, Example Corp, Applied AI/ML Analyst, Example Studies,
+% University of Alabama + GITAM, Springfield IL). dry_run.py
+% --check-consistency fails if this PDF drifts from the profile.
 %
-% Exercises a header layout the other fixture does not: name and contact line
-% share ONE \begin{center} block, joined by \\[2pt] with \quad | \quad
-% separators. The original structural parser returned full_name=None and
-% phone=None on exactly this shape.
+% Structure mirrors PartyRock/fit_resume output (shared center header,
+% \textbf{TITLE} \hfill dates / \textbf{COMPANY} | location) so the
+% parser is exercised realistically — values are fictional only.
 %
-% 555-0100 is the NANP-reserved fictional block; example.com is IANA-reserved.
+% 555-0100 is the NANP-reserved fictional block.
 % ============================================================
 % ============================================================
 % ATS-safe, single-column resume with tunable spacing knobs
@@ -82,7 +79,7 @@ Applied \textbf{\mbox{AI/ML}} Analyst with four years of experience building pro
 \section{Work Experience}
 \rEntryHead{4}
 \textbf{Applied AI/ML Analyst} \hfill \textit{Jan 2025 -- Present}\\
-\textbf{Fiserv} | Remote
+\textbf{Example Corp} | Remote
 \vspace{0pt}
 \begin{itemize}
 \item Build and maintain end-to-end batch and streaming data pipelines (ingestion $\rightarrow$ transformation $\rightarrow$ curation $\rightarrow$ serving) on \textbf{\mbox{AWS}}, leveraging \textbf{\mbox{S3}}, \textbf{\mbox{Glue}}, \textbf{\mbox{EMR}}, \textbf{\mbox{Kinesis}}, and \textbf{\mbox{Step Functions}} to move financial data from source systems into analytics-ready layers serving 12+ downstream teams.
@@ -96,7 +93,7 @@ Applied \textbf{\mbox{AI/ML}} Analyst with four years of experience building pro
 \vspace{\rEntryGap}
 \rEntryHead{4}
 \textbf{Data Engineer (Contract)} \hfill \textit{Jan 2024 -- Dec 2024}\\
-\textbf{Conduent} | Florham Park, NJ
+\textbf{Sample Industries LLC} | Springfield, IL
 \vspace{0pt}
 \begin{itemize}
 \item Designed dimensional and star schema data models for an enterprise analytics platform supporting regulatory reporting and dashboards across 15+ internal business units, applying standard banking data concepts and governance patterns throughout.
@@ -110,7 +107,7 @@ Applied \textbf{\mbox{AI/ML}} Analyst with four years of experience building pro
 \vspace{\rEntryGap}
 \rEntryHead{4}
 \textbf{Data Engineering Analyst} \hfill \textit{Aug 2021 -- Dec 2022}\\
-\textbf{Accenture} | Hyderabad, India
+\textbf{Example Systems} | Remote
 \vspace{0pt}
 \begin{itemize}
 \item Wrote complex \textbf{\mbox{SQL}} queries with window functions, multi-table joins, and aggregations for large-scale financial domain reporting; rewrote several legacy stored procedures that had been running slow for years, cutting query time by up to 45\%.
@@ -123,7 +120,7 @@ Applied \textbf{\mbox{AI/ML}} Analyst with four years of experience building pro
 \vspace{\rEntryGap}
 \rEntryHead{4}
 \textbf{Data Engineering Intern} \hfill \textit{Dec 2020 -- May 2021}\\
-\textbf{Accenture} | Hyderabad, India
+\textbf{Example Systems} | Remote
 \vspace{0pt}
 \begin{itemize}
 \item Wrote \textbf{\mbox{SQL}} transformation scripts and \textbf{\mbox{Python}} utilities to support \textbf{\mbox{ETL}} pipeline development for enterprise analytics projects, handling ingestion and data quality checks.
@@ -133,8 +130,8 @@ Applied \textbf{\mbox{AI/ML}} Analyst with four years of experience building pro
 
 \section{Education}
 \rEntryHead{1}
-\textbf{M.S., Computer Science}, University of Alabama, Tuscaloosa, AL \quad (GPA: 3.62/4.0)\\
+\textbf{Master's Degree, Computer Science}, University of Alabama, Tuscaloosa, AL \quad (GPA: 3.10/4.0)\\
 \rEntryHead{1}
-\textbf{B.S., Computer Science and Engineering}, GITAM, Visakhapatnam, India \quad (GPA: 8.21/10)
+\textbf{Bachelor's Degree, Computer Science}, GITAM, Visakhapatnam, India \quad (GPA: 3.00/4.0)
 
 \end{document}

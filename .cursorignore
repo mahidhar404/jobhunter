@@ -1,0 +1,37 @@
+# .cursorignore — keep real PII/secrets out of AI (Cursor) context.
+# The agent works with DUMMY fixtures only. Real data is invisible here.
+# Templates (*.example.json, .env.example) and dummy fixtures stay VISIBLE on purpose.
+
+# --- Secrets / credentials ---
+credentials.json
+web_keys.json
+skyvern_runtime/.env
+skyvern_runtime/.env.*
+skyvern_runtime/.secrets.env
+
+# --- Personal profile / PII ---
+profile.json
+profile.json.bak*
+option_mappings.json
+
+# --- Personal data / application history ---
+application_tracker.xlsx
+jobs.json
+jobs.json.bak*
+
+# --- Agent-personal memory ---
+MEMORY.md
+memory/
+
+# --- Everything real lives here ---
+private/
+!private/README.md
+
+# --- Browser session profiles (cookies/logins) ---
+*_chrome_profile/
+*_ui_profile/
+skyvern_runtime/*_profile/
+
+# Keep dummy templates visible
+!**/*.example.json
+!**/.env.example

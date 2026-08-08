@@ -14,9 +14,11 @@ shouldn't come up.
   low-effort mass-applications, and the user has explicitly said not to
   apply through it. If a posting has **only** an Easy Apply button and no
   other application route, this is an automatic skip, not a question to
-  ask: set `status` to `skipped_easy_apply` via `scripts/update_job.py`
-  with a `status_detail` noting Easy Apply was the only option, and stop
-  - don't fill anything.
+  ask: soft-delete via dashboard Skip with reason `easy_apply`, or
+  `scripts/update_job.py` → `status=deleted` with
+  `deleted_reason=easy_apply` / status_detail noting Easy Apply was the
+  only option, and stop - don't fill anything. (Legacy `skipped_easy_apply`
+  is migrated to Deleted on dashboard startup.)
 - **Plain "Apply"** (no "Easy" prefix) - redirects off LinkedIn to the
   company's own external site/ATS. This is the one to follow. Treat
   whatever page you land on after the redirect as the real apply_url and

@@ -538,31 +538,74 @@ def _detect_stuck_loop(task_id: str) -> str | None:
 
     return None
 
-PROFILE = json.load(open("/Users/job/.openclaw/workspace/job-hunter/profile.json"))
-p = PROFILE
+PROFILE = None  # set only when not TEST_MODE — never load for dummy/autofill imports
 # TEST_MODE=1 swaps every identity field for a clearly-fake placeholder, not just email -
 # for pure generalization/reliability testing on new, non-priority companies where the goal
 # is finding bugs, not producing a real application, this keeps the user's actual name/phone/
 # LinkedIn out of random new ATS systems entirely. 555-0100 is the NANP-reserved fictional
 # number block (same idea as example.com for email - guaranteed non-routable/non-real).
+#
+# CRITICAL: when TEST_MODE=1 we must NOT open profile.json at all (hybrid_fill / dashboard
+# dummy paths import this module). Real PII stays on disk; autofill never reads it.
 TEST_MODE = os.environ.get("TEST_MODE") == "1"
-FULL_NAME = "Test Dummy" if TEST_MODE else p["personal"]["full_name"]
-FIRST, LAST = FULL_NAME.split(" ", 1)
-EMAIL = os.environ.get("TEST_EMAIL_OVERRIDE") or ("test-dummy@example.com" if TEST_MODE else p["contact"]["email"])
-PHONE = "405-555-0100" if TEST_MODE else p["contact"]["phone"]
-GITHUB = "https://github.com/test-dummy-account" if TEST_MODE else p["links"]["github"]
-LINKEDIN = "https://www.linkedin.com/in/test-dummy-000000000" if TEST_MODE else p["links"]["linkedin"]
-DEGREES = p["education"]["degrees"]
-RESUME_PATH = (
-    "/Users/job/.openclaw/workspace/job-hunter/skyvern_runtime/trusted_uploads/dummy_resume.pdf"
-    if TEST_MODE
-    else "/Users/job/.openclaw/workspace/job-hunter/skyvern_runtime/trusted_uploads/resume.pdf"
-)
+_PROFILE_PATH = Path(__file__).resolve().parents[2] / "profile.json"
+
+if TEST_MODE:
+    FULL_NAME = "Test Dummy"
+    FIRST, LAST = "Test", "Dummy"
+    EMAIL = os.environ.get("TEST_EMAIL_OVERRIDE") or "test-dummy@example.com"
+    PHONE = "405-555-0100"
+    GITHUB = "https://github.com/test-dummy-account"
+    LINKEDIN = "https://www.linkedin.com/in/test-dummy-000000000"
+    DEGREES = [
+        {"degree": "M.S., Example Studies", "school": "University of Alabama, Tuscaloosa"},
+        {"degree": "B.S., Example Studies", "school": "GITAM, Visakhapatnam, India"},
+    ]
+    YEARS_EXPERIENCE = 3.0
+    EEO = {
+        "gender": "Decline to self identify",
+        "hispanic_or_latino": "Decline to self identify",
+        "race_ethnicity": "Decline to self identify",
+        "veteran_status": "Decline to self identify",
+        "disability_status": "Decline to self identify",
+    }
+    SALARY_EXPECTED_RULE = (
+        "Leave blank / Decline — TEST_MODE has no salary rule from profile.json"
+    )
+    SALARY_CURRENT_RULE = (
+        "Leave blank / Decline — TEST_MODE has no salary rule from profile.json"
+    )
+    RESUME_PATH = (
+        "/Users/job/.openclaw/workspace/job-hunter/skyvern_runtime/trusted_uploads/dummy_resume.pdf"
+    )
+else:
+    PROFILE = json.load(open(_PROFILE_PATH))
+    p = PROFILE
+    FULL_NAME = p["personal"]["full_name"]
+    FIRST, LAST = FULL_NAME.split(" ", 1)
+    EMAIL = os.environ.get("TEST_EMAIL_OVERRIDE") or p["contact"]["email"]
+    PHONE = p["contact"]["phone"]
+    GITHUB = p["links"]["github"]
+    LINKEDIN = p["links"]["linkedin"]
+    DEGREES = p["education"]["degrees"]
+    YEARS_EXPERIENCE = p["experience"]["total_years_of_experience"]
+    EEO = p["eeo_demographic"]
+    SALARY_EXPECTED_RULE = p["salary_expectation"]["rule"]
+    SALARY_CURRENT_RULE = p["current_salary"]["rule"]
+    RESUME_PATH = (
+        "/Users/job/.openclaw/workspace/job-hunter/skyvern_runtime/trusted_uploads/resume.pdf"
+    )
 
 ADDRESS_TEXT = "2500 N Lincoln Blvd, Apt 4B, Oklahoma City, OK 73105"  # placeholder-pool style address, not the job's own city
 
+_PROFILE_INTRO = (
+    "Use this TEST DUMMY applicant profile data for every field the application asks for."
+    if TEST_MODE
+    else "Use this REAL applicant profile data for every field the application asks for."
+)
+
 PROFILE_BLOCK = f"""
-Use this REAL applicant profile data for every field the application asks for. Never invent
+{_PROFILE_INTRO} Never invent
 or substitute different values. If a field asks for something not listed here (e.g. a specific
 past employer/dates, since employment history isn't recorded yet), leave it blank or skip it
 and note that in your final report rather than making something up.
@@ -579,7 +622,7 @@ and note that in your final report rather than making something up.
   including ones offered as optional convenience fields.
 - Mailing address (use if a form needs one): {ADDRESS_TEXT}
 - Education: {DEGREES[0]['degree']}, {DEGREES[0]['school']}; also {DEGREES[1]['degree']}, {DEGREES[1]['school']}
-- Total years of experience: {p['experience']['total_years_of_experience']}
+- Total years of experience: {YEARS_EXPERIENCE}
 - US work authorization: authorized to work in the US without sponsorship
 - Willing to relocate: yes
 - Location preference if asked: prefer Remote, then Hybrid, then Onsite (pick the highest-priority option the form actually offers)
@@ -592,11 +635,11 @@ and note that in your final report rather than making something up.
   shortest available bucket IS the correct choice; do not leave it unset and do not pick anything
   longer than the shortest offered option. State this substitution explicitly in your final report
   (e.g. "Notice period: no exact match, selected '< 1 Month' as the shortest available option").
-- Gender: {p['eeo_demographic']['gender']}
-- Hispanic or Latino: {p['eeo_demographic']['hispanic_or_latino']}
-- Race/ethnicity: {p['eeo_demographic']['race_ethnicity']}
-- Veteran status: {p['eeo_demographic']['veteran_status']}
-- Disability status: {p['eeo_demographic']['disability_status']}
+- Gender: {EEO['gender']}
+- Hispanic or Latino: {EEO['hispanic_or_latino']}
+- Race/ethnicity: {EEO['race_ethnicity']}
+- Veteran status: {EEO['veteran_status']}
+- Disability status: {EEO['disability_status']}
 - Age 18 or older: yes
 - Worked here before or has a relative employed here: No
 - Felony conviction: No
@@ -617,7 +660,7 @@ and note that in your final report rather than making something up.
   in before submitting" - this is not fabrication, it is an explicit, honest flag of a real gap,
   and the user reviews and edits everything before any real submission happens anyway. Then attempt
   "complete" once more. Always name this substitution explicitly in your final report.
-- Desired/expected salary field: {p['salary_expectation']['rule']} IMPORTANT: there is no human
+- Desired/expected salary field: {SALARY_EXPECTED_RULE} IMPORTANT: there is no human
   available to ask in this environment - "ask the user" is not an action you can take here. If no
   range is stated, try leaving the field blank ONCE. If the field is required and rejects being
   blank, do NOT keep retrying it (typing, clicking, or waiting repeatedly on the same field is a
@@ -625,7 +668,7 @@ and note that in your final report rather than making something up.
   and note in your final report that this field is genuinely blocked because no salary range was
   given and no one was available to ask. A field left honestly unresolved after one try is far
   better than looping on it.
-- Current salary field: {p['current_salary']['rule']}
+- Current salary field: {SALARY_CURRENT_RULE}
 
 EFFICIENCY RULES, based on real problems observed in earlier runs on this exact kind of form:
 - Before answering any field, check whether it already shows the correct value from a previous
@@ -1454,6 +1497,38 @@ async def run_one(skyvern, job, max_steps=50, timeout=900):
     session_app_url = None
     captcha_blocked = False
     try:
+        # HYB2-001: refuse when Playwright Chrome-for-Testing fill/hold is live.
+        if (os.environ.get("FASTFILL_FORCE_HEADED") or "").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            # CHR3-003 / HYB3-001: UI + OpenClaw PartyRock are not fill CfT.
+            exclude_markers = (
+                "dashboard_ui_profile",
+                "--app=http://127.0.0.1:8787",
+                "openclaw/user-data",
+                "--remote-debugging-port=18800",
+            )
+            try:
+                cft_out = subprocess.check_output(
+                    ["pgrep", "-lf", "Google Chrome for Testing"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                )
+            except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+                cft_out = ""
+            for line in cft_out.splitlines():
+                if "Helper" in line or "crashpad" in line:
+                    continue
+                if "MacOS/Google Chrome for Testing" not in line and "/chrome " not in line:
+                    continue
+                if any(m in line for m in exclude_markers):
+                    continue
+                raise RuntimeError(
+                    "HYB2-001: headed Chrome-for-Testing fill/hold already running — "
+                    "refusing Skyvern browser session (cap=1)"
+                )
         # Persistent session (skyvern.create_browser_session(), NOT the SDK's default
         # ephemeral per-task browser) so a captcha-caused termination leaves the browser
         # window open for the user to actually solve it in, instead of it closing the

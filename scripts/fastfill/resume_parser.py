@@ -188,6 +188,7 @@ def resume_value_map(parsed: dict) -> dict:
     from field_map import (
         NAME_FULL, NAME_FIRST, NAME_LAST, EMAIL, PHONE, LINKEDIN, GITHUB,
         ADDRESS_CITY, ADDRESS_STATE, CURRENT_COMPANY, CURRENT_TITLE,
+        DISCIPLINE, MAJOR, FIELD_OF_STUDY, EDUCATION_END_YEAR, EDUCATION_START_YEAR,
     )
     vm = {}
     if parsed.get("full_name"):
@@ -201,6 +202,33 @@ def resume_value_map(parsed: dict) -> dict:
                        ("current_title", CURRENT_TITLE)):
         if parsed.get(key):
             vm[ftype] = parsed[key]
+    # Best-effort discipline / graduation years from education lines
+    edu_lines = list(parsed.get("education") or [])
+    disc_pat = re.compile(
+        r"(?:bachelor|master|b\.?s\.?|m\.?s\.?|b\.?a\.?|m\.?a\.?|ph\.?d\.?)"
+        r"[^,\n]{0,40}?\b(?:in|of)\s+([A-Za-z][A-Za-z &'/-]{2,60})",
+        re.I,
+    )
+    for ln in edu_lines:
+        if not isinstance(ln, str):
+            continue
+        m = disc_pat.search(ln)
+        if m:
+            disc = m.group(1).strip(" .")[:80]
+            vm[DISCIPLINE] = disc
+            vm[MAJOR] = disc
+            vm[FIELD_OF_STUDY] = disc
+            break
+    for ln in edu_lines:
+        years = re.findall(r"(?:19|20)\d{2}", str(ln or ""))
+        if years:
+            end = years[-1]
+            vm[EDUCATION_END_YEAR] = end
+            if len(years) >= 2:
+                vm[EDUCATION_START_YEAR] = years[0]
+            elif end.isdigit():
+                vm[EDUCATION_START_YEAR] = str(int(end) - 2)
+            break
     return vm
 
 

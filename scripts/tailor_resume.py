@@ -8,21 +8,28 @@ way through a multi-minute wait, and every one of those snapshots is a full
 accessibility-tree dump that gets re-processed by every later call in that
 turn - real token cost for zero real decisions.
 
-This connects to OpenClaw's own managed browser over the Chrome DevTools
-Protocol (verified live: it's already reachable at 127.0.0.1:18800 and
-shares the same authenticated session/cookies as the agent's browser tool -
-no separate login needed), drives the page directly with Playwright, and
-polls the DOM in a plain loop.
+This connects to OpenClaw's managed Chrome-for-Testing over CDP
+(``127.0.0.1:18800``, profile ``~/.openclaw/browser/openclaw/user-data``) —
+the same session as ``./open_partyrock.sh`` / dashboard Start tailor. That is
+**not** Cursor's IDE browser tool and not daily Google Chrome; if PartyRock
+shows a sign-in wall, re-auth with ``./open_partyrock.sh`` then retry. Drives
+the page with Playwright and polls the DOM in a plain loop.
+
+Each run opens a **new CDP tab** (via /json/new) so parallel jobs never
+share/overwrite one PartyRock page. On success the tab stays open until
+the dashboard marks the job applied (see partyrock_tabs.py). On failure
+the tab is closed immediately.
 
 Usage:
-  python3 tailor_resume.py --jd-file PATH --out PATH [--timeout 600]
+  python3 tailor_resume.py --jd-file PATH --location "City, ST" --out PATH
+  python3 tailor_resume.py --jd-file PATH --location "City, ST" --out PATH \
+      --job-id ID --keep-open
 
 Exit code 0 + writes --out on success. Nonzero + prints an error on
-failure/timeout - the caller should fall back to the agent driving the
-browser tool manually rather than guessing at a fix.
+failure/timeout - the caller should fall back to ``./open_partyrock.sh``
+(manual paste) rather than guessing at a fix or using a generic browser tool.
 """
 import argparse
-import re
 import sys
 import time
 from datetime import datetime
@@ -30,7 +37,19 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-PARTYROCK_URL = "https://partyrock.aws/u/yo68749/mICSZlMtv/Ultron-Resume-v1"
+from partyrock_config import (
+    build_partyrock_input,
+    partyrock_mode_label,
+    partyrock_url,
+    test_mode_from_env,
+)
+from partyrock_tabs import (
+    clear_tab_meta,
+    close_tab,
+    create_tab,
+    write_tab_meta,
+)
+
 JD_PLACEHOLDER = "Paste the complete job description here"
 CDP_URL = "http://127.0.0.1:18800"
 POLL_INTERVAL_S = 4
@@ -114,98 +133,230 @@ def find_latex_code(page) -> str | None:
     return None
 
 
+def _page_target_id(page) -> str | None:
+    try:
+        sess = page.context.new_cdp_session(page)
+        info = sess.send("Target.getTargetInfo")
+        return (info.get("targetInfo") or {}).get("targetId")
+    except Exception:
+        return None
+
+
+def _find_page_by_target_id(browser, target_id: str, timeout_s: float = 10.0):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        for ctx in browser.contexts:
+            for page in ctx.pages:
+                if _page_target_id(page) == target_id:
+                    return page
+        time.sleep(0.1)
+    return None
+
+
 def main() -> None:
     run_start = time.monotonic()
     parser = argparse.ArgumentParser()
-    parser.add_argument("--jd-file", required=True)
-    parser.add_argument("--out", required=True)
+    parser.add_argument("--jd-file", default=None)
+    parser.add_argument(
+        "--location",
+        default="",
+        help="Job location included with the description sent to PartyRock",
+    )
+    parser.add_argument("--out", default=None)
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--cdp-url", default=CDP_URL)
+    parser.add_argument(
+        "--job-id",
+        default=None,
+        help="Job id for per-job PartyRock tab registry (resumes/<id>/partyrock_tab.json)",
+    )
+    parser.add_argument(
+        "--keep-open",
+        action="store_true",
+        help="Leave the PartyRock tab open after success (dashboard closes on Mark as applied)",
+    )
+    parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        default=None,
+        help="Use PartyRock Testing app (Ultron-Resume-v3-Testing)",
+    )
+    parser.add_argument(
+        "--real",
+        action="store_true",
+        help="Use PartyRock Real app (Ultron-Resume-v3)",
+    )
+    parser.add_argument(
+        "--print-url",
+        action="store_true",
+        help="Print resolved PartyRock URL and exit (no browser)",
+    )
     args = parser.parse_args()
 
+    if args.real and args.test_mode:
+        log("error: pass only one of --test-mode / --real")
+        sys.exit(2)
+    if args.real:
+        test_mode = False
+    elif args.test_mode:
+        test_mode = True
+    else:
+        test_mode = test_mode_from_env(default=True)
+
+    url = partyrock_url(test_mode=test_mode)
+    mode = partyrock_mode_label(test_mode=test_mode)
+    if args.print_url:
+        print(url)
+        return
+
+    if not args.jd_file or not args.out:
+        log("error: --jd-file and --out are required (unless --print-url)")
+        sys.exit(2)
+
     job_description = Path(args.jd_file).read_text()
+    partyrock_input = build_partyrock_input(job_description, args.location)
+    job_id = (args.job_id or "").strip()
+    keep_open = bool(args.keep_open) or bool(job_id)
+    out_path = Path(args.out)
+    job_dir = out_path.parent
+    cdp_http = args.cdp_url.rstrip("/")
 
-    with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(args.cdp_url)
-        ctx = browser.contexts[0]
-        page = ctx.new_page()
-        try:
-            page.goto(PARTYROCK_URL, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(2000)
+    log(f"PartyRock mode={mode} url={url} keep_open={keep_open} job_id={job_id or '-'}")
 
+    target_id: str | None = None
+    success = False
+    try:
+        # Create tab via CDP HTTP so Playwright disconnect does not own/close it.
+        tab_info = create_tab(url, cdp_http=cdp_http)
+        target_id = str(tab_info["id"])
+        log(f"opened PartyRock tab target_id={target_id}")
+
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(args.cdp_url)
+            page = _find_page_by_target_id(browser, target_id)
+            if page is None:
+                log(f"error: could not attach to CDP target {target_id}")
+                sys.exit(1)
             try:
-                page.locator("button:has-text('Dismiss')").first.click(timeout=3000)
-            except Exception:
-                pass  # cookie banner not present or already dismissed
+                # /json/new may already be navigating; wait for app UI.
+                page.wait_for_load_state("domcontentloaded", timeout=30000)
+                page.wait_for_timeout(2000)
 
-            jd_box = page.get_by_placeholder(JD_PLACEHOLDER)
-            if jd_box.count() == 0:
-                log("error: could not find the job description textbox on the page")
-                sys.exit(1)
-            jd_box.fill(job_description)
+                try:
+                    page.locator("button:has-text('Dismiss')").first.click(timeout=3000)
+                except Exception:
+                    pass  # cookie banner not present or already dismissed
 
-            play_button = page.locator("button:has-text('Play App')").first
-            if play_button.count() == 0:
-                log("error: could not find the 'Play App' button")
-                sys.exit(1)
-            play_button.click()
-            log("submitted JD, waiting for PartyRock to generate the resume...")
-            poll_start = time.monotonic()
+                jd_box = page.get_by_placeholder(JD_PLACEHOLDER)
+                if jd_box.count() == 0:
+                    log("error: could not find the job description textbox on the page")
+                    sys.exit(1)
+                jd_box.fill(partyrock_input)
 
-            # Fail fast instead of silently polling the full timeout: a real
-            # run flips the button to "Pause" and the JD box's placeholder
-            # disappears within a few seconds. If neither happens shortly
-            # after clicking, the click didn't actually start anything -
-            # observed live: this state is indistinguishable from a normal
-            # in-progress run by find_latex_code() alone, since both show
-            # zero LaTeX output early on, so it has to be checked separately.
-            page.wait_for_timeout(EARLY_CHECK_DELAY_S * 1000)
-            signin_wall = page.locator("text=Sign in to join the party").count() > 0
-            if signin_wall:
-                log("error: PartyRock showed a sign-in wall - the managed browser's session has expired/logged out")
-                page.screenshot(path=str(Path(args.out).with_suffix(".signin_wall.png")))
-                sys.exit(1)
-            started = page.locator("button:has-text('Pause')").count() > 0
-            if not started:
-                log(f"error: clicked 'Play App' but it never started running (still shows 'Play App' after {EARLY_CHECK_DELAY_S}s) - "
-                    "not a normal wait, something rejected the run silently")
-                page.screenshot(path=str(Path(args.out).with_suffix(".not_started.png")))
-                sys.exit(1)
+                play_button = page.locator("button:has-text('Play App')").first
+                if play_button.count() == 0:
+                    log("error: could not find the 'Play App' button")
+                    sys.exit(1)
+                play_button.click()
+                log(
+                    "submitted JD + location, waiting for PartyRock to generate "
+                    "the resume..."
+                )
+                poll_start = time.monotonic()
 
-            deadline = time.time() + args.timeout
-            prev_len = -1
-            stable_count = 0
-            latex_text = None
-            poll_num = 0
-            while time.time() < deadline:
-                time.sleep(POLL_INTERVAL_S)
-                poll_num += 1
-                latex_text = find_latex_code(page)
-                length = len(latex_text) if latex_text else 0
-                if length and length == prev_len:
-                    stable_count += 1
+                # Fail fast instead of silently polling the full timeout: a real
+                # run flips the button to "Pause" and the JD box's placeholder
+                # disappears within a few seconds. If neither happens shortly
+                # after clicking, the click didn't actually start anything -
+                # observed live: this state is indistinguishable from a normal
+                # in-progress run by find_latex_code() alone, since both show
+                # zero LaTeX output early on, so it has to be checked separately.
+                page.wait_for_timeout(EARLY_CHECK_DELAY_S * 1000)
+                signin_wall = page.locator("text=Sign in to join the party").count() > 0
+                if signin_wall:
+                    log(
+                        "error: PartyRock showed a sign-in wall — OpenClaw CfT "
+                        "session expired/logged out. Re-auth with "
+                        "./open_partyrock.sh (Chrome-for-Testing + "
+                        "~/.openclaw/browser/openclaw/user-data :18800), then retry. "
+                        "Do not use a generic IDE/browser tool — cookies won't match."
+                    )
+                    page.screenshot(path=str(out_path.with_suffix(".signin_wall.png")))
+                    sys.exit(1)
+                started = page.locator("button:has-text('Pause')").count() > 0
+                if not started:
+                    log(f"error: clicked 'Play App' but it never started running (still shows 'Play App' after {EARLY_CHECK_DELAY_S}s) - "
+                        "not a normal wait, something rejected the run silently")
+                    page.screenshot(path=str(out_path.with_suffix(".not_started.png")))
+                    sys.exit(1)
+
+                deadline = time.time() + args.timeout
+                prev_len = -1
+                stable_count = 0
+                latex_text = None
+                poll_num = 0
+                while time.time() < deadline:
+                    time.sleep(POLL_INTERVAL_S)
+                    poll_num += 1
+                    latex_text = find_latex_code(page)
+                    length = len(latex_text) if latex_text else 0
+                    if length and length == prev_len:
+                        stable_count += 1
+                    else:
+                        stable_count = 0
+                    prev_len = length
+                    if poll_num % 3 == 0 or stable_count:
+                        state = "not started yet" if not length else f"{length} chars, stable_count={stable_count}"
+                        log(f"poll {poll_num} ({time.monotonic() - poll_start:.0f}s elapsed): {state}")
+                    if stable_count >= STABLE_POLLS_REQUIRED and latex_text and "\\end{document}" in latex_text:
+                        break
                 else:
-                    stable_count = 0
-                prev_len = length
-                if poll_num % 3 == 0 or stable_count:
-                    state = "not started yet" if not length else f"{length} chars, stable_count={stable_count}"
-                    log(f"poll {poll_num} ({time.monotonic() - poll_start:.0f}s elapsed): {state}")
-                if stable_count >= STABLE_POLLS_REQUIRED and latex_text and "\\end{document}" in latex_text:
-                    break
-            else:
-                log(f"error: timed out after {args.timeout}s waiting for PartyRock to finish")
-                page.screenshot(path=str(Path(args.out).with_suffix(".timeout.png")))
-                sys.exit(1)
+                    log(f"error: timed out after {args.timeout}s waiting for PartyRock to finish")
+                    page.screenshot(path=str(out_path.with_suffix(".timeout.png")))
+                    sys.exit(1)
 
-            if not latex_text or "\\end{document}" not in latex_text:
-                log("error: PartyRock finished but the output doesn't look like complete LaTeX")
-                sys.exit(1)
+                if not latex_text or "\\end{document}" not in latex_text:
+                    log("error: PartyRock finished but the output doesn't look like complete LaTeX")
+                    sys.exit(1)
 
-            cleaned = fix_known_latex_bugs(strip_line_numbers(latex_text))
-            Path(args.out).write_text(cleaned)
-            log(f"wrote tailored resume -> {args.out} (total {time.monotonic() - run_start:.0f}s)")
-        finally:
-            page.close()
+                cleaned = fix_known_latex_bugs(strip_line_numbers(latex_text))
+                out_path.write_text(cleaned)
+                log(f"wrote tailored resume -> {args.out} (total {time.monotonic() - run_start:.0f}s)")
+                success = True
+
+                if keep_open and target_id:
+                    title = ""
+                    try:
+                        title = page.title() or ""
+                    except Exception:
+                        pass
+                    meta_job = job_id or out_path.parent.name
+                    write_tab_meta(
+                        job_dir,
+                        job_id=meta_job,
+                        target_id=target_id,
+                        url=url,
+                        title=title,
+                    )
+                    log(
+                        f"keeping PartyRock tab open (target_id={target_id}); "
+                        "dashboard closes it on Mark as applied"
+                    )
+            finally:
+                # PR2-001: do NOT call browser.close() on a CDP-attached browser.
+                # connect_over_cdp + close() clears contexts and can drop / blank
+                # PartyRock tabs (including keep_open / other jobs' tabs). Leaving
+                # the sync_playwright() context tears down the driver connection
+                # without issuing Browser.close / context teardown on Chrome.
+                pass
+    finally:
+        if target_id and not (success and keep_open):
+            try:
+                close_tab(target_id, cdp_http=cdp_http)
+                log(f"closed PartyRock tab target_id={target_id} (run not kept open)")
+            except Exception as e:
+                log(f"warn: failed to close PartyRock tab {target_id}: {e}")
+            clear_tab_meta(job_dir)
 
 
 if __name__ == "__main__":

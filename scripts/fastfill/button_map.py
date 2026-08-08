@@ -28,14 +28,13 @@ two false positives found live today are encoded directly:
     action, and now explicitly permitted (the profile uses a dummy address in
     test mode). ADVANCE.
 
-Currently unwired: the live Skyvern-driven pipeline (hybrid_fill.py) does
-button safety via prompt rules (LAYER3_RULES) plus a DB-level backstop
-(real_job_test._check_no_submit_clicked) instead of calling this module,
-since fill_form.py (the deterministic Playwright walker this was built for)
-was superseded and deleted. Kept, not deleted, because deterministically
-auto-clicking classified ENTRY/ADVANCE/RESUME_ENTRY buttons - skipping an
-LLM round-trip for what is already a solved lookup - is a real, unexplored
-speed optimization for a future pass, not something to bolt on without its
+Currently unwired from Skyvern hybrid_fill: that path does button safety via
+prompt rules (LAYER3_RULES) plus a DB-level backstop
+(real_job_test._check_no_submit_clicked) instead of calling this module.
+Playwright ``fast_fill`` uses ``button_gate`` directly. Kept, not deleted,
+because deterministically auto-clicking classified ENTRY/ADVANCE/RESUME_ENTRY
+buttons - skipping an LLM round-trip for what is already a solved lookup - is a
+real speed optimization for a future pass, not something to bolt on without its
 own careful live-testing given the FINAL/never-submit stakes involved.
 """
 
@@ -55,11 +54,16 @@ UNKNOWN = "UNKNOWN"
 FINAL_PATTERNS = [
     r"submit\s+application",
     r"submit\s+your\s+application",
+    r"submit\s+my\s+application",
     r"send\s+application",
     r"send\s+my\s+application",
     r"finish\s+application",
     r"complete\s+application",
-    r"^submit$",
+    # Any label that literally contains "submit" is FINAL — except the
+    # ENTRY phrase "Submit interest" (opens the form; does not submit).
+    # Observed live holes ("Review and Submit", "I Agree and Submit",
+    # "Submit My Application") must not stay UNKNOWN.
+    r"\bsubmit\b(?!\s+interest\b)",
     r"^send$",
     r"^finish$",
     r"^confirm$",
@@ -78,6 +82,13 @@ ADVANCE_PATTERNS = [
     r"^save$",
     r"^proceed$",
     r"^review$",
+    # In-page section builders (Workday "Add" / "Add Work Experience") — not
+    # page ADVANCE, but safe to click; classified ADVANCE so gate_click allows
+    # them without relying on UNKNOWN fallthrough.
+    r"^add$",
+    r"^add\s+(another|more|new)$",
+    r"^add\s+(another\s+)?(work\s+)?experience$",
+    r"^add\s+(another\s+)?(education|school|degree|skill|language)",
     # "Back" is deliberately NOT here. It was originally included alongside
     # forward-navigation words without checking what it actually does -
     # clicking it moves BACKWARD to a previous step, which is never progress,
@@ -87,11 +98,15 @@ ADVANCE_PATTERNS = [
     # behind an overlay). Left UNKNOWN so the walker fails closed on it
     # instead of navigating away from filled-in work.
     #
-    # Account-creation gate: a throwaway login, explicitly NOT the
-    # employer-facing action. See module docstring.
+    # Account-creation / sign-in gates: throwaway login, explicitly NOT the
+    # employer-facing action. See module docstring. "Sign In" is required for
+    # Workday's already-registered path (create → error → Sign In).
     r"^create\s+(an\s+)?account$",
+    r"^create\s+a\s+profile$",
     r"^register$",
     r"^sign\s*-?\s*up$",
+    r"^sign\s*-?\s*in$",
+    r"^log\s*-?\s*in$",
 ]
 
 # Resume-based entry is checked FIRST and separately from plain ENTRY: Workday
@@ -99,23 +114,45 @@ ADVANCE_PATTERNS = [
 # experience and education automatically, which is strictly better than typing
 # every field by hand. Given a choice, this path must always win.
 RESUME_ENTRY_PATTERNS = [
-    r"autofill\s*with\s*resume",
+    r"autofill\s*(with|from)\s*resume",
     r"apply\s*with\s*resume",
     r"upload\s*resume\s*to\s*apply",
     r"use\s*(my\s*)?resume",
+    r"use\s*my\s*last\s*application",
+    r"autofill\s*from\s*resume",
 ]
 _RESUME_ENTRY = [re.compile(p, re.I) for p in RESUME_ENTRY_PATTERNS]
 
 ENTRY_PATTERNS = [
     r"^apply$",
-    r"^apply\s+now$",
-    r"^apply\s+online$",
-    r"^apply\s+for\s+this\s+job$",
-    r"^apply\s+manually$",
-    r"^apply\s+as\s+guest$",
-    r"^apply\s+with.*$",
-    r"^start\s+application$",
-    r"^begin\s+application$",
+    # Phenom / Serco / Capital One: aria often appends the job title
+    # ("Apply Now Software Engineer") — use \b, not $.
+    r"^apply\s+now\b",
+    r"^apply\s+online\b",
+    r"^apply\s+for\s+this\s+job\b",
+    r"^apply\s+for\s+(this\s+)?(job|position|role|opening)\b",
+    r"^apply\s+to\s+(this\s+)?(job|position|role|opening)\b",
+    r"^apply\s+manually\b",
+    r"^apply\s+as\s+guest\b",
+    r"^apply\s+with\b",
+    r"^apply\s+externally\b",
+    r"^quick\s+apply\b",
+    r"^i'?m\s+interested\b",
+    r"^express\s+interest\b",
+    r"^start\s+(my\s+)?application\b",
+    r"^begin\s+application\b",
+    # Mid-tier ATS (SmartRecruiters / BambooHR / Workable / Personio)
+    r"^continue\s+as\s+guest\b",
+    r"^apply\s+without\s+(an?\s+)?account\b",
+    r"^start\s+applying\b",
+    r"^submit\s+interest\b",
+    # Taleo / SuccessFactors / Dayforce / UKG-UltiPro
+    r"^apply\s+for\s+job\b",
+    r"^apply\s+here\b",
+    r"^apply\s+as\s+a\s+guest\b",
+    r"^start\s+your\s+application\b",
+    r"^i\s+want\s+to\s+apply\b",
+    r"^apply\s+to\s+job\b",
 ]
 
 _FINAL = [re.compile(p, re.I) for p in FINAL_PATTERNS]
@@ -214,16 +251,34 @@ if __name__ == "__main__":
     # Every case below is a real button string observed in the corpus, plus the
     # adversarial compounds that motivated FINAL-first ordering.
     CASES = [
+        ("Apply with Resume", RESUME_ENTRY),
+        ("Apply With Resume", RESUME_ENTRY),
+        ("Autofill with Resume", RESUME_ENTRY),
+        ("Use My Last Application", RESUME_ENTRY),
         ("Apply", ENTRY), ("Apply for this job", ENTRY), ("Apply manually", ENTRY),
         ("Apply as guest", ENTRY), ("Apply now", ENTRY), ("Apply online", ENTRY),
+        ("Apply Now Software Engineer", ENTRY),  # Phenom aria + job title
+        ("Apply for this position", ENTRY), ("Apply for Job", ENTRY),
+        ("Apply to this job", ENTRY), ("Quick Apply", ENTRY),
+        ("Apply externally", ENTRY), ("Express Interest", ENTRY),
+        ("Submit interest", ENTRY), ("Submit Interest", ENTRY),
+        ("Apply here", ENTRY), ("Apply as a guest", ENTRY),
+        ("Start your application", ENTRY), ("I want to apply", ENTRY),
+        ("Apply to job", ENTRY),
         ("Next", ADVANCE), ("Next →", ADVANCE), ("Continue", ADVANCE),
         ("Save and continue", ADVANCE), ("Save & Continue", ADVANCE), ("Save", ADVANCE),
-        ("Create Account", ADVANCE), ("Register", ADVANCE), ("Sign up", ADVANCE),
+        ("Create Account", ADVANCE), ("Create a profile", ADVANCE),
+        ("Register", ADVANCE), ("Sign up", ADVANCE),
+        ("Sign In", ADVANCE), ("Log In", ADVANCE),
         ("Submit", FINAL), ("Submit application", FINAL), ("Submit Application", FINAL),
+        ("Submit My Application", FINAL), ("Review and Submit", FINAL),
+        ("I Agree and Submit", FINAL), ("Submit & Continue", FINAL),
         ("Send application", FINAL), ("Finish", FINAL), ("Confirm", FINAL),
         ("Continue to submit application", FINAL),   # advance-looking submission
         ("Proceed to Apply", FINAL),
-        ("Search", UNKNOWN), ("Add another", UNKNOWN), ("", UNKNOWN),
+        ("Search", UNKNOWN), ("", UNKNOWN),
+        ("Add", ADVANCE), ("Add another", ADVANCE),
+        ("Add Work Experience", ADVANCE), ("Add education", ADVANCE),
     ]
     bad = 0
     for text, expected in CASES:

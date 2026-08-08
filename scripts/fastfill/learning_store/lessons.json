@@ -1,0 +1,932 @@
+{
+  "lessons": [
+    {
+      "avoid_strategy": "gh_select",
+      "field_type": "SCHOOL",
+      "label_pattern": "school*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: gh_select_failed",
+      "seen": 1,
+      "updated_at": "2026-08-01T08:49:58Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "discipline",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 2,
+      "updated_at": "2026-08-02T09:32:04Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "employment eligibility information*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 2,
+      "updated_at": "2026-08-02T09:32:04Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "visa requirement status*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-02T09:19:40Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "security clearance type*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-02T09:19:40Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "SALARY_EXPECTED",
+      "label_pattern": "desired salary*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: no select__control",
+      "seen": 1,
+      "updated_at": "2026-08-02T09:19:40Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "do you have a ts/sci with polygraph security clearance?*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-02T09:19:40Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "this position requires u.s. citizenship pursuant to a government contract. are y",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-02T09:19:40Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "country",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 4,
+      "updated_at": "2026-08-03T09:15:01Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "question_6308109009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 3,
+      "updated_at": "2026-08-02T09:49:21Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "input",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 3,
+      "updated_at": "2026-08-03T09:15:01Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "question_6308110009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 3,
+      "updated_at": "2026-08-02T09:49:21Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "question_6308111009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 3,
+      "updated_at": "2026-08-02T09:49:21Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "question_6308113009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 3,
+      "updated_at": "2026-08-02T09:49:21Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "question_6308114009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-02T09:19:40Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "question_6308115009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 3,
+      "updated_at": "2026-08-02T09:49:21Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "question_6539879009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 3,
+      "updated_at": "2026-08-02T09:49:21Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "SALARY_EXPECTED",
+      "label_pattern": "desired salary*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-02T09:20:27Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "country",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 11,
+      "updated_at": "2026-08-03T09:47:59Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "discipline",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 2,
+      "updated_at": "2026-08-02T09:32:51Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "do you have a ts/sci with polygraph security clearance?*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-02T09:20:27Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "employment eligibility information*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 2,
+      "updated_at": "2026-08-02T09:32:51Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "input",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 5,
+      "updated_at": "2026-08-03T09:47:59Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "question_6308109009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-02T09:50:49Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "question_6308110009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-02T09:50:49Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "question_6308111009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-02T09:50:49Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "question_6308113009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-02T09:50:49Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "question_6308114009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-02T09:20:27Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "question_6308115009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-02T09:50:49Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "question_6539879009",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-02T09:50:49Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "security clearance type*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-02T09:20:27Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "this position requires u.s. citizenship pursuant to a government contract. are y",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-02T09:20:27Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "visa requirement status*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-02T09:20:27Z"
+    },
+    {
+      "avoid_strategy": "deterministic_reclaim_gh_select",
+      "field_type": "ADDRESS_COUNTRY",
+      "label_pattern": "country",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: unverified_readback",
+      "seen": 3,
+      "updated_at": "2026-08-03T09:15:01Z"
+    },
+    {
+      "avoid_strategy": "low_success_selector",
+      "field_type": "ADDRESS_COUNTRY",
+      "label_pattern": "country",
+      "platform": "greenhouse",
+      "reason": "unverified_readback",
+      "seen": 2,
+      "updated_at": "2026-08-03T09:15:34Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "NAME_FIRST",
+      "label_pattern": "preferred first name",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_empty_after_claimed_verified",
+      "seen": 2,
+      "updated_at": "2026-08-06T01:31:43Z"
+    },
+    {
+      "avoid_strategy": "refill",
+      "field_type": "NAME_FIRST",
+      "label_pattern": "preferred first name",
+      "platform": "gh",
+      "reason": "UNFILLABLE_AFTER_2: live_empty_after_claimed_verified",
+      "seen": 4,
+      "updated_at": "2026-08-06T09:42:43Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "SCHOOL",
+      "label_pattern": "school*",
+      "platform": "gh",
+      "reason": "UNFILLABLE_AFTER_2: gh_select_failed",
+      "seen": 4,
+      "updated_at": "2026-08-06T09:42:43Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "SPONSORSHIP",
+      "label_pattern": "will you now or in the future require sponsorship to work in the united states?*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: label not found: 'require immigration sponsorship'",
+      "seen": 1,
+      "updated_at": "2026-08-03T09:15:01Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "candidate-location",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-03T09:15:01Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "question_18017622008",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-03T09:15:01Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "question_18017623008",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-03T09:15:01Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "question_18017624008",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-03T09:15:01Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "SPONSORSHIP",
+      "label_pattern": "will you now or in the future require sponsorship to work in the united states?*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-03T09:47:59Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "candidate-location",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-03T09:47:59Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "question_18017622008",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-03T09:47:59Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "question_18017623008",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-03T09:47:59Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "question_18017624008",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-03T09:47:59Z"
+    },
+    {
+      "avoid_strategy": "gh_select",
+      "field_type": "US_RESIDENCE",
+      "label_pattern": "do you currently live in the united states?*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_empty_after_claimed_verified",
+      "seen": 1,
+      "updated_at": "2026-08-03T09:47:59Z"
+    },
+    {
+      "avoid_strategy": "gh_select_sweep",
+      "field_type": "RACE",
+      "label_pattern": "please identify your race",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_empty_after_claimed_verified",
+      "seen": 1,
+      "updated_at": "2026-08-03T09:47:59Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "RACE",
+      "label_pattern": "please identify your race",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-03T09:47:59Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "US_RESIDENCE",
+      "label_pattern": "do you currently live in the united states?*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-03T09:47:59Z"
+    },
+    {
+      "avoid_strategy": "low_success_selector",
+      "field_type": "US_RESIDENCE",
+      "label_pattern": "do you currently live in the united states?*",
+      "platform": "greenhouse",
+      "reason": "live_empty_after_claimed_verified",
+      "seen": 1,
+      "updated_at": "2026-08-03T09:47:59Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "CURRENT_COMPANY",
+      "label_pattern": "current company",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: no_value",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:47:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "TWITTER",
+      "label_pattern": "twitter",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: no_value",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:47:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "_systemfield_resume",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_file",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:47:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "1f409a8c-701e-42fb-951c-8d55ace4ec2c",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:47:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "bd708a5a-06f4-4d18-88a0-cc41887cb942",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:47:45Z"
+    },
+    {
+      "avoid_strategy": "inpage_flash_already_correct_skip",
+      "field_type": null,
+      "label_pattern": "other",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: unverified_readback",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:47:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "RESUME_UPLOAD",
+      "label_pattern": "overviewapplication",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: refuse real trusted resume.pdf: /Users/job/.openclaw/workspace/job-hunter/resumes/bumbleinc-senior-machine-learning-engineer-2/resume.pdf",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:47:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "RESUME_UPLOAD",
+      "label_pattern": "resume",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: refuse real trusted resume.pdf: /Users/job/.openclaw/workspace/job-hunter/resumes/bumbleinc-senior-machine-learning-engineer-2/resume.pdf",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:47:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "RESUME_UPLOAD",
+      "label_pattern": "resume / cv",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: resume_missing",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:47:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_2",
+      "field_type": null,
+      "label_pattern": "additional information",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:48:19Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_2",
+      "field_type": null,
+      "label_pattern": "describe how you use ai tools in your work today, or how you would apply ai to i",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:48:19Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_2",
+      "field_type": null,
+      "label_pattern": "what\u2019s motivating you to explore a new role, and why does jerry feel like potent",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:54:48Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "CURRENT_COMPANY",
+      "label_pattern": "current company",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:56:19Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "RESUME_UPLOAD",
+      "label_pattern": "overviewapplication",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:56:19Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "RESUME_UPLOAD",
+      "label_pattern": "resume",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:56:19Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "RESUME_UPLOAD",
+      "label_pattern": "resume / cv",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:56:19Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "TWITTER",
+      "label_pattern": "twitter",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:56:19Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "1f409a8c-701e-42fb-951c-8d55ace4ec2c",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:56:19Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "_systemfield_resume",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:56:19Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "additional information",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:56:19Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "bd708a5a-06f4-4d18-88a0-cc41887cb942",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:56:19Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "describe how you use ai tools in your work today, or how you would apply ai to i",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:56:19Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "other",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:56:19Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "what\u2019s motivating you to explore a new role, and why does jerry feel like potent",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-04T13:56:19Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "departments",
+      "platform": "unknown",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-05T07:07:19Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "locations",
+      "platform": "unknown",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-05T07:07:19Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "no_extractable_fields_after_entry",
+      "platform": "unknown",
+      "reason": "UNFILLABLE_AFTER_2: generic_dom_no_fields",
+      "seen": 1,
+      "updated_at": "2026-08-05T09:29:42Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "ADDRESS_CITY",
+      "label_pattern": "search by job title, location, department, category, etc.",
+      "platform": "unknown",
+      "reason": "UNFILLABLE_AFTER_2: no_value",
+      "seen": 1,
+      "updated_at": "2026-08-05T09:31:16Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "form_submission[fields_attributes][0][string_value]",
+      "platform": "unknown",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-05T09:31:16Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "form_submission[fields_attributes][1][string_value]",
+      "platform": "unknown",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-05T09:31:16Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "form_submission[fields_attributes][2][email_value]",
+      "platform": "unknown",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-05T09:31:16Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_2",
+      "field_type": null,
+      "label_pattern": "form_submission[fields_attributes][3][phone_value]",
+      "platform": "unknown",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-05T09:31:38Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_2",
+      "field_type": null,
+      "label_pattern": "form_submission[fields_attributes][4][job_questions][d83ea2c3ec043bd2d399559542a",
+      "platform": "unknown",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-05T09:31:38Z"
+    },
+    {
+      "avoid_strategy": "ashby_widgets",
+      "field_type": null,
+      "label_pattern": "based on your current impression, how would you rate plaid\u2019s position in ai comp",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: unclassified_unanswered_choice",
+      "seen": 1,
+      "updated_at": "2026-08-06T05:59:58Z"
+    },
+    {
+      "avoid_strategy": "ashby_widgets",
+      "field_type": "YES_NO_SCREENING",
+      "label_pattern": "teams and roles based in our san francisco hq, new york, or seattle offices may",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: unclassified_yesno_needs_flash",
+      "seen": 1,
+      "updated_at": "2026-08-06T05:59:58Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "687b3361-536e-425d-81dd-ff7fd90d0a42",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-06T05:59:58Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_2",
+      "field_type": null,
+      "label_pattern": "current/last company",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-06T06:00:24Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_2",
+      "field_type": null,
+      "label_pattern": "other url",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-06T06:00:24Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "687b3361-536e-425d-81dd-ff7fd90d0a42",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-06T06:00:33Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "based on your current impression, how would you rate plaid\u2019s position in ai comp",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-06T06:00:33Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "current/last company",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-06T06:00:33Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "other url",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-06T06:00:33Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "YES_NO_SCREENING",
+      "label_pattern": "teams and roles based in our san francisco hq, new york, or seattle offices may",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-06T06:00:33Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "email",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-06T06:06:50Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "email",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-06T06:06:59Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "no_extractable_fields_after_entry",
+      "platform": "smartrecruiters",
+      "reason": "UNFILLABLE_AFTER_2: generic_dom_no_fields",
+      "seen": 1,
+      "updated_at": "2026-08-06T06:14:04Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "no_extractable_fields_after_entry",
+      "platform": "smartrecruiters",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-06T06:14:13Z"
+    },
+    {
+      "avoid_strategy": "initial_fill",
+      "field_type": null,
+      "label_pattern": "*did an assistrx employee refer you to this position?",
+      "platform": "workable",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-07T07:39:58Z"
+    },
+    {
+      "avoid_strategy": "initial_fill",
+      "field_type": null,
+      "label_pattern": "ca_32910",
+      "platform": "workable",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-07T07:39:58Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "if yes, who was the assistrx employee that referred you? (optional)",
+      "platform": "workable",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-07T07:44:40Z"
+    }
+  ],
+  "version": 1
+}

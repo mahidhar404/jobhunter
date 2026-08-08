@@ -1,32 +1,39 @@
-"""Persistent learning loop - the missing piece that makes the system actually
-generalize to ANY platform, seen or unseen, and get BETTER over time.
+"""Persistent learning loop — policy facts only (never PII).
 
-Every prior layer was static: field_map.py resolves what it can from a fixed
-rule set, and whatever it can't resolve gets handed to Skyvern's LLM (Layer 2)
-fresh, every single run, forever. That's wasteful and it's also not "learning" -
-the docstring in field_map.py said the LLM's "real job is to produce a mapping
-that gets saved" from the start, but nothing ever saved it.
+``learned_fields.json`` is a GLOBAL allow-list of cross-employer *policy*
+answers (notice period, sponsorship, EEO Decline, how-did-you-hear, phone
+*device type*, relocation willingness, work authorization). Static layers
+(``field_map`` / ``DUMMY_PROFILE``) own contact and profile PII.
 
-This module closes that loop:
-  1. Before a run, load everything learned so far and fold it into the cheat
-     sheet - so a field an earlier run on ANY platform had to reason about is
-     now a zero-cost lookup, exactly like a Layer-1 regex hit.
-  2. After a run, mine the completed task's real actions for (label, value)
-     pairs Layer 2 resolved that the static layers did NOT cover, and persist
-     them.
+Hard contract
+-------------
+ALLOWED to learn: short reusable policy / voluntary-disclosure answers that
+transfer across employers without identifying a person.
 
-Scope is deliberately GLOBAL, not per-platform. A question like "What is your
-notice period?" or "Are you willing to relocate?" means the same thing on any
-company's form regardless of which ATS renders it - keying by platform would
-mean re-learning the same question on every new company forever, which is
-exactly the failure mode this exists to fix. The one thing that must NEVER be
-learned globally is a per-account secret (a generated password) - see
-_looks_like_secret().
+NEVER learn (blocked at write + ignored at read + dropped by ``--sanitize``):
+  - emails, phone *numbers*, SSNs, passwords / secrets
+  - names, mailing addresses, city/state/zip, LinkedIn/portfolio URLs
+  - salary, essays, job-specific screening, employer/title history
+  - education degree dropdowns, contaminated aria labels
 
-Growth is monotonic and safe: every entry is either a fresh fact discovered
-live and immediately usable, or an update to a fact already deemed safe last
-time. Nothing here is ever more dangerous than what field_map.py's own
-DUMMY_PROFILE already contains.
+After any Flash/hybrid run that may have written learnings::
+
+    skyvern_runtime/venv/bin/python scripts/fastfill/learning.py --sanitize
+
+``lookup_learned`` / ``learned_cheat_sheet_rows`` also filter at read time so
+an unsanitized on-disk store cannot poison fills.
+
+Loop
+----
+  1. Before a run, fold sanitized learnings into the cheat sheet (Layer
+     learned-allow-list) — zero-cost lookup like a Layer-1 hit.
+  2. After a run, mine Layer-2 actions for new (label, value) pairs the
+     static layers did not cover; ``record_learning`` only persists if
+     ``is_reusable_learning`` passes.
+
+Scope is deliberately GLOBAL, not per-platform: "What is your notice period?"
+means the same thing on any ATS. Keying by platform would re-learn the same
+policy question forever.
 """
 
 import json
@@ -40,6 +47,96 @@ LEARNED_STORE = Path(__file__).resolve().parent / "learned_fields.json"
 # to the next form that happens to reuse the same short word as a DIFFERENT
 # question's label.
 MIN_LABEL_LEN = 8
+MAX_LEARNED_VALUE_LEN = 200
+
+_EMAIL_RE = re.compile(
+    r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
+)
+_SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+_PHONE_RE = re.compile(
+    r"(?<!\d)"  # not preceded by digit
+    r"(?:\+?1[\s.\-]?)?"
+    r"(?:\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}"
+    r"(?!\d)",
+)
+
+# Free-text / essay prompts — answers are run-specific narrative, not reusable facts.
+_ESSAY_LABEL_PATTERNS = (
+    r"\bdescribe\b",
+    r"\bexplain\b",
+    r"pros[\s_-]*and[\s_-]*cons",
+    r"tell[\s_-]*us[\s_-]*about",
+    r"\bessay\b",
+)
+
+# Short policy questions whose answers transfer across employers (notice period, EEO, etc.).
+# Intentionally excludes address/education/contact — those stay in DUMMY_PROFILE.
+_REUSABLE_POLICY_LABEL_PATTERNS = (
+    r"notice[\s_-]*period",
+    r"earliest[\s_-]*start",
+    r"when[\s_-]*is[\s_-]*the[\s_-]*earliest",
+    r"when[\s_-]*can[\s_-]*you[\s_-]*start",
+    # ATS2-007: how-heard / gender chips are tenant-specific — do NOT learn
+    # globally ("Internet job board", "Male"). Shared policy supplies those.
+    r"sponsorship",
+    r"require[\s_-]*sponsor",
+    r"work[\s_-]*authorization",
+    r"legally[\s_-]*authorized",
+    r"\brelocation\b",
+    r"\brelocate\b",
+    r"race[\s_-]*select",
+    r"ethnicity[\s_-]*which",
+    r"veteran[\s_-]*status",
+    # Device type (Mobile) only — never the phone number itself.
+    r"phone[\s_-]*device[\s_-]*type",
+)
+
+# Job-specific screening, PII fields (handled by static layers), or contaminated labels.
+_JOB_SPECIFIC_LABEL_PATTERNS = (
+    r"\bwhy[\s_-]+\w",
+    r"\bwhy[\s_-]*do[\s_-]*you[\s_-]*want",
+    r"salary",
+    r"compensation",
+    r"job[\s_-]*title",
+    r"\bemployer\b",
+    r"most[\s_-]*recent",
+    r"legal[\s_-]*birth",
+    r"\b(?:first|last|full|given|family)[\s_-]*name\b",
+    r"\bname\b",
+    r"mailing[\s_-]*address",
+    r"full[\s_-]*mailing",
+    r"\baddress\b",
+    r"current[\s_-]*city",
+    r"\bcity\b",
+    r"city[\s_-]*and[\s_-]*country[\s_-]*of[\s_-]*residence",
+    r"\bstate\b",
+    r"\bdegree\b",
+    r"\bzip(?:[\s_-]*code)?\b",
+    r"postal[\s_-]*code",
+    r"relocating[\s_-]*to[\s_-]*[a-z]",
+    r"provide[\s_-]*an[\s_-]*example",
+    r"could[\s_-]*you[\s_-]*provide",
+    r"open[\s_-]*source[\s_-]*data",
+    r"data[\s_-]*volume",
+    r"data[\s_-]*storage",
+    r"data[\s_-]*platform",
+    r"data[\s_-]*stack",
+    r"linkedin",
+    r"portfolio",
+    # Contact PII — block email/phone *number* labels. "phone device type" is
+    # excluded via negative lookahead so the policy allow-list can still keep it.
+    r"phone[\s_-]*number",
+    r"\bphone\b(?![\s_-]*device)",
+    r"\bmobile[\s_-]*(?:number|phone)\b",
+    r"email[\s_-]*address",
+    r"\bemail\b",
+    r"\be-?mail\b",
+    r"country[\s_-]*calling[\s_-]*code",
+    r"^https://",
+    r"select[\s_-]*country[\s_-]*calling[\s_-]*code\s*:",
+    r"state[\s_-]*new[\s_-]*jersey",
+    r"^yes[\s_-]*required$",
+)
 
 
 def normalize_label(text: str) -> str:
@@ -130,12 +227,65 @@ def _save_learned(store: dict) -> None:
     LEARNED_STORE.write_text(json.dumps(store, indent=1, sort_keys=True))
 
 
+def _matches_any(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(p, text, re.I) for p in patterns)
+
+
+def _looks_like_pii_value(value: str) -> bool:
+    """Block emails/phones/SSNs (and bare contact-shaped strings) from learning.
+
+    Contact facts belong in DUMMY_PROFILE / field_map static layers, not in a
+    label→value memory that can contaminate the next tenant's form. Also rejects
+    values that are *only* an email/phone even when the label looked policy-like.
+    """
+    v = (value or "").strip()
+    if not v:
+        return True
+    if _EMAIL_RE.search(v) or _PHONE_RE.search(v) or _SSN_RE.search(v):
+        return True
+    # Whole-value email-ish / phone-ish without needing punctuation variants.
+    if "@" in v and "." in v.split("@")[-1]:
+        return True
+    digits = re.sub(r"\D", "", v)
+    if len(digits) >= 10 and len(digits) <= 15 and sum(c.isdigit() for c in v) >= 7:
+        # Likely a phone typed without separators, or with extra punctuation.
+        if not re.search(r"[a-zA-Z]{3,}", v):
+            return True
+    return False
+
+
+def is_reusable_learning(label: str, value: str) -> bool:
+    """True only for safe, cross-employer policy facts.
+
+    Essays, job-specific screening, PII, secrets, and contaminated aria labels
+    (e.g. 'select country calling code: romania') must never enter the store —
+    they either burn tokens in the cheat sheet or mis-fill the next form.
+    """
+    key = normalize_label(label)
+    val = (value or "").strip()
+    if len(key) < MIN_LABEL_LEN or not val:
+        return False
+    if len(val) > MAX_LEARNED_VALUE_LEN:
+        return False
+    if _looks_like_secret(val) or _looks_like_pii_value(val):
+        return False
+    if _matches_any(key, _ESSAY_LABEL_PATTERNS):
+        return False
+    if _matches_any(key, _JOB_SPECIFIC_LABEL_PATTERNS):
+        return False
+    # Allow-list policy questions; everything else stays out of global memory
+    # until a human promotes it. Cheap + prevents Flash from reusing narrative.
+    if not _matches_any(key, _REUSABLE_POLICY_LABEL_PATTERNS):
+        return False
+    return True
+
+
 def record_learning(label: str, value: str, platform: str) -> bool:
     """Persist a (label -> value) resolution for reuse on ANY future form.
     Returns True if it was actually saved (False for filtered-out entries)."""
-    key = normalize_label(label)
-    if len(key) < MIN_LABEL_LEN or not value or _looks_like_secret(value):
+    if not is_reusable_learning(label, value):
         return False
+    key = normalize_label(label)
     store = load_learned()
     entry = store.get(key, {"value": value, "seen": 0, "platforms": [], "label_example": label})
     entry["value"] = value  # most recent resolution wins - facts can legitimately change
@@ -148,7 +298,47 @@ def record_learning(label: str, value: str, platform: str) -> bool:
     return True
 
 
-def learned_cheat_sheet_rows(max_rows: int = 60) -> list[str]:
+def sanitize_learned_store(*, write: bool = True) -> dict:
+    """Drop contaminated / non-reusable entries from learned_fields.json.
+
+    Returns {"kept": N, "dropped": N, "dropped_keys": [...]} for telemetry.
+    """
+    store = load_learned()
+    kept, dropped_keys = {}, []
+    for key, entry in store.items():
+        label = entry.get("label_example", key)
+        value = str(entry.get("value", ""))
+        if is_reusable_learning(label, value):
+            kept[key] = entry
+        else:
+            dropped_keys.append(key)
+    if write:
+        _save_learned(kept)
+    return {"kept": len(kept), "dropped": len(dropped_keys), "dropped_keys": dropped_keys}
+
+
+def lookup_learned(label: str) -> str | None:
+    """Return a sanitized reusable value for ``label``, or None.
+
+    Exact match on ``normalize_label(label)`` against the store key. Contaminated
+    / non-policy entries are ignored even if still present on disk — callers
+    (fast_fill Layer learned-allow-list) must never apply unsanitized facts.
+    """
+    key = normalize_label(label)
+    if not key or len(key) < MIN_LABEL_LEN:
+        return None
+    store = load_learned()
+    entry = store.get(key)
+    if not entry:
+        return None
+    example = entry.get("label_example", key)
+    value = str(entry.get("value", "")).strip()
+    if not is_reusable_learning(example, value):
+        return None
+    return value
+
+
+def learned_cheat_sheet_rows(max_rows: int = 40) -> list[str]:
     """Learned facts formatted the same way as the static cheat sheet.
 
     Both ORDER and TEXT of each row must be stable across runs regardless of
@@ -165,12 +355,21 @@ def learned_cheat_sheet_rows(max_rows: int = 60) -> list[str]:
     not something the model needs to act correctly - fixes content. `seen`
     still decides who gets CUT when truncating, just not what the surviving
     rows say or where they sit.
+
+    Caps at 40 (was 60): smaller stable block = cheaper Flash tokens + better
+    cache hits. Only reusable policy facts survive is_reusable_learning().
     """
     store = load_learned()
-    keys = sorted(store.keys(), key=lambda k: -store[k].get("seen", 0))[:max_rows]
+    # Filter at read-time too so an unsanitized on-disk store can't poison
+    # cheat sheets until sanitize_learned_store() is run.
+    usable = {
+        k: e for k, e in store.items()
+        if is_reusable_learning(e.get("label_example", k), str(e.get("value", "")))
+    }
+    keys = sorted(usable.keys(), key=lambda k: -usable[k].get("seen", 0))[:max_rows]
     rows = []
     for label in sorted(keys):
-        entry = store[label]
+        entry = usable[label]
         example = entry.get("label_example", label)
         rows.append(f"  - fields about {example!r} (learned) -> {entry['value']!r}")
     return rows
@@ -264,7 +463,24 @@ def extract_and_save_learnings(db_conn_kwargs: dict, task_id: str, platform: str
 
 
 if __name__ == "__main__":
+    import sys
+    if "--sanitize" in sys.argv:
+        result = sanitize_learned_store(write=True)
+        print(f"sanitize: kept={result['kept']} dropped={result['dropped']}")
+        for k in result["dropped_keys"]:
+            print(f"  dropped: {k[:100]}")
+        if result["kept"]:
+            print("kept keys:")
+            store = load_learned()
+            for k in sorted(store):
+                print(f"  kept: {k[:100]} -> {str(store[k].get('value', ''))[:60]!r}")
+        raise SystemExit(0)
     store = load_learned()
     print(f"learned_fields.json: {len(store)} entries")
-    for label, entry in sorted(store.items(), key=lambda kv: -kv[1].get("seen", 0))[:20]:
-        print(f"  {entry.get('seen',0):3d}x  {label[:55]:55s} -> {str(entry['value'])[:40]!r}")
+    for label, entry in sorted(store.items(), key=lambda kv: -kv[1].get("seen", 0))[:40]:
+        ok = is_reusable_learning(entry.get("label_example", label), str(entry.get("value", "")))
+        flag = "ok" if ok else "DROP"
+        print(f"  [{flag}] {entry.get('seen',0):3d}x  {label[:50]:50s} -> {str(entry['value'])[:40]!r}")
+    print("\nPolicy: store may contain only cross-employer policy facts.")
+    print("Never: email, phone number, address/state/zip, name, salary, essays, secrets.")
+    print("Run with --sanitize to drop non-policy entries from disk.")

@@ -22,6 +22,16 @@ universal selector set the way Workday's `data-automation-id` gives one.
   under `~/.openclaw/media/inbound` (see `run_tailor_then_fill` in
   server.py - the resume is already copied there before your turn starts,
   do not try uploading from `resumes/<id>/resume.pdf` directly).
+- **Yes/No widgets** are custom button pairs inside
+  `.ashby-application-form-field-entry` / `[class*="_yesno_"]` (not radios).
+  Skyvern extract often misses them — `ashby_widgets.fill_ashby_widgets`
+  clicks Yes/No by question label (WORK_AUTH / SPONSORSHIP / TALENT_HUB /
+  WORKED_HERE_BEFORE).
+- EEO is labeled radios (`Decline to self-identify` / veteran & disability
+  refuse wordings). Privacy: radio `I consent`; terms: checkbox `I agree`
+  (`_systemfield_data_consent_ack`).
+- JD Overview vs Application: Prefer `/application` URL. Media iframes
+  (Vimeo / `embedded-media.ashbyhq.com`) must not win fill-context ranking.
 
 ## Source
 Field-type info: https://docs.ashbyhq.com/application-forms. Everything

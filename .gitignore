@@ -1,5 +1,7 @@
 # Secrets & personal data (stay local / untracked)
 credentials.json
+web_keys.json
+option_mappings.json
 profile.json
 profile.json.bak*
 skyvern_runtime/.env
@@ -11,11 +13,17 @@ skyvern_runtime/credential_vault/
 jobs.json
 jobs.json.bak*
 jobs.json.lock
+blocked_urls.json
+blocked_urls.json.lock
 listings/
 logs/
 application_tracker.xlsx
 application_tracker.xlsx.lock
+scripts/fastfill/alias_state.json.lock
+scripts/fastfill/fixtures/us_apartment_addresses.json.lock
 partyrock_chrome_profile/
+dashboard_chrome_profile/
+dashboard_ui_profile/
 resumes/
 
 # Python / local envs
@@ -43,6 +51,7 @@ skyvern_runtime/*.marker
 # Dashboard runtime logs
 dashboard/*.log
 dashboard/__pycache__/
+dashboard/discovery_last_run.json
 
 # OS / editor
 .DS_Store
@@ -52,3 +61,46 @@ dashboard/__pycache__/
 # Workspace agent state
 .openclaw/
 openclaw-workspace-state.json
+
+# --- Added 2026-08-08 (restructure/export hardening; see docs/RESTRUCTURE_PROPOSAL.md) ---
+# Dedicated private folder: the ONLY place real PII/secrets/artifacts should live.
+# Ignore its contents but keep the explanatory README tracked. (Use private/* — a
+# bare "private/" would exclude the dir itself and defeat the !README negation.)
+private/*
+!private/README.md
+
+# Secrets / PII (defense-in-depth: catch these anywhere in the tree, incl. private/ before moves)
+**/credentials.json
+**/web_keys.json
+**/profile.json
+**/profile.json.bak*
+**/option_mappings.json
+application_tracker.xlsx.bak*
+
+# Env files (never commit real ones; *.example / .env.example stay tracked)
+.env
+.env.*
+!.env.example
+!*.env.example
+**/.secrets.env
+
+# Agent-personal memory (curated + daily notes stay local)
+MEMORY.md
+memory/
+
+# Human profile notes accrue PII over time — keep local; ship USER.example.md
+USER.md
+!USER.example.md
+
+# Browser session profiles (cookies/logins) — never share
+*_chrome_profile/
+*_ui_profile/
+skyvern_runtime/*_profile/
+
+# Scratch / tool caches
+.firecrawl/
+**/.DS_Store
+
+# Export output (produced by export.sh)
+export_build/
+*.export.zip
