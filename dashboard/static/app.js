@@ -1576,8 +1576,8 @@ function syncListSelection() {
   });
 }
 
-// datePostedSortKey / compareByPosted are provided by job_sort.js, shared with
-// classic.js so both UIs order Posted the same way.
+// datePostedSortKey / compareByPosted are provided by job_sort.js so Posted
+// ordering stays consistent, kept in parity with scripts/discovery_filters.py.
 
 function jsStringEscape(s) {
   return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'");

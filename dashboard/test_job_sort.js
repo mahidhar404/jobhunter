@@ -84,7 +84,7 @@ const staticDir = path.join(__dirname, "static");
 const ctx = vm.createContext({ console });
 vm.runInContext(fs.readFileSync(path.join(staticDir, "job_sort.js"), "utf8"), ctx);
 
-for (const file of ["app.js", "classic.js"]) {
+for (const file of ["app.js"]) {
   const src = fs.readFileSync(path.join(staticDir, file), "utf8");
   const start = src.indexOf("function sortItems(");
   assert.notStrictEqual(start, -1, `sortItems not found in ${file}`);

@@ -321,8 +321,8 @@
       "label_pattern": "preferred first name",
       "platform": "greenhouse",
       "reason": "UNFILLABLE_AFTER_2: live_empty_after_claimed_verified",
-      "seen": 2,
-      "updated_at": "2026-08-06T01:31:43Z"
+      "seen": 3,
+      "updated_at": "2026-08-08T10:26:56Z"
     },
     {
       "avoid_strategy": "refill",
@@ -330,8 +330,8 @@
       "label_pattern": "preferred first name",
       "platform": "gh",
       "reason": "UNFILLABLE_AFTER_2: live_empty_after_claimed_verified",
-      "seen": 4,
-      "updated_at": "2026-08-06T09:42:43Z"
+      "seen": 5,
+      "updated_at": "2026-08-08T10:26:57Z"
     },
     {
       "avoid_strategy": "retry_same_selector",
@@ -339,8 +339,8 @@
       "label_pattern": "school*",
       "platform": "gh",
       "reason": "UNFILLABLE_AFTER_2: gh_select_failed",
-      "seen": 4,
-      "updated_at": "2026-08-06T09:42:43Z"
+      "seen": 5,
+      "updated_at": "2026-08-08T10:26:57Z"
     },
     {
       "avoid_strategy": "refill_pass_1",

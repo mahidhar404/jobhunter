@@ -1,10 +1,18 @@
 # Restructure & Export Proposal
 
-**Status:** Proposal (read this, then approve the risky moves).
+**STATUS: IMPLEMENTED (Phase 0 + Phase 1 baseline, 2026-08-08).** The export
+hardening this doc proposed is **done and in the tree**: hardened `.gitignore`
+(see the "Added 2026-08-08" block), `.cursorignore`, `fixtures/*.example.json` +
+`fixtures/.env.example`, `private/` (git-ignored) with `private/README.md`, and
+`export.sh` all exist. This file is now **primarily historical** — kept for the
+PII inventory (§3) and the still-pending Phase 2 file-move plan (§7), which
+remains **owner-gated and NOT executed**. Treat §§4–5 (the `src/` +
+`jobhunter_paths.py` migration) as a *future proposal*, not current state.
+
 **Author:** job-hunter agent, 2026-08-08.
 **Goal:** Make the repo (1) safe — all real PII/secrets isolated in one place — and (2) cleanly *exportable* so other people can run the code with **dummy data only**, never leaking Yogesh's personal data.
 
-> **What is already done in this pass** (safe, additive, non-breaking): hardened `.gitignore`, added `.cursorignore`, added dummy `*.example.json` + `.env.example` templates, created `private/` (git-ignored) with a README, and added a read-only `export.sh`. **Nothing was moved, renamed, or deleted.** See [§7 Phased migration](#7-phased-migration-plan).
+> **What is already done** (safe, additive, non-breaking): hardened `.gitignore`, added `.cursorignore`, added dummy `*.example.json` + `.env.example` templates, created `private/` (git-ignored) with a README, and added a read-only `export.sh`. **Nothing was moved, renamed, or deleted.** The remaining risky file moves in [§7 Phased migration](#7-phased-migration-plan) (Phase 2+) are **not yet done** and still need owner sign-off.
 
 ---
 

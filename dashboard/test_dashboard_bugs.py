@@ -15,7 +15,6 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 SERVER_PATH = HERE / "server.py"
 APP_JS = HERE / "static" / "app.js"
-CLASSIC_JS = HERE / "static" / "classic.js"
 
 
 def _load_server():
@@ -205,18 +204,18 @@ def test_app_js_start_fill_mode_no_false_skip_without_pdf():
     assert "const skipPartyrock = normalized === \"with-resume\" || normalized === \"retry\";" not in src
 
 
-def test_classic_js_escapes_question_and_cancel_gate():
-    """DASH-007 / DASH-009: escapeHtml question; Cancel only in-progress."""
-    src = CLASSIC_JS.read_text(encoding="utf-8")
+def test_app_js_escapes_question_and_cancel_gate():
+    """DASH-007 / DASH-009: escapeHtml question; Cancel only in-progress (Ops)."""
+    src = APP_JS.read_text(encoding="utf-8")
     assert "escapeHtml(job.question" in src
     assert "runInProgress" in src
-    # Old ungated Cancel inside !TERMINAL block should not remain as sole gate
-    assert "if (runInProgress)" in src
+    # Cancel must stay gated on runInProgress, not shown for every non-terminal job.
+    assert "(runInProgress)" in src
 
 
-def test_classic_js_uses_js_string_escape_on_detail_actions():
-    """DASH-007: onclick job ids go through jsStringEscape."""
-    src = CLASSIC_JS.read_text(encoding="utf-8")
+def test_app_js_uses_js_string_escape_on_detail_actions():
+    """DASH-007: onclick job ids go through jsStringEscape (Ops)."""
+    src = APP_JS.read_text(encoding="utf-8")
     assert "jsStringEscape(job.id)" in src
     assert "onclick=\"cancelJob('${job.id}')\"" not in src
     assert "onclick=\"startJob('${job.id}')\"" not in src
@@ -380,9 +379,9 @@ def test_mark_submitted_kills_proc_in_source():
     assert "abort_gateway_session" in chunk
 
 
-def test_classic_js_shows_restore_for_deleted():
-    """DASH2-003: classic detail offers Restore; restoreJob posts /restore."""
-    src = CLASSIC_JS.read_text(encoding="utf-8")
+def test_app_js_shows_restore_for_deleted():
+    """DASH2-003: Ops detail offers Restore; restoreJob posts /restore."""
+    src = APP_JS.read_text(encoding="utf-8")
     assert "restoreJob(" in src
     assert 'job.status === "deleted"' in src
     assert "/restore" in src
@@ -447,18 +446,8 @@ def test_agent_fallback_missing_tex_forces_stuck_in_source():
     assert "don't force a status" not in chunk
 
 
-def test_classic_routes_redirect_to_ops():
-    """UI-033: /classic, classic.html, classic.js HTTP-redirect to Ops /."""
-    src = SERVER_PATH.read_text(encoding="utf-8")
-    assert 'parts[0] in ("classic", "classic.html", "classic.js")' in src
-    chunk = src.split('("classic", "classic.html", "classic.js")', 1)[1][:400]
-    assert "send_response(302)" in chunk
-    assert 'send_header("Location", "/")' in chunk
-    assert '_send_file(STATIC_DIR / "classic.html"' not in src
-    classic_html = (HERE / "static" / "classic.html").read_text(encoding="utf-8")
-    classic_js = CLASSIC_JS.read_text(encoding="utf-8")
-    assert "FROZEN" in classic_html[:200]
-    assert "FROZEN" in classic_js[:200]
+def test_app_js_surfaces_deleted_and_skip_without_classic():
+    """UI-033 successor: Ops (/) owns skip/deleted surfacing; no skipped queue tab."""
     app = APP_JS.read_text(encoding="utf-8")
     assert "async function skipJob(" in app
     assert "surfaceDeletedJob" in app
@@ -479,8 +468,8 @@ if __name__ == "__main__":
     test_app_js_cancel_not_for_ready()
     test_app_js_hybrid_fill_409_mentions_another_job()
     test_app_js_start_fill_mode_no_false_skip_without_pdf()
-    test_classic_js_escapes_question_and_cancel_gate()
-    test_classic_js_uses_js_string_escape_on_detail_actions()
+    test_app_js_escapes_question_and_cancel_gate()
+    test_app_js_uses_js_string_escape_on_detail_actions()
     test_restore_handler_accepts_deleted_in_source()
     test_delete_kills_running_proc_in_source()
     test_partyrock_lock_aborts_when_cancelled()
@@ -489,11 +478,11 @@ if __name__ == "__main__":
     test_force_stuck_orphaned_respects_stale_age()
     test_force_stuck_orphaned_when_past_stale()
     test_mark_submitted_kills_proc_in_source()
-    test_classic_js_shows_restore_for_deleted()
+    test_app_js_shows_restore_for_deleted()
     test_ready_hold_copy_no_cancel()
     test_ingest_hold_honors_full_abort_set()
     test_pipeline_milestone_skips_detail_when_aborted()
     test_app_js_date_older_excludes_unknown()
     test_agent_fallback_missing_tex_forces_stuck_in_source()
-    test_classic_routes_redirect_to_ops()
+    test_app_js_surfaces_deleted_and_skip_without_classic()
     print("OK test_dashboard_bugs")

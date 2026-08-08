@@ -10,7 +10,7 @@ model the OpenClaw ``job-hunter`` agent already used (auth profile
 ``deepseek:manual``). The repo already talks to this API directly in
 ``scripts/fastfill/flash_leftovers.py``; this reuses that pattern.
 
-HONEST SCOPE (see docs/OPENCLAW_DECOUPLING.md §6): the *model* is
+HONEST SCOPE (see docs/OPENCLAW_REMOVED.md Appendix §A6): the *model* is
 reproducible, but the OpenClaw *harness* is not. Open-ended "read a file and
 fix the bug / fix the LaTeX and recompile" turns are **best-effort** here and
 may not match OpenClaw's judgment. When no ``DEEPSEEK_API_KEY`` is configured

@@ -26,7 +26,6 @@ from discovery_filters import (  # noqa: E402
 )
 
 APP_JS = ROOT / "dashboard" / "static" / "app.js"
-CLASSIC_JS = ROOT / "dashboard" / "static" / "classic.js"
 
 
 def sibling_kept(*, title: str, location: str = "Remote, US", company: str = "Acme",
@@ -77,7 +76,6 @@ def _extract_js_set(src: str, name: str) -> set[str]:
 
 def main() -> int:
     js = APP_JS.read_text(encoding="utf-8")
-    classic = CLASSIC_JS.read_text(encoding="utf-8")
     assert "function companySiblings" in js
     assert "isExcludedTitle(j.title)" in js, (
         "companySiblings must filter with isExcludedTitle"
@@ -85,13 +83,9 @@ def main() -> int:
     assert "jobRequiresClearance(j)" in js, (
         "companySiblings must filter with jobRequiresClearance"
     )
-    assert "jobRequiresClearance" in classic
-    assert "CLEARANCE_REQUIREMENT_RE" in classic
     assert "CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE" in js
-    assert "CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE" in classic
     assert "blob.replace(CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE" in js
-    assert "blob.replace(CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE" in classic
-    # Regex bodies must stay in sync across dashboards (\/ escaping aside).
+    # Every discovery-filter regex must still be present/extractable in app.js.
     for name in (
         "SENIORITY_EXCLUDE_RE",
         "NON_US_LOCATION_RE",
@@ -102,19 +96,15 @@ def main() -> int:
         "INTEL_AGENCY_COMPANY_RE",
         "INTEL_AGENCY_URL_RE",
     ):
-        a = _extract_js_re(js, name).pattern
-        c = _extract_js_re(classic, name).pattern
-        assert a == c, f"{name} app.js != classic.js"
+        _extract_js_re(js, name)
 
-    # ISO-2 country-tail tables (Bengaluru, KA, in) must match Python.
+    # ISO-2 country-tail tables (Bengaluru, KA, in) must match the Python source.
     for name, py_set in (
         ("US_STATE_ABBREVS", US_STATE_ABBREVS),
         ("NON_US_ISO2_CODES", NON_US_ISO2_CODES),
     ):
         a = _extract_js_set(js, name)
-        c = _extract_js_set(classic, name)
-        assert a == c, f"{name} app.js != classic.js"
-        assert a == py_set, f"{name} JS != discovery_filters.py"
+        assert a == py_set, f"{name} app.js != discovery_filters.py"
 
     seniority_re = _extract_js_re(js, "SENIORITY_EXCLUDE_RE")
     clearance_re = _extract_js_re(js, "CLEARANCE_REQUIREMENT_RE")

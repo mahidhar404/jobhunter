@@ -17,7 +17,7 @@ def test_format_address_pick_requires_complete_address():
 
 
 def test_applied_tables_render_persisted_address_with_unknown_fallback():
-    for filename in ("app.js", "classic.js"):
+    for filename in ("app.js",):
         source = (STATIC / filename).read_text()
         assert 'trackingSortHeader("address", "Address")' in source
         assert 'appliedAddressText(job)' in source
@@ -27,7 +27,7 @@ def test_applied_tables_render_persisted_address_with_unknown_fallback():
 
 
 def test_applied_address_is_sortable():
-    for filename in ("app.js", "classic.js"):
+    for filename in ("app.js",):
         source = (STATIC / filename).read_text()
         assert '["address", "Address"]' in source
         assert 'case "address":' in source
@@ -69,7 +69,7 @@ def test_applied_edit_rejects_invalid_date():
 
 
 def test_applied_rows_have_leftmost_edit_control_and_editor_actions():
-    for filename in ("app.js", "classic.js"):
+    for filename in ("app.js",):
         source = (STATIC / filename).read_text()
         edit_header = source.index('<th class="cell-edit"')
         company_header = source.index('trackingSortHeader("company", "Company")')

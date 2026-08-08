@@ -21,6 +21,10 @@ application_tracker.xlsx
 application_tracker.xlsx.lock
 scripts/fastfill/alias_state.json.lock
 scripts/fastfill/fixtures/us_apartment_addresses.json.lock
+# Regenerable replay cache (selector->type only, never values; `record_replay.py --clear` rebuilds).
+# NOTE: keep scripts/fastfill/learning_store/{experience.jsonl,selector_stats.json} TRACKED — they are
+# the accumulated learning seed consulted on fresh clones, not disposable cache.
+scripts/fastfill/replay_cache.json
 partyrock_chrome_profile/
 dashboard_chrome_profile/
 dashboard_ui_profile/
@@ -47,6 +51,8 @@ skyvern_runtime/log/
 skyvern_runtime/temp/
 skyvern_runtime/real_job_results/
 skyvern_runtime/*.marker
+# Generated eval run outputs (reference baselines regenerate from eval runs).
+skyvern_runtime/eval_results/
 
 # Dashboard runtime logs
 dashboard/*.log

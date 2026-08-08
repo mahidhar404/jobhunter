@@ -1,7 +1,7 @@
 """Discovery-time location + seniority + clearance + YOE + citizenship filters.
 
 Used by dedup_listings.py (block at qualify) and kept in sync with
-dashboard/static/app.js + classic.js (hide untouched discovered jobs
+dashboard/static/app.js (hide untouched discovered jobs
 already in jobs.json). Prefer extending this module over adding parallel
 filters.
 
@@ -231,7 +231,7 @@ _ISO2_TOKEN_RE = re.compile(r"^[A-Za-z]{2}$")
 #   - "india" → clearly India (cities / states / "India" / ISO ", in" tail)
 #               OR remote-India patterns ("Remote - India", "WFH India",
 #               "Anywhere in India"). Bare "Remote" alone is NOT India.
-# Keep these heuristics in sync with dashboard/static/app.js + classic.js.
+# Keep these heuristics in sync with dashboard/static/app.js.
 # ---------------------------------------------------------------------------
 
 VALID_REGIONS = ("us", "india")
@@ -384,7 +384,7 @@ def _location_tail_country(loc: str) -> tuple[str | None, list[str]]:
 
 # ---------------------------------------------------------------------------
 # Security clearance / US intel-agency filters
-# Mirror the same patterns in dashboard/static/app.js + classic.js.
+# Mirror the same patterns in dashboard/static/app.js.
 # Prefer requirement language over company brand guesses for contractors;
 # intel *agencies* are dropped by company/URL even without the word
 # "clearance" (NSA postings often omit it in the scraped blurb).

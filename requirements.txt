@@ -31,7 +31,6 @@ trafilatura==2.1.0         # scripts/extract_job_posting.py (JD text extraction)
 # Uncomment only if you use the specific feature. The code degrades gracefully
 # without these (documented in docs/PORTABILITY.md).
 #
-# httpx                      # scripts/fast_discovery.py — standalone JSON-API discovery tool (top-level import). Not wired into the dashboard.
 # pdfplumber                 # scripts/fastfill/resume_parser.py — nicer PDF text extraction; falls back to pypdf if absent (guarded import).
 # psycopg[binary]            # scripts/fastfill/learning.py — reads the Skyvern Postgres DB (function-local import; only used by the learn-from-Skyvern path).
 

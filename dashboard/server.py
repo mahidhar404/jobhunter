@@ -82,7 +82,6 @@ def _resolve_bin(env_var: str, name: str, default: str) -> str:
     return default
 
 
-OPENCLAW_BIN = _resolve_bin("JOBHUNTER_OPENCLAW_BIN", "openclaw", "/opt/homebrew/bin/openclaw")
 TECTONIC_BIN = _resolve_bin("JOBHUNTER_TECTONIC_BIN", "tectonic", "/opt/homebrew/bin/tectonic")
 PYTHON_BIN = str(ROOT / ".venv" / "bin" / "python3")
 SKYVERN_PYTHON = ROOT / "skyvern_runtime" / "venv" / "bin" / "python"
@@ -2042,20 +2041,6 @@ class _LogTail:
         lines = self._buf.split("\n")
         self._buf = lines.pop() if lines else ""
         return lines
-
-
-def _openclaw_env(base: dict | None = None) -> dict:
-    """Env for openclaw CLI — GUI/AppleScript launches often omit Homebrew PATH,
-    so ``#!/usr/bin/env node`` fails with exit 127 (seen after PartyRock on Start)."""
-    env = dict(base or os.environ)
-    extras = ["/opt/homebrew/bin", "/usr/local/bin"]
-    path = env.get("PATH") or ""
-    parts = [p for p in path.split(":") if p]
-    for extra in reversed(extras):
-        if extra not in parts:
-            parts.insert(0, extra)
-    env["PATH"] = ":".join(parts)
-    return env
 
 
 def _run_subprocess_step(cmd: list[str], log_name: str, timeout_s: int,
@@ -5826,18 +5811,6 @@ class Handler(BaseHTTPRequestHandler):
         if parts[0] == "job_sort.js":
             self._send_file(STATIC_DIR / "job_sort.js", "application/javascript")
             return
-        # UI-033: Classic frozen — redirect to Ops. Files kept on disk; not a live UI.
-        if parts[0] in ("classic", "classic.html", "classic.js"):
-            self.send_response(302)
-            self.send_header("Location", "/")
-            self.end_headers()
-            return
-        # Ops preview merged into `/` — redirect so bookmarks still work.
-        if parts[0] in ("ops-preview", "ops-preview.html"):
-            self.send_response(302)
-            self.send_header("Location", "/")
-            self.end_headers()
-            return
         if len(parts) == 2 and parts[0] == "resume":
             with _lock:
                 data = read_jobs()
@@ -5913,13 +5886,6 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send_json({})
             return
-        if parts == ["api", "allowlist"]:
-            try:
-                d = json.loads(EXEC_APPROVALS_FILE.read_text())
-                self._send_json(d.get("agents", {}).get("job-hunter", {}))
-            except Exception as e:
-                self._send_json({"error": str(e)}, 500)
-            return
         if parts == ["api", "cron"]:
             try:
                 job = _find_cron_job()
@@ -5929,25 +5895,6 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(_cron_job_public(job))
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)
-            return
-        if parts == ["api", "partyrock"]:
-            # Resolve which PartyRock app URL Test Mode would use.
-            # ?test_mode=1 (default) → Testing; ?test_mode=0 → Real.
-            q = parse_qs(parsed.query)
-            raw = (q.get("test_mode") or [None])[0]
-            if raw is None:
-                test_mode = True
-            else:
-                test_mode = str(raw).strip().lower() not in ("0", "false", "no", "off")
-            urls = load_partyrock_urls()
-            url = partyrock_url(test_mode=test_mode)
-            self._send_json({
-                "test_mode": test_mode,
-                "mode": partyrock_mode_label(test_mode=test_mode),
-                "url": url,
-                "test": urls["test"],
-                "real": urls["real"],
-            })
             return
         self._send_json({"error": "not found"}, 404)
 
@@ -6053,12 +6000,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "start":
             self._handle_start(parts[2], payload)
-            return
-        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "hybrid_fill_dummy":
-            self._handle_hybrid_fill_dummy(parts[2], payload, parse_qs(parsed.query))
-            return
-        if parts == ["api", "cli"]:
-            self._handle_cli(payload)
             return
         self._send_json({"error": "not found"}, 404)
 
@@ -7038,160 +6979,6 @@ class Handler(BaseHTTPRequestHandler):
                 if skip_partyrock
                 else ("fast_fill_dummy" if test_mode else "fast_fill_real")
             ),
-        })
-
-    def _handle_hybrid_fill_dummy(self, job_id, payload=None, query=None):
-        """Dashboard fast fill — dummy (default) or real profile when test_mode=false.
-
-        Child uses prepare_dummy_run (test) or prepare_real_run (production prep).
-        Does not start the real agent / tailor path. Never submits.
-        """
-        payload = payload or {}
-        job = self._job(read_jobs(), job_id)
-        if job is None:
-            self._send_json({"error": "not found"}, 404)
-            return
-        apply_url = (job.get("apply_url") or job.get("job_url") or "").strip()
-        if not apply_url:
-            self._send_json({"error": "job has no apply_url"}, 400)
-            return
-        # UI-017 / DASH2-007: same fast local check as Start (no gateway list).
-        if _session_running_local(job["session_key"]):
-            self._send_json({"error": "this job is already running"}, 409)
-            return
-        try:
-            test_mode = _parse_test_mode(payload)
-        except ValueError as e:
-            self._send_json({"error": str(e)}, 400)
-            return
-        headed = _dummy_fill_headed_requested(payload, query)
-        # Dummy and real: Flash ON by default (same leftover quality path).
-        flash_leftovers = _dummy_fill_flash_requested(payload, query)
-        if FASTFILL_SCRIPT.is_file():
-            engine = "fast_fill"
-        else:
-            engine = "hybrid_fill"
-        prefix = _fill_mode_prefix(test_mode)
-        with _lock:
-            data = read_jobs()
-            job = self._job(data, job_id)
-            if job is None:
-                self._send_json({"error": "not found"}, 404)
-                return
-            other = _find_blocking_start_job(data, exclude_id=job_id)
-            if other is not None:
-                oid = other.get("id") or "?"
-                ostatus = other.get("status") or "?"
-                hold_bit = (
-                    " (review/CAPTCHA browser still held)"
-                    if ostatus in _HOLD_BLOCK_STATUSES
-                    else ""
-                )
-                self._send_json(
-                    {
-                        "error": (
-                            f"another job is already running (id={oid}, "
-                            f"status={ostatus}){hold_bit}. "
-                            "Cancel it first — only one fill at a time."
-                        ),
-                        "other_job_id": oid,
-                        "other_status": ostatus,
-                    },
-                    409,
-                )
-                return
-            if job.get("status") in IN_PROGRESS_STATUSES:
-                self._send_json({"error": "this job is already running"}, 409)
-                return
-            # UI-002/003: same-job Ready/CAPTCHA hold blocks Fast fill too.
-            if (
-                job.get("status") in _HOLD_BLOCK_STATUSES
-                and _fill_hold_browser_active()
-            ):
-                self._send_json(
-                    {
-                        "error": (
-                            "this job is still held for review/CAPTCHA — "
-                            "Mark as applied or close the fill browser before "
-                            "starting again"
-                        ),
-                    },
-                    409,
-                )
-                return
-            restore_status = _dummy_restore_status(job.get("status") or "discovered")
-            job["status"] = "filling"
-            mode = "headed" if headed else "headless"
-            data_label = "dummy resume + DUMMY_PROFILE" if test_mode else "real profile + resume PDF"
-            flash_bit = " Flash ON." if flash_leftovers else ""
-            job["status_detail"] = (
-                f"{prefix} Queued fast fill ({engine}, {mode}). "
-                f"{data_label}.{flash_bit} Never submits."
-            )
-            job["updated_at"] = now_iso()
-            _append_timeline_locked(
-                job,
-                _timeline_entry(
-                    event="filling",
-                    detail=job["status_detail"],
-                    at=job["updated_at"],
-                ),
-            )
-            write_jobs(data)
-        clear_fill_activity(job_id)
-        append_fill_activity(
-            job_id,
-            event="start",
-            detail=(
-                f"Queued {engine} ({mode}, "
-                f"{'dummy' if test_mode else 'real-profile'}"
-                f"{', flash ON' if flash_leftovers else ''}). Never submits."
-            ),
-            persist=True,
-        )
-        threading.Thread(
-            target=run_hybrid_fill_dummy,
-            kwargs={
-                "job_id": job_id,
-                "test_mode": test_mode,
-                "headed": headed,
-                "flash_leftovers": flash_leftovers,
-                "restore_status": restore_status,
-            },
-            daemon=True,
-        ).start()
-        assert engine in ("fast_fill", "hybrid_fill")
-        self._send_json({
-            "ok": True,
-            "dummy": test_mode,
-            "test_mode": test_mode,
-            "engine": engine,
-            "headed": headed,
-            "flash_leftovers": flash_leftovers,
-            "never_submit": True,
-            "real_profile": not test_mode,
-            "fastfill_real_profile": "0" if test_mode else "1",
-        })
-
-    def _handle_cli(self, payload):
-        # OpenClaw-free: the dashboard "CLI" box was a dev/debug passthrough to
-        # the `openclaw` binary, which no longer exists in this deployment.
-        # Disabled rather than shelling out to a missing binary — the response
-        # shape is preserved so the frontend handles it gracefully.
-        args_str = (payload.get("args") or "").strip()
-        if not args_str:
-            self._send_json({"error": "no command given"}, 400)
-            return
-        self._send_json({
-            "ok": False,
-            "output": (
-                "OpenClaw CLI passthrough is disabled: this deployment runs "
-                "without the `openclaw` binary. Use the dedicated dashboard "
-                "controls (Discover, cron schedule, allowlist) instead."
-            ),
-            "exit_code": 127,
-            "timed_out": False,
-            "disabled": True,
         })
 
     def _handle_cron_toggle(self, payload):

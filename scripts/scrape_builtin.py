@@ -72,7 +72,7 @@ USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
 # anyway, so this only needs enough terms to surface the bulk of postings,
 # not exhaustive phrase coverage.
 #
-# Tuned empirically 2026-08-05 (scripts/bench_builtin_terms.py, 4 pages/term,
+# Tuned empirically 2026-08-05 (4 pages/term,
 # country=USA, 7-day window, terms evaluated in listed order so each term's
 # yield is measured *after* the ones above it). Kept = contributes relevant
 # URLs no earlier term already found. Numbers below are relevant URLs that
