@@ -813,77 +813,225 @@ def synthesize_grounded_answer(
     return body[:2000]
 
 
-def call_flash_text_llm(prompt: str, *, max_tokens: int = 600) -> str | None:
-    """Optional DeepSeek/OpenAI-compatible text completion for leftover answers.
+# Phase 2 structured-LLM knobs. All optional; every path degrades to the plain
+# text call and then to deterministic synthesize, so a down endpoint or an
+# endpoint that rejects JSON mode never leaves a field empty.
+_STRUCTURED_LLM = os.environ.get("FASTFILL_STRUCTURED_LLM", "1") != "0"
+try:
+    _LLM_RETRIES = max(0, int(os.environ.get("FASTFILL_LLM_RETRIES", "2") or 2))
+except (TypeError, ValueError):
+    _LLM_RETRIES = 2
+try:
+    _LLM_MIN_CONFIDENCE = float(os.environ.get("FASTFILL_LLM_MIN_CONFIDENCE", "0") or 0)
+except (TypeError, ValueError):
+    _LLM_MIN_CONFIDENCE = 0.0
 
-    Loads key from env / skyvern_runtime/.secrets.env. Never reads profile.json.
+_LLM_SYSTEM_PROMPT = (
+    "You fill leftover job-application fields for a FICTIONAL dummy applicant. "
+    "Use only the provided dummy resume, DUMMY_PROFILE facts, SHARED catalog, and "
+    "job description. For EEO/demographics use SHARED catalog answers only (never "
+    "invent beyond catalog; Decline if unsure). Never suggest Submit."
+)
+
+
+def _resolve_llm_config() -> tuple[str, str, str]:
+    """Resolve (api_key, base, model) for the OpenAI-compatible endpoint.
+
+    Delegates to the unified ``llm_config`` helper (the single place base/key/
+    model are resolved; the base URL is the seam a gateway like OmniRoute points
+    at). Never reads profile.json. api_key may be "". Falls back to an inline
+    env+secrets read if the helper import ever fails, so leftovers never break.
     """
-    api_key = (
-        os.environ.get("OPENAI_COMPATIBLE_API_KEY")
-        or os.environ.get("DEEPSEEK_API_KEY")
-        or ""
-    ).strip()
-    base = (
-        os.environ.get("OPENAI_COMPATIBLE_API_BASE")
-        or "https://api.deepseek.com/v1"
-    ).rstrip("/")
-    model = os.environ.get("OPENAI_COMPATIBLE_MODEL_NAME") or "deepseek-v4-flash"
-    if not api_key:
-        # Try secrets file (gitignored) without importing real profile
-        secrets = ROOT / "skyvern_runtime" / ".secrets.env"
-        if secrets.exists():
-            for line in secrets.read_text().splitlines():
-                line = line.strip()
-                if line.startswith("export "):
-                    line = line[len("export ") :]
-                if line.startswith("OPENAI_COMPATIBLE_API_KEY=") or line.startswith(
-                    "DEEPSEEK_API_KEY="
-                ):
-                    raw = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if raw:
-                        api_key = raw
-                        break
+    try:
+        from llm_config import resolve_llm_config
+
+        return resolve_llm_config(root=ROOT)
+    except Exception:
+        api_key = (
+            os.environ.get("OPENAI_COMPATIBLE_API_KEY")
+            or os.environ.get("DEEPSEEK_API_KEY")
+            or ""
+        ).strip()
+        base = (
+            os.environ.get("OPENAI_COMPATIBLE_API_BASE")
+            or "https://api.deepseek.com/v1"
+        ).rstrip("/")
+        model = os.environ.get("OPENAI_COMPATIBLE_MODEL_NAME") or "deepseek-v4-flash"
+        if not api_key:
+            secrets = ROOT / "skyvern_runtime" / ".secrets.env"
+            if secrets.exists():
+                for line in secrets.read_text().splitlines():
+                    line = line.strip()
+                    if line.startswith("export "):
+                        line = line[len("export ") :]
+                    if line.startswith("OPENAI_COMPATIBLE_API_KEY=") or line.startswith(
+                        "DEEPSEEK_API_KEY="
+                    ):
+                        raw = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if raw:
+                            api_key = raw
+                            break
+        return api_key, base, model
+
+
+def _post_chat_completion(payload: dict, *, timeout: int = 45) -> dict | None:
+    """POST an OpenAI-compatible chat/completions request; None on any failure."""
+    api_key, base, model = _resolve_llm_config()
     if not api_key:
         return None
+    # Dummy-only guard: never route real PII through a gateway / free pools.
+    try:
+        from llm_config import assert_dummy_for_gateway
+
+        assert_dummy_for_gateway(base)
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
+    payload = {"model": model, **payload}
     try:
         import urllib.request
 
-        body = json.dumps(
-            {
-                "model": model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You fill leftover job-application fields for a FICTIONAL "
-                            "dummy applicant. Use only the provided dummy resume, "
-                            "DUMMY_PROFILE facts, SHARED catalog, and job description. "
-                            "For EEO/demographics use SHARED catalog answers only "
-                            "(never invent beyond catalog; Decline if unsure). "
-                            "Never suggest Submit. Return plain answer text only."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": max_tokens,
-                "temperature": 0.3,
-            }
-        ).encode()
         req = urllib.request.Request(
             f"{base}/chat/completions",
-            data=body,
+            data=json.dumps(payload).encode(),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=45) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
-        text = (data["choices"][0]["message"]["content"] or "").strip()
-        return text[:2000] if text else None
+        try:
+            from tracing import trace_llm
+
+            msgs = payload.get("messages") or []
+            user_msg = next(
+                (m.get("content") for m in reversed(msgs) if m.get("role") == "user"),
+                None,
+            )
+            content = None
+            try:
+                content = data["choices"][0]["message"]["content"]
+            except Exception:
+                content = None
+            trace_llm("leftover_llm", prompt=user_msg, response=content, model=model)
+        except Exception:
+            pass
+        return data
     except Exception:
         return None
+
+
+def call_flash_text_llm(prompt: str, *, max_tokens: int = 600) -> str | None:
+    """Optional DeepSeek/OpenAI-compatible plain-text completion for leftovers.
+
+    Loads key from env / skyvern_runtime/.secrets.env. Never reads profile.json.
+    """
+    data = _post_chat_completion(
+        {
+            "messages": [
+                {"role": "system", "content": _LLM_SYSTEM_PROMPT + " Return plain answer text only."},
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+        }
+    )
+    if not isinstance(data, dict):
+        return None
+    try:
+        text = (data["choices"][0]["message"]["content"] or "").strip()
+    except Exception:
+        return None
+    return text[:2000] if text else None
+
+
+def call_flash_json_llm(
+    prompt: str, *, max_tokens: int = 600, retries: int | None = None
+) -> dict | None:
+    """Typed leftover answer via JSON mode: {"value": str, "confidence": 0..1}.
+
+    Bounded retry until a well-formed object parses. Returns None on exhaustion
+    (callers then fall back to the plain text call, then to synthesize) so this
+    is always additive and never blocks a fill. Works through any OpenAI-compatible
+    endpoint (DeepSeek / OmniRoute); if the endpoint rejects response_format the
+    request simply fails and we return None.
+    """
+    tries = _LLM_RETRIES if retries is None else max(0, int(retries))
+    sys_prompt = (
+        _LLM_SYSTEM_PROMPT
+        + ' Respond ONLY with compact JSON: {"value": <answer string>, '
+        '"confidence": <number 0..1>}. No prose, no markdown.'
+    )
+    for _ in range(tries + 1):
+        data = _post_chat_completion(
+            {
+                "messages": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": max_tokens,
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+            }
+        )
+        if not isinstance(data, dict):
+            continue
+        try:
+            raw = (data["choices"][0]["message"]["content"] or "").strip()
+        except Exception:
+            continue
+        parsed = _parse_json_answer(raw)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_json_answer(raw: str) -> dict | None:
+    """Extract {"value","confidence"} from a model JSON string (tolerant)."""
+    if not raw:
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        # strip ```json ... ``` fences
+        text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text).strip()
+    try:
+        obj = json.loads(text)
+    except Exception:
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            return None
+        try:
+            obj = json.loads(m.group(0))
+        except Exception:
+            return None
+    if not isinstance(obj, dict) or "value" not in obj:
+        return None
+    value = str(obj.get("value") or "").strip()
+    conf = obj.get("confidence")
+    try:
+        conf = float(conf)
+    except (TypeError, ValueError):
+        conf = None
+    return {"value": value, "confidence": conf}
+
+
+def _llm_answer(prompt: str, *, max_tokens: int = 600) -> str | None:
+    """Preferred leftover LLM answer: typed+retry+confidence gate, then plain text.
+
+    Confidence below FASTFILL_LLM_MIN_CONFIDENCE (default 0 = accept any) routes to
+    the plain call and ultimately deterministic synthesize — never to an empty fill.
+    """
+    if _STRUCTURED_LLM:
+        typed = call_flash_json_llm(prompt, max_tokens=max_tokens)
+        if typed is not None:
+            val = str(typed.get("value") or "").strip()
+            conf = typed.get("confidence")
+            if val and (conf is None or conf >= _LLM_MIN_CONFIDENCE):
+                return val[:2000]
+    return call_flash_text_llm(prompt, max_tokens=max_tokens)
 
 
 def validate_eeo_against_catalog(
@@ -1034,7 +1182,7 @@ def answer_leftover_field(
                 f"Reply with the catalog option label only. "
                 f"If unsure, answer: {decline!r}."
             )
-            llm = call_flash_text_llm(prompt, max_tokens=80)
+            llm = _llm_answer(prompt, max_tokens=80)
             if llm:
                 cleaned = llm.strip().strip('"').strip("'")
                 if cleaned:
@@ -1150,7 +1298,7 @@ def answer_leftover_field(
             f"If education/contact → use the unique identity facts above. "
             f"Never submit the form."
         )
-        llm = call_flash_text_llm(prompt)
+        llm = _llm_answer(prompt)
         if llm:
             cleaned = llm.strip().strip('"').strip("'")
             if cleaned:

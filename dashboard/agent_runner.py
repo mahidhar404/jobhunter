@@ -163,6 +163,23 @@ def load_deepseek_config() -> tuple[str | None, str, str]:
     Never reads ``profile.json`` (PII). Returns ``(None, ...)`` when no key is
     configured, which the caller treats as graceful degradation → stuck.
     """
+    # Prefer the unified resolver (scripts/fastfill/llm_config.py) so base/key/
+    # model live in ONE place shared with the fastfill LLM path. Fall back to the
+    # inline search below if that import is unavailable (keeps agent_runner
+    # standalone).
+    try:
+        import sys as _sys
+
+        _ff = str(ROOT / "scripts" / "fastfill")
+        if _ff not in _sys.path:
+            _sys.path.insert(0, _ff)
+        from llm_config import resolve_llm_config as _resolve
+
+        _k, _base, _model = _resolve(root=ROOT)
+        return (_k or None), _base, _model
+    except Exception:
+        pass
+
     names = ("OPENAI_COMPATIBLE_API_KEY", "DEEPSEEK_API_KEY")
     api_key = (
         os.environ.get("OPENAI_COMPATIBLE_API_KEY")
