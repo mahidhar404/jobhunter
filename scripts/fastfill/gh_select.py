@@ -1254,6 +1254,10 @@ async def fill_gh_select(
                 "[role='listbox'] [role='option']",
                 "[role='option']",
             ],
+            # Scope options to THIS select's container: GH mounts every select
+            # menu at once, so a page-wide click on "Decline To Self Identify"
+            # (shared by Hispanic + Race) clobbered the sibling select.
+            root=container,
         )
         texts_note = list(click.get("options") or [])
         typed_frag = str(click.get("typed_frag") or "")
@@ -1277,6 +1281,7 @@ async def fill_gh_select(
                     timeout_ms=timeout_ms,
                     use_type=False,
                     option_selectors=[".select__option", "[role='option']"],
+                    root=container,
                 )
                 texts_note = list(click.get("options") or texts_note)
                 best_s = int(click.get("score") or best_s)

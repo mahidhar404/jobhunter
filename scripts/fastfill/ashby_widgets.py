@@ -1667,6 +1667,71 @@ async def click_ashby_choice_option(
         r"preferred|location|why (are you|do you)|interested|which of the following",
         low_lab,
     ):
+        # Radio single-select (e.g. "Which location are you applying for? Select
+        # one …"). These reach here with a free-text LLM token that rarely matches
+        # an option verbatim; when no token match exists, pick the first concrete
+        # option so a required single-select is answered rather than left blank
+        # (dummy-only, never-submit — the human reviewer corrects the choice).
+        radios = entry.locator("input[type=radio]:not(:disabled)")
+        try:
+            rn = await radios.count()
+        except Exception:
+            rn = 0
+        if rn > 0:
+            async def _radio_label(rloc) -> str:
+                try:
+                    rid = await rloc.get_attribute("id")
+                    if rid:
+                        lab_el = entry.locator(f'label[for="{rid}"]').first
+                        if await lab_el.count():
+                            return (await lab_el.inner_text() or "").strip()
+                except Exception:
+                    pass
+                try:
+                    return (
+                        await rloc.evaluate(
+                            "(el) => { const p = el.closest('label') "
+                            "|| el.parentElement; return (p && p.innerText) || ''; }"
+                        )
+                        or ""
+                    ).strip()
+                except Exception:
+                    return ""
+
+            chosen = None
+            picked_label = ""
+            if token:
+                for i in range(min(rn, 24)):
+                    r = radios.nth(i)
+                    lt = await _radio_label(r)
+                    if lt and token.lower() in lt.lower():
+                        chosen, picked_label = r, lt[:80]
+                        break
+            if chosen is None:
+                chosen = radios.first
+                picked_label = (await _radio_label(chosen))[:80] or "first_option"
+            try:
+                if not await chosen.is_checked():
+                    await chosen.check(timeout=2000)
+                verified = bool(await chosen.is_checked())
+                note_step(
+                    report,
+                    action="click_choice",
+                    label=lab[:80],
+                    after=picked_label[:40],
+                    via="ashby_choice_flash",
+                    reason="radio_single_select",
+                )
+                return {
+                    "ok": verified,
+                    "verified": verified,
+                    "picked": picked_label,
+                    "mode": "radio",
+                    "reason": None if verified else "radio_not_committed",
+                }
+            except Exception as e:
+                return {"ok": False, "reason": "radio_failed", "error": str(e)[:100]}
+
         boxes = entry.locator("input[type=checkbox]:not(:disabled)")
         try:
             n = await boxes.count()

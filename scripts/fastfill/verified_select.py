@@ -19,6 +19,7 @@ Never Enter-to-submit. Dummy-only. Never submit.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any, Callable, Iterable
 
@@ -400,7 +401,9 @@ def _default_score_option(opt: str, alias: str) -> int:
         s = int(_score_option(opt, alias) or 0)
         if s > 0 and states_are_confusable(alias, opt):
             return 0
-        return s
+        if s > 0:
+            return s
+        return _semantic_option_bonus(opt, alias)
     except Exception:
         o = (opt or "").lower().strip()
         a = (alias or "").lower().strip()
@@ -411,7 +414,33 @@ def _default_score_option(opt: str, alias: str) -> int:
         # ATS3-016: token-boundary only — never Male⊂Female via raw ``a in o``.
         if soft_value_match(alias, opt):
             return 80
+        return _semantic_option_bonus(opt, alias)
+
+
+# Option-scoring semantic fallback: OFF by default. Only fires when the lexical/
+# exact/soft scorers found nothing (score 0), never overriding polarity or
+# state-confusable guards (those already returned 0 above). Capped BELOW soft(80)
+# and exact(100) so a fuzzy paraphrase can never outrank a real lexical match.
+_SEMANTIC_OPTION_THRESHOLD = float(
+    os.environ.get("FASTFILL_SEMANTIC_OPTIONS_THRESHOLD", "0.8") or 0.8
+)
+
+
+def _semantic_option_bonus(opt: str, alias: str) -> int:
+    # Default ON. FASTFILL_SEMANTIC_MATCH=0 master kill switch; or
+    # FASTFILL_SEMANTIC_OPTIONS=0 disables just option scoring. Only fires when
+    # the exact/soft scorers found nothing, and is capped BELOW soft(80).
+    if os.environ.get("FASTFILL_SEMANTIC_MATCH", "1") == "0":
         return 0
+    if os.environ.get("FASTFILL_SEMANTIC_OPTIONS", "1") == "0":
+        return 0
+    try:
+        from semantic_match import semantic_sim
+
+        s = semantic_sim(alias, opt)
+    except Exception:
+        return 0
+    return 70 if s >= _SEMANTIC_OPTION_THRESHOLD else 0
 
 
 def select_readback_ok(
@@ -1129,8 +1158,17 @@ async def wait_for_option_texts(
     filter_input: Any | None = None,
     nudge: bool = False,
     allow_enter_nudge: bool = False,
+    root: Any | None = None,
 ) -> tuple[Any, list[str]]:
-    """Poll until listbox options appear. Returns (locator, texts)."""
+    """Poll until listbox options appear. Returns (locator, texts).
+
+    When ``root`` is a locator (e.g. a react-select ``.select__container``),
+    options are located *within* it so overlapping option text across sibling
+    selects can't cross-click (GH mounts every select menu at once — the
+    Hispanic "Decline To Self Identify" would otherwise win a RACE Decline
+    click). Falls back to a page-wide scan if the scoped root finds nothing
+    (menus portalled to <body> on some tenants).
+    """
     sels = selectors or [
         ".select__option",
         "[id*='react-select'][id*='option']",
@@ -1139,12 +1177,13 @@ async def wait_for_option_texts(
         '[data-automation-id="promptOption"]',
         '[data-automation-id*="promptOption" i]',
     ]
+    scope = root if root is not None else page
     loops = max(1, timeout_ms // max(poll_ms, 50))
-    last_loc = page.locator(sels[0])
+    last_loc = scope.locator(sels[0])
     nudged = False
     for loop_i in range(loops):
         for sel in sels:
-            loc = page.locator(sel)
+            loc = scope.locator(sel)
             try:
                 n = await loc.count()
             except Exception:
@@ -1179,6 +1218,21 @@ async def wait_for_option_texts(
             await page.wait_for_timeout(poll_ms)
         except Exception:
             break
+    if root is not None:
+        # Scoped root found nothing — menu may be portalled outside the
+        # container on this tenant. Retry page-wide so scoping never regresses
+        # option discovery (only the cross-select clobber is prevented).
+        return await wait_for_option_texts(
+            page,
+            selectors=selectors,
+            timeout_ms=timeout_ms,
+            poll_ms=poll_ms,
+            max_options=max_options,
+            filter_input=filter_input,
+            nudge=nudge,
+            allow_enter_nudge=allow_enter_nudge,
+            root=None,
+        )
     return last_loc, []
 
 
@@ -1362,6 +1416,7 @@ async def typable_dropdown_narrow_and_click(
     report: dict | None = None,
     label: str = "",
     field_type: str = "",
+    root: Any | None = None,
 ) -> dict[str, Any]:
     """Word-by-word type → wait → narrow → click closest option.
 
@@ -1448,7 +1503,7 @@ async def typable_dropdown_narrow_and_click(
         except Exception as e:
             detail["fiber_error"] = str(e)[:80]
 
-    opts = page.locator(
+    opts = (root or page).locator(
         (option_selectors or [".select__option", "[role='option']"])[0]
     )
     texts: list[str] = []
@@ -1462,6 +1517,7 @@ async def typable_dropdown_narrow_and_click(
             filter_input=filter_input,
             nudge=needs_async_nudge,
             allow_enter_nudge=allow_enter and needs_async_nudge,
+            root=root,
         )
         # ATS-001/015: drop confusable states; keep original indices for click.
         # Never fall back to unfiltered list (``] or t``) — that remaps Illinois→Idaho.

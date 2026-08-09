@@ -854,6 +854,136 @@ def test_vision_heuristic_never_complete_with_png(tmp_path):
         png_path.unlink(missing_ok=True)
 
 
+def test_finalize_reconciles_verified_fill_leftover_by_selector():
+    """A verified essay/URL fill with an empty label but a concrete selector must
+    clear its lingering extract-time leftover (Ashby "favorite AI paper" essay
+    filled via replay had label="" → false FAIL before selector reconciliation)."""
+    from fast_fill import _finalize
+
+    report = {
+        "url": "https://jobs.ashbyhq.com/x/y",
+        "platform": "ashby",
+        "verdict": "SUCCESS",
+        "filled": [
+            {
+                "type": "COVER_LETTER",
+                "label": "",
+                "selector": 'textarea[name="essay-uuid"]:visible',
+                "value": "A grounded two-sentence answer.",
+                "readback": "A grounded two-sentence answer.",
+                "ok": True,
+                "verified": True,
+            }
+        ],
+        "leftovers": [
+            {
+                "type": None,
+                "label": "In two sentences, describe your favorite AI paper",
+                "selector": 'textarea[name="essay-uuid"]:visible',
+                "reason": "unclassified",
+                "essay": True,
+                "flash_candidate": True,
+            }
+        ],
+    }
+    out = _finalize(dict(report))
+    labels = [l.get("label") for l in (out.get("leftovers") or [])]
+    assert "In two sentences, describe your favorite AI paper" not in labels
+    assert out["never_submit"] is True and out["submit_clicked"] is False
+
+
+def test_finalize_keeps_unverified_leftover():
+    """Reconciliation only clears VERIFIED fills — an unverified same-selector
+    attempt must NOT silently clear a genuine leftover."""
+    from fast_fill import _finalize
+
+    report = {
+        "url": "https://jobs.ashbyhq.com/x/y",
+        "platform": "ashby",
+        "verdict": "FAIL",
+        "filled": [],
+        "leftovers": [
+            {
+                "type": None,
+                "label": "Describe a project",
+                "selector": 'textarea[name="q1"]:visible',
+                "reason": "unclassified",
+                "essay": True,
+            }
+        ],
+    }
+    out = _finalize(dict(report))
+    labels = [l.get("label") for l in (out.get("leftovers") or [])]
+    assert "Describe a project" in labels
+
+
+def test_optional_demographic_empty_does_not_block_complete():
+    """Voluntary EEO self-ID (race) left blank stays visible but is non-blocking.
+
+    GH cascading-ethnicity tenants leave the "race" sub-select empty on purpose to
+    preserve the required Hispanic/Latino=No answer; that must not FAIL the gate.
+    """
+    from vision_judge import finalize_verdict
+
+    result = {
+        "source": "dom",
+        "confidence": "high",
+        "empty_fields": [
+            {
+                "label": "Please identify your race",
+                "kind": "blank",
+                "required": False,
+                "optional_demographic": True,
+            }
+        ],
+    }
+    out = finalize_verdict(dict(result))
+    assert out["complete"] is True
+    assert out["verdict"] == "COMPLETE"
+    # still surfaced for the reviewer
+    assert any(
+        e.get("label") == "Please identify your race" for e in out["empty_fields"]
+    )
+
+
+def test_optional_location_derived_empty_does_not_block_complete():
+    """Workable Places-autocomplete derived city/postcode/country (non-required).
+
+    They only populate on a place-suggestion selection (impossible with a dummy
+    address), so blank derived components must not FAIL a submittable form.
+    """
+    from vision_judge import finalize_verdict
+
+    result = {
+        "source": "dom",
+        "confidence": "high",
+        "empty_fields": [
+            {"label": "city", "kind": "blank", "required": False, "optional_location": True},
+            {"label": "postcode", "kind": "blank", "required": False, "optional_location": True},
+            {"label": "country", "kind": "blank", "required": False, "optional_location": True},
+        ],
+    }
+    out = finalize_verdict(dict(result))
+    assert out["complete"] is True
+    assert out["verdict"] == "COMPLETE"
+
+
+def test_required_empty_still_blocks_complete():
+    """The carve-outs are scoped: a genuinely required empty still FAILs."""
+    from vision_judge import finalize_verdict
+
+    result = {
+        "source": "dom",
+        "confidence": "high",
+        "empty_fields": [
+            {"label": "First name", "kind": "blank", "required": True},
+        ],
+    }
+    out = finalize_verdict(dict(result))
+    assert out["complete"] is False
+    assert out["verdict"] == "FAIL_BLANK"
+
+
 def test_is_select_field_vs_essay():
     from verified_select import is_select_field
 
