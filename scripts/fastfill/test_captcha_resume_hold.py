@@ -38,14 +38,172 @@ def test_captcha_wait_defaults():
     assert resolve_captcha_wait(headed=False, captcha_wait=None) is False
     assert resolve_captcha_wait(headed=True, captcha_wait=False) is False
     assert resolve_captcha_wait(headed=False, captcha_wait=True) is True
-    assert "press Enter here to continue" in CAPTCHA_WAIT_MESSAGE
     assert CAPTCHA_WAIT_MESSAGE.startswith("CAPTCHA detected")
-    # FILL3-015 / FILL2-S02: message clarifies Pause/Continue ≠ CAPTCHA continue
-    assert "Pause/Continue" in CAPTCHA_WAIT_MESSAGE or "Continue fill" in CAPTCHA_WAIT_MESSAGE
+    assert "click Continue" in CAPTCHA_WAIT_MESSAGE
+    assert "press Enter here to continue" in CAPTCHA_WAIT_MESSAGE
     assert ".captcha_continue" in CAPTCHA_WAIT_MESSAGE or "captcha_continue" in CAPTCHA_WAIT_MESSAGE
-    assert CAPTCHA_WAIT_MESSAGE.startswith(
-        "CAPTCHA detected — solve it in the browser, then press Enter here to continue"
-    )
+    # Overlay Continue is the primary resume control (still Enter / sentinel OK)
+    assert "hidden during CAPTCHA" not in CAPTCHA_WAIT_MESSAGE
+    assert "not the Pause/Continue" not in CAPTCHA_WAIT_MESSAGE
+
+
+def test_overlay_continue_resumes_when_challenge_gone():
+    """CAPTCHA wait: overlay Continue (paused→False) resumes after challenge gone."""
+
+    class _FakePage:
+        url = "https://example.com/captcha"
+        frames = []
+        main_frame = None
+
+    os.environ["FASTFILL_CAPTCHA_NO_FOCUS"] = "1"
+    try:
+
+        async def _run():
+            state = {"paused": True, "captcha_gated": True, "visible": True}
+
+            async def _read(page, assume_paused_on_error=None):
+                return {
+                    "paused": state["paused"],
+                    "captcha_gated": state["captcha_gated"],
+                    "installed": True,
+                }
+
+            async def _gate(page, active):
+                state["captcha_gated"] = bool(active)
+                if active:
+                    state["paused"] = True
+                return {"captcha_gated": bool(active), "paused": state["paused"]}
+
+            async def _set_paused(page, paused, hold_mode=False):
+                state["paused"] = bool(paused)
+                return {"paused": state["paused"]}
+
+            async def _click_soon():
+                await asyncio.sleep(0.35)
+                state["visible"] = False
+                state["paused"] = False  # human clicked Continue
+
+            async def _shows(_page=None):
+                return state["visible"]
+
+            with patch(
+                "captcha_pause._stdin_is_interactive", return_value=False
+            ), patch(
+                "captcha_pause.page_shows_interactive_captcha",
+                new_callable=AsyncMock,
+                side_effect=_shows,
+            ), patch(
+                "fill_pause.set_fill_pause_captcha_gate",
+                new_callable=AsyncMock,
+                side_effect=_gate,
+            ), patch(
+                "fill_pause.read_fill_pause_state",
+                new_callable=AsyncMock,
+                side_effect=_read,
+            ), patch(
+                "fill_pause.set_fill_paused",
+                new_callable=AsyncMock,
+                side_effect=_set_paused,
+            ), patch(
+                "fill_pause.consume_fill_continue_sentinel",
+                return_value=False,
+            ):
+                task = asyncio.create_task(_click_soon())
+                result = await wait_for_human_captcha(
+                    _FakePage(),
+                    headed=True,
+                    captcha_wait=True,
+                    timeout_s=15,
+                )
+                await task
+            return result
+
+        result = asyncio.run(_run())
+        assert result["waited"] is True
+        assert result["continued"] is True
+        assert result["via"] == "overlay_continue"
+        assert result.get("solved_gone") is True
+    finally:
+        clear_captcha_waiting_marker()
+        os.environ.pop("FASTFILL_CAPTCHA_NO_FOCUS", None)
+
+
+def test_overlay_continue_keeps_waiting_while_challenge_visible():
+    """FILL-008: overlay Continue while CAPTCHA visible must not clear as solved."""
+
+    class _FakePage:
+        url = "https://example.com/captcha"
+        frames = []
+        main_frame = None
+
+    os.environ["FASTFILL_CAPTCHA_NO_FOCUS"] = "1"
+    try:
+
+        async def _run():
+            state = {"paused": True, "captcha_gated": True}
+
+            async def _read(page, assume_paused_on_error=None):
+                return {
+                    "paused": state["paused"],
+                    "captcha_gated": state["captcha_gated"],
+                    "installed": True,
+                }
+
+            async def _gate(page, active):
+                state["captcha_gated"] = bool(active)
+                if active:
+                    state["paused"] = True
+                return {"captcha_gated": bool(active)}
+
+            async def _set_paused(page, paused, hold_mode=False):
+                state["paused"] = bool(paused)
+                return {"paused": state["paused"]}
+
+            async def _click_early():
+                await asyncio.sleep(0.2)
+                state["paused"] = False  # premature Continue
+
+            with patch(
+                "captcha_pause._stdin_is_interactive", return_value=False
+            ), patch(
+                "captcha_pause.page_shows_interactive_captcha",
+                new_callable=AsyncMock,
+                return_value=True,
+            ), patch(
+                "fill_pause.set_fill_pause_captcha_gate",
+                new_callable=AsyncMock,
+                side_effect=_gate,
+            ), patch(
+                "fill_pause.read_fill_pause_state",
+                new_callable=AsyncMock,
+                side_effect=_read,
+            ), patch(
+                "fill_pause.set_fill_paused",
+                new_callable=AsyncMock,
+                side_effect=_set_paused,
+            ), patch(
+                "fill_pause.consume_fill_continue_sentinel",
+                return_value=False,
+            ):
+                task = asyncio.create_task(_click_early())
+                result = await wait_for_human_captcha(
+                    _FakePage(),
+                    headed=True,
+                    captcha_wait=True,
+                    timeout_s=2.5,
+                )
+                await task
+            return result, state
+
+        result, state = asyncio.run(_run())
+        assert result["waited"] is True
+        assert result["continued"] is False
+        assert result.get("timed_out") is True
+        # Re-armed Continue after premature click
+        assert state["paused"] is True or state["captcha_gated"] is False
+    finally:
+        clear_captcha_waiting_marker()
+        os.environ.pop("FASTFILL_CAPTCHA_NO_FOCUS", None)
 
 
 def test_escape_safe_while_captcha():
@@ -565,6 +723,70 @@ def test_hold_open_is_indefinite():
     assert _resolve_hold_seconds(hold_seconds=None, headed=False) == 0
 
 
+def test_hold_for_review_continue_via_overlay():
+    """Hold arms Continue; overlay unpause returns continued=True (resume fill)."""
+    from fast_fill import HOLD_INDEFINITE, _hold_for_review
+
+    class _Browser:
+        def is_connected(self):
+            return True
+
+    async def _run():
+        paused = {"v": True}
+        report = {
+            "verdict": "FAIL",
+            "hold_incomplete": True,
+            "fill_pause_enabled": True,
+            "leftovers": [],
+            "required_empty_after_fill": ["x"],
+            "footer_primary_kind": "ADVANCE",
+            "footer_primary_label": "Next",
+        }
+
+        async def _read(page, assume_paused_on_error=None):
+            return {
+                "paused": paused["v"],
+                "captcha_gated": False,
+                "installed": True,
+            }
+
+        async def _enter(page, report=None, incomplete=False):
+            paused["v"] = True
+            return {"paused": True, "holdMode": True}
+
+        async def _continue_soon():
+            await asyncio.sleep(0.4)
+            paused["v"] = False
+
+        task = asyncio.create_task(_continue_soon())
+        with patch(
+            "fast_fill.enter_hold_continue_mode",
+            new_callable=AsyncMock,
+            side_effect=_enter,
+        ), patch(
+            "fast_fill.read_fill_pause_state",
+            new_callable=AsyncMock,
+            side_effect=_read,
+        ), patch(
+            "fast_fill.consume_fill_continue_sentinel", return_value=False
+        ), patch(
+            "fast_fill.set_fill_paused", new_callable=AsyncMock
+        ):
+            out = await _hold_for_review(
+                seconds=HOLD_INDEFINITE,
+                report=report,
+                browser=_Browser(),
+                page=object(),
+            )
+        await task
+        return out, report
+
+    out, report = asyncio.run(_run())
+    assert out.get("continued") is True
+    assert out.get("via") == "overlay_continue"
+    assert report.get("hold_continued") is True
+
+
 def test_hold_for_review_indefinite_exits_on_disconnect():
     from fast_fill import HOLD_INDEFINITE, _hold_for_review
 
@@ -666,6 +888,8 @@ if __name__ == "__main__":
     test_captcha_marker_ttl_clears_stale()
     test_sentinel_continue_no_tty()
     test_sentinel_keeps_waiting_while_challenge_visible()
+    test_overlay_continue_resumes_when_challenge_gone()
+    test_overlay_continue_keeps_waiting_while_challenge_visible()
     test_handle_blocker_clears_on_continue()
     test_resume_gate_fails_success_when_missing()
     test_resume_gate_ok_when_verified_row()
@@ -674,6 +898,7 @@ if __name__ == "__main__":
     test_cycle_success_ok_without_resume_field()
     test_cycle_success_rejects_heuristic_and_missing_source()
     test_hold_open_is_indefinite()
+    test_hold_for_review_continue_via_overlay()
     test_hold_for_review_indefinite_exits_on_disconnect()
     with tempfile.TemporaryDirectory() as td:
         test_resume_pdf_allows_job_scoped_in_real_mode(Path(td))

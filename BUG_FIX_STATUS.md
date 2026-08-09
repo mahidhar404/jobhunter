@@ -9,7 +9,7 @@
 | ID | Sev | Fix |
 |----|-----|-----|
 | **FILL3-001** | High | `flash_attempt_failed`: `skyvern_deferred` + `invoked=false` is not Flash failure; hard `error`/`captcha_blocked` still fails |
-| **FILL3-002** / **FILL2-S03** | High | Pause overlay CAPTCHA gate: `pointer-events:none`, hidden, low z-index; remount observer re-applies gate |
+| **FILL3-002** / **FILL2-S03** | High | CAPTCHA wait: overlay stays **visible** as **Continue** (resume); gate still makes pause-wait yield (2026-08-09: no longer hide/opacity-0) |
 | **FILL3-003** / **FILL2-S01** | High | `[role=alert]` → `alert_node`; filtered via `looks_like_gap_message` in `normalize_gaps` |
 | **FILL3-004** | Med | Documented Flash/hold/refill/Skyvern matrix in dashboard `_build_fast_fill_cmd` + `--flash-leftovers` help (defaults kept — hold+refill intentional) |
 | **FILL3-005** | Med | **Verified ATS-owned fix present** — `_ashby_zip_field_present` treats HTML zip question as present (ATS3-002); Location commit uses Tab not Escape (ATS3-012). Early `zip_field_absent_on_form` false N/A closed. Remaining live mount miss = **ATS2-017** (`zip_dependent_never_revealed`). |
@@ -20,7 +20,7 @@
 | **FILL3-011** | Med | Autofill-with-Resume: `autofill_filename_verify_ok` — no advance on filename_visible when input exists + FileList empty |
 | **FILL3-012** | Med | Use My Last (real only): set `prefill_keep_policy=use_my_last_soft_match_keep`; document intentional soft-match keep |
 | **FILL3-013** | Med | Naming: `inpage_ran` / `flash_engine=inpage`; `invoked` = LLM only; essay-only + `inpage_ran` exempt from fail |
-| **FILL3-015** / **FILL2-S02** | Med | CAPTCHA message clarifies Continue fill ≠ CAPTCHA continue; overlay gated; `.fill_continue` accepted during CAPTCHA wait |
+| **FILL3-015** / **FILL2-S02** | Med | CAPTCHA resume = overlay **Continue** or Enter / `.captcha_continue` / `.fill_continue`; FILL-008 challenge-must-be-gone. Hold also uses Continue → resume fill (2026-08-09) |
 | **FILL3-016** | Med | **ATS3-003 surface FIXED** — `compute_stuck_on_same_page` requires `advance_clicked`; FAIL-before-ADVANCE does not sticky-stuck. SPA stuck-clear on DOM move present. See ATS2-011 below (further mitigated this verify pass). |
 | **FILL3-017** | Low | Throttle overlay re-inject (2s default; `force=` bypass) |
 | **FILL3-018** / **DASH2-011** / **UI-019** | Med | Already fixed: `_parse_test_mode` requires explicit flag (400 if missing); dashboard always sends it |

@@ -17,11 +17,14 @@ from fill_pause import (  # noqa: E402
     ACTIVITY_GLOBAL,
     CAPTCHA_GATE_GLOBAL,
     OVERLAY_ID,
+    SYM_PAUSE,
+    SYM_PLAY,
     consume_fill_continue_sentinel,
     drain_pause_before_close,
     fill_pause_continue_sentinel_path,
     fill_pause_force_sentinel_path,
     force_pause_sentinel_present,
+    format_fill_activity_compact,
     format_fill_activity_text,
     inject_fill_pause_overlay,
     may_auto_close_fill_browser,
@@ -124,6 +127,7 @@ class _FakePage:
     def __init__(self, *, fail_read: bool = False):
         self._state = {
             "paused": False,
+            "holdMode": False,
             "pauseCount": 0,
             "continueCount": 0,
             "installed": False,
@@ -147,11 +151,33 @@ class _FakePage:
             return {
                 "ok": True,
                 "paused": self._state["paused"],
+                "holdMode": self._state["holdMode"],
                 "pauseCount": self._state["pauseCount"],
                 "continueCount": self._state["continueCount"],
                 "captcha_gated": self._state["captcha_gated"],
             }
-        # CAPTCHA gate setter only (not install / set_fill_paused)
+        # CAPTCHA gate setter — shows Continue (visible), marks gated
+        if "data-jh-captcha-gated" in s and (
+            "holdMode" in s or "CAPTCHA — solve" in s or "window[CGATE] = !!want" in s
+            or "window[CGATE]=!!want" in s.replace(" ", "")
+        ):
+            # Prefer dedicated gate script (sets captcha_gated + paused)
+            if "pauseCount" in s or "holdMode" in s:
+                want = bool(args[0]) if args else False
+                self._state["captcha_gated"] = want
+                if want:
+                    if not self._state["paused"]:
+                        self._state["paused"] = True
+                        self._state["pauseCount"] += 1
+                    self._state["holdMode"] = True
+                else:
+                    self._state["holdMode"] = False
+                return {
+                    "captcha_gated": want,
+                    "overlay_present": True,
+                    "paused": self._state["paused"],
+                    "holdMode": self._state["holdMode"],
+                }
         if "data-jh-captcha-gated" in s and "pauseCount" not in s:
             want = bool(args[0]) if args else False
             self._state["captcha_gated"] = want
@@ -166,21 +192,35 @@ class _FakePage:
             return {
                 "paused": self._state["paused"],
                 "installed": True,
+                "holdMode": self._state["holdMode"],
                 "pauseCount": self._state["pauseCount"],
                 "continueCount": self._state["continueCount"],
                 "captcha_gated": self._state["captcha_gated"],
             }
-        # set_fill_paused (takes bool arg, mutates pauseCount)
-        if args and isinstance(args[0], bool) and "c.paused" in s:
-            want = bool(args[0])
+        # set_fill_paused — dict payload {paused, hold_mode} or legacy bool
+        if args and (
+            (isinstance(args[0], bool) and "c.paused" in s)
+            or (isinstance(args[0], dict) and "paused" in args[0])
+        ):
+            if isinstance(args[0], dict):
+                want = bool(args[0].get("paused"))
+                hold_mode = bool(args[0].get("hold_mode"))
+            else:
+                want = bool(args[0])
+                hold_mode = False
             was = self._state["paused"]
             self._state["paused"] = want
+            if want:
+                self._state["holdMode"] = hold_mode or self._state["holdMode"]
+            else:
+                self._state["holdMode"] = False
             if want and not was:
                 self._state["pauseCount"] += 1
             if (not want) and was:
                 self._state["continueCount"] += 1
             return {
                 "paused": self._state["paused"],
+                "holdMode": self._state["holdMode"],
                 "pauseCount": self._state["pauseCount"],
                 "continueCount": self._state["continueCount"],
                 "captcha_gated": self._state["captcha_gated"],
@@ -190,6 +230,7 @@ class _FakePage:
         return {
             "ok": True,
             "paused": self._state["paused"],
+            "holdMode": self._state["holdMode"],
             "pauseCount": self._state["pauseCount"],
             "continueCount": self._state["continueCount"],
             "captcha_gated": self._state["captcha_gated"],
@@ -298,8 +339,8 @@ def test_overlay_id_stable():
     assert OVERLAY_ID == "jh-fill-pause-overlay"
 
 
-def test_pause_captcha_gate_hides_overlay_and_skips_wait():
-    """FILL3-002 / FILL2-S03: CAPTCHA gate → wait_while_paused exits; overlay gated."""
+def test_pause_captcha_gate_shows_continue_and_skips_wait():
+    """CAPTCHA gate → wait_while_paused yields; overlay shows Continue (visible)."""
 
     async def _run():
         page = _FakePage()
@@ -308,6 +349,8 @@ def test_pause_captcha_gate_hides_overlay_and_skips_wait():
         gate = await set_fill_pause_captcha_gate(page, True)
         assert gate.get("captcha_gated") is True
         assert page._state["captcha_gated"] is True
+        assert page._state["paused"] is True
+        assert page._state["holdMode"] is True
         out = await wait_while_paused(page, report, poll_s=0.05)
         assert out["via"] == "captcha_gated"
         assert out["waited"] is False
@@ -326,6 +369,64 @@ def test_pause_captcha_gate_hides_overlay_and_skips_wait():
         assert out2["waited"] is True
 
     asyncio.run(_run())
+
+
+def test_captcha_gate_css_keeps_overlay_visible():
+    """Overlay must stay clickable during CAPTCHA (▶ / Continue), not opacity:0."""
+    from fill_pause import _OVERLAY_CSS, _INSTALL_OVERLAY_JS, _SET_CAPTCHA_GATE_JS
+
+    assert "visibility: hidden" not in _OVERLAY_CSS
+    gated_block = _OVERLAY_CSS.split("jh-captcha-gated")[1].split("}")[0]
+    assert "pointer-events: none" not in gated_block
+    assert "opacity: 1" in gated_block
+    # Must not hide the control (avoid matching opacity:.95 substrings).
+    assert "opacity: 0" not in gated_block.replace("opacity: 1", "")
+    assert SYM_PLAY in _INSTALL_OVERLAY_JS
+    assert "'Continue'" in _INSTALL_OVERLAY_JS or '"Continue"' in _INSTALL_OVERLAY_JS
+    assert "CAPTCHA — solve" in _SET_CAPTCHA_GATE_JS
+    # Click handler must not ignore clicks while gated (play/Continue is the resume control)
+    assert "CAPTCHA wait loop still enforces FILL-008" in _INSTALL_OVERLAY_JS
+    assert "if (window[CGATE] || c.holdMode)" in _INSTALL_OVERLAY_JS
+
+
+def test_enter_hold_continue_mode():
+    async def _run():
+        from fill_pause import enter_hold_continue_mode
+
+        page = _FakePage()
+        report: dict = {"fill_pause_enabled": True}
+        out = await enter_hold_continue_mode(page, report, incomplete=True)
+        assert out.get("paused") is True
+        assert out.get("holdMode") is True
+        assert page._state["paused"] is True
+        assert page._state["holdMode"] is True
+        assert (report.get("fill_pause") or {}).get("hold_continue_mode") is True
+        assert (report.get("fill_pause") or {}).get("hold_incomplete_ui") is True
+
+    asyncio.run(_run())
+
+
+def test_hold_and_captcha_button_labels_in_overlay_js():
+    """Control shows ❚❚ / ▶; aria-label keeps Pause fill / Continue / Continue fill."""
+    from fill_pause import _INSTALL_OVERLAY_JS, _SET_CAPTCHA_GATE_JS
+
+    assert SYM_PAUSE in _INSTALL_OVERLAY_JS
+    assert SYM_PLAY in _INSTALL_OVERLAY_JS
+    assert "data-jh-symbol" in _INSTALL_OVERLAY_JS
+    assert "data-jh-mode" in _INSTALL_OVERLAY_JS
+    assert "jh-status" in _INSTALL_OVERLAY_JS
+    assert "compactStatus" in _INSTALL_OVERLAY_JS
+    # Accessibility: full words remain on aria-label / title (not as button textContent).
+    assert "aria-label" in _INSTALL_OVERLAY_JS
+    assert "'Pause fill'" in _INSTALL_OVERLAY_JS or '"Pause fill"' in _INSTALL_OVERLAY_JS
+    assert "'Continue'" in _INSTALL_OVERLAY_JS or '"Continue"' in _INSTALL_OVERLAY_JS
+    assert "'Continue fill'" in _INSTALL_OVERLAY_JS or '"Continue fill"' in _INSTALL_OVERLAY_JS
+    assert "holdMode" in _INSTALL_OVERLAY_JS
+    assert "CAPTCHA — solve" in _SET_CAPTCHA_GATE_JS
+    # Must not assign word labels via textContent (symbols + status spans instead).
+    assert "btn.textContent = 'Pause fill'" not in _INSTALL_OVERLAY_JS
+    assert "btn.textContent = 'Continue'" not in _INSTALL_OVERLAY_JS
+    assert "btn.textContent = 'Continue fill'" not in _INSTALL_OVERLAY_JS
 
 
 def test_inject_overlay_throttled():
@@ -421,11 +522,25 @@ def test_note_fill_activity_and_hover_globals():
     assert "Layer 2" in text
     assert "flash leftover" in text
     assert "Cover letter" in text
+    compact = format_fill_activity_compact(act)
+    assert compact.startswith("L2 ·")
+    assert "Cover letter" in compact
+    fill_act = note_fill_activity(layer="1", action="fill", label="Email")
+    assert format_fill_activity_compact(fill_act) == "L1 · filling Email"
+    hold_act = note_fill_activity(
+        layer="hold", action="holding incomplete — not ready", detail="incomplete"
+    )
+    assert format_fill_activity_compact(hold_act) == "hold · incomplete"
+    cap_act = note_fill_activity(layer="captcha", action="waiting human solve")
+    assert format_fill_activity_compact(cap_act) == "CAPTCHA"
     assert ACTIVITY_GLOBAL == "__jhFillActivity"
+    assert SYM_PAUSE == "❚❚"
+    assert SYM_PLAY == "▶"
     from fill_pause import _INSTALL_OVERLAY_JS
 
     assert ACTIVITY_GLOBAL in _INSTALL_OVERLAY_JS
     assert "jh-activity-tip" in _INSTALL_OVERLAY_JS
+    assert "jh-status" in _INSTALL_OVERLAY_JS
     assert "mouseenter" in _INSTALL_OVERLAY_JS
 
 
@@ -439,6 +554,7 @@ def test_push_activity_to_page():
         assert out.get("ok") is True
         assert page._state.get("activity")
         assert "Email" in str(page._state["activity"].get("text") or "")
+        assert page._state["activity"].get("compact") == "L1 · filling Email"
 
     asyncio.run(_run())
 
@@ -455,7 +571,10 @@ def main() -> int:
     test_wait_while_paused_resume_via_overlay_continue()
     test_set_fill_paused_updates_state()
     test_overlay_id_stable()
-    test_pause_captcha_gate_hides_overlay_and_skips_wait()
+    test_pause_captcha_gate_shows_continue_and_skips_wait()
+    test_captcha_gate_css_keeps_overlay_visible()
+    test_enter_hold_continue_mode()
+    test_hold_and_captcha_button_labels_in_overlay_js()
     test_inject_overlay_throttled()
     test_pause_ux_says_between_actions()
     test_should_keep_fill_browser_open_decision()
