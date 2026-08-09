@@ -457,6 +457,11 @@ PATTERNS = {
                r"specify[\s_-]*how[\s_-]*you[\s_-]*heard|"
                r"referral[\s_-]*source|how[\s_-]*did[\s_-]*you[\s_-]*find|"
                r"where[\s_-]*did[\s_-]*you[\s_-]*(hear|find)|"
+               # Workday Thales/wd3+: bare automation id / name with no human label
+               r"\bsource--source\b|"
+               r"formfield[\s_-]*source\b|"
+               r"candidate[\s_-]*source|"
+               r"\bhow[\s_-]*did[\s_-]*you[\s_-]*hear\b|"
                r"if[\s_-]*(you[\s_-]*selected[\s_-]*)?other|"
                r"industry[\s_-]*conference.*other|"
                r"expand[\s_-]*on[\s_-]*the[\s_-]*above",
@@ -677,6 +682,88 @@ def classify_by_input_type(field: dict) -> str | None:
     return None
 
 
+# Curated paraphrase exemplars for the semantic classify fallback (layer 2).
+# Only distinctive, low-ambiguity types whose downstream value is deterministic,
+# so a correct semantic hit just fills a known-safe value. Deliberately small:
+# breadth here trades away precision, and a mis-classification routes a value to
+# the wrong field. EEO / demographic types are intentionally EXCLUDED — those
+# must go through the SHARED-catalog path, never a fuzzy guess.
+_SEMANTIC_EXEMPLARS: dict[str, tuple[str, ...]] = {
+    "NAME_FIRST": ("first name", "given name", "preferred first name", "forename"),
+    "NAME_LAST": ("last name", "surname", "family name", "legal last name"),
+    "EMAIL": ("email address", "e-mail", "contact email"),
+    "PHONE": ("phone number", "mobile number", "telephone", "contact number"),
+    "LINKEDIN": ("linkedin profile url", "linkedin", "linkedin link"),
+    "GITHUB": ("github profile url", "github", "github link"),
+    "PORTFOLIO": ("portfolio url", "personal website", "portfolio link"),
+    "SCHOOL": ("school", "university attended", "institution name", "college"),
+    "DEGREE": ("degree", "degree level", "highest degree earned"),
+    "DISCIPLINE": ("discipline", "field of study", "major", "area of study"),
+    "SALARY_EXPECTED": (
+        "expected salary",
+        "salary expectation",
+        "desired compensation",
+        "expected compensation",
+    ),
+    "NOTICE_PERIOD": ("notice period", "how much notice", "availability to start"),
+    "YEARS_EXPERIENCE": ("years of experience", "total experience", "years worked"),
+    "HOW_HEARD": (
+        "how did you hear about us",
+        "where did you hear about us",
+        "how did you find this role",
+        "referral source",
+        "source--source",
+    ),
+    "RELOCATION": ("willing to relocate", "open to relocation"),
+    "WORK_AUTH": ("authorized to work", "work authorization", "legally authorized to work"),
+    "SPONSORSHIP": ("require sponsorship", "need visa sponsorship", "sponsorship required"),
+}
+
+# Similarity floor for the semantic fallback. High on purpose: only accept a type
+# when the label is clearly a paraphrase of an exemplar, never a loose guess.
+_SEMANTIC_CLASSIFY_THRESHOLD = float(
+    os.environ.get("FASTFILL_SEMANTIC_CLASSIFY_THRESHOLD", "0.72") or 0.72
+)
+
+
+def _semantic_classify_enabled() -> bool:
+    # Default ON. FASTFILL_SEMANTIC_MATCH=0 is the master kill switch (disables
+    # ALL semantic matching); FASTFILL_SEMANTIC_CLASSIFY=0 disables just this
+    # path. Fires only after the deterministic layers return None, so it can
+    # never override an exact/regex classification.
+    if os.environ.get("FASTFILL_SEMANTIC_MATCH", "1") == "0":
+        return False
+    return os.environ.get("FASTFILL_SEMANTIC_CLASSIFY", "1") != "0"
+
+
+def classify_semantic(field: dict) -> str | None:
+    """Similarity fallback: match the field label against curated exemplars.
+
+    Additive only — callers invoke it after the deterministic layers return
+    None, so it can never override an existing resolution. Returns a type only
+    above _SEMANTIC_CLASSIFY_THRESHOLD.
+    """
+    label = " ".join(
+        str(field.get(a) or "")
+        for a in ("label", "aria_label", "name", "placeholder", "title")
+    ).strip()
+    if not label:
+        return None
+    try:
+        from semantic_match import semantic_sim
+    except Exception:
+        return None
+    best_type, best_score = None, 0.0
+    for ftype, exemplars in _SEMANTIC_EXEMPLARS.items():
+        for ex in exemplars:
+            s = semantic_sim(label, ex)
+            if s > best_score:
+                best_type, best_score = ftype, s
+    if best_type and best_score >= _SEMANTIC_CLASSIFY_THRESHOLD:
+        return best_type
+    return None
+
+
 def classify_field(field: dict) -> tuple[str | None, str]:
     """Returns (canonical_type_or_None, which_layer_resolved_it)."""
     if is_honeypot(field):
@@ -690,6 +777,10 @@ def classify_field(field: dict) -> tuple[str | None, str]:
     t = classify_layer1(field)
     if t:
         return t, "layer1_regex"
+    if _semantic_classify_enabled():
+        t = classify_semantic(field)
+        if t:
+            return t, "layer2_semantic"
     return None, "unresolved"
 
 

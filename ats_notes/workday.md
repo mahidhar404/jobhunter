@@ -82,9 +82,12 @@ Fast fill Phase C–E walk these steps after a clean contact ADVANCE, then stop
 at review (never final Submit). **SUCCESS requires `ready_for_review`** — never
 contact-only SUCCESS.
 
-**Headed Pause fill:** top-right Pause/Continue overlay (`fill_pause.py`) is
-ON by default when headed; reinjected after each Workday page ADVANCE.
-Disable with `--no-fill-pause` / `FASTFILL_FILL_PAUSE=0`. Never submit.
+**Headed Pause fill:** top-right overlay (`fill_pause.py`) is ON by default
+when headed. Actively filling → **Pause fill**; on hold (review/incomplete)
+or during CAPTCHA wait → **Continue** (resume fill / Next; never submit).
+CAPTCHA Continue still requires the challenge gone (FILL-008). Reinjected
+after each Workday page ADVANCE. Disable with `--no-fill-pause` /
+`FASTFILL_FILL_PAUSE=0`. Never submit.
 
 **Voluntary disclosures (EEO)**: this is a two-part ethnicity question, not
 one - `hispanicOrLatino` (Yes/No) is separate from `ethnicityDropdown` (a
