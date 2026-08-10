@@ -18,6 +18,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+# Once any identity for these types is locked, every identity of that type
+# is treated as locked (page-singleton widgets — resume, etc.).
+SINGLETON_LOCK_TYPES = frozenset({"RESUME_UPLOAD"})
+
 
 def field_identity_key(
     *,
@@ -84,6 +88,9 @@ class FieldLockSession:
         field_id: str | None = None,
         key: str | None = None,
     ) -> bool:
+        ft = (field_type or "").strip().upper()
+        if ft in SINGLETON_LOCK_TYPES and ft in self.locked_types():
+            return True
         k = key or field_identity_key(
             field_type=field_type,
             label=label,
@@ -106,6 +113,10 @@ class FieldLockSession:
         key: str | None = None,
     ) -> LockEntry:
         """Lock after commit-verified fill. Idempotent for same key."""
+        ft = (field_type or "").strip().upper() or None
+        # Prefer stable aid for resume so pack/ensure/phase_c share one key.
+        if ft == "RESUME_UPLOAD" and not (automation_id or field_id):
+            automation_id = "file-upload-input-ref"
         k = key or field_identity_key(
             field_type=field_type,
             label=label,
@@ -163,6 +174,36 @@ class FieldLockSession:
         Returns::
             {"action": "proceed"|"lock_skip", "key": str, "thrash": bool, ...}
         """
+        ft = (field_type or "").strip().upper()
+        # Resume (and other singletons): any prior lock for the type blocks
+        # every selector/label variant — same class of thrash as how-heard.
+        if ft in SINGLETON_LOCK_TYPES and ft in self.locked_types():
+            entry = next(
+                (e for e in self._locks.values() if e.field_type == ft),
+                None,
+            )
+            k = (
+                entry.key
+                if entry is not None
+                else field_identity_key(
+                    field_type=field_type,
+                    label=label,
+                    selector=selector,
+                    automation_id=automation_id or "file-upload-input-ref",
+                    field_id=field_id,
+                )
+            )
+            self.note_retouch(k)
+            return {
+                "action": "lock_skip",
+                "key": k,
+                "thrash": True,
+                "thrash_retouches": self.thrash_retouches,
+                "readback": entry.readback if entry else None,
+                "locked_via": entry.via if entry else None,
+                "attempt_count": self._attempt_counts.get(k, 0),
+                "singleton_type": ft,
+            }
         k = field_identity_key(
             field_type=field_type,
             label=label,
@@ -445,6 +486,7 @@ def analyze_step_log_waste(steps: list[dict[str, Any]]) -> dict[str, Any]:
     by_field: dict[str, list[dict]] = {}
     duplicate_fills: list[dict] = []
     how_heard_attempts: list[dict] = []
+    resume_upload_attempts: list[dict] = []
     long_gaps: list[dict] = []
     open_menu_idle: list[dict] = []
     lock_skips: list[dict] = []
@@ -473,6 +515,8 @@ def analyze_step_log_waste(steps: list[dict[str, Any]]) -> dict[str, Any]:
             "lock_skip",
             "thrash_retouch",
             "field_locked_skip",
+            "upload_resume_start",
+            "upload_resume_verified",
         ):
             by_field.setdefault(key, []).append(step)
         if action in act_fill:
@@ -490,6 +534,8 @@ def analyze_step_log_waste(steps: list[dict[str, Any]]) -> dict[str, Any]:
                         "prior_steps": [p.get("step") for p in prior],
                     }
                 )
+        if action in ("upload_resume", "upload_resume_start"):
+            resume_upload_attempts.append(step)
         if "heard" in ft.lower() or "heard" in str(step.get("label") or "").lower():
             how_heard_attempts.append(step)
         if action in ("lock_skip", "field_locked_skip") or step.get("skipped_locked"):
@@ -545,6 +591,17 @@ def analyze_step_log_waste(steps: list[dict[str, Any]]) -> dict[str, Any]:
             }
             for s in how_heard_attempts
         ],
+        "resume_upload_attempts": len(resume_upload_attempts),
+        "resume_upload_steps": [
+            {
+                "step": s.get("step"),
+                "action": s.get("action"),
+                "reason": s.get("reason"),
+                "via": s.get("via"),
+                "after": s.get("after"),
+            }
+            for s in resume_upload_attempts
+        ],
         "long_gaps_ge_2_5s": long_gaps,
         "lock_skips": len(lock_skips),
         "thrash_events": len(thrash_events),
@@ -552,6 +609,7 @@ def analyze_step_log_waste(steps: list[dict[str, Any]]) -> dict[str, Any]:
         "waste_score": len(duplicate_fills)
         + len(multi_touch)
         + max(0, len(how_heard_attempts) - 1)
+        + max(0, len(resume_upload_attempts) - 1)
         + sum(1 for g in long_gaps if g["gap_s"] >= 5 and g.get("after_action") in act_fill),
     }
 

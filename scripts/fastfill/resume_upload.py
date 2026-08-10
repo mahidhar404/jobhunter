@@ -283,6 +283,98 @@ _PROBE_RESUME_FIELD_JS = """() => {
 }"""
 
 
+def page_shows_resume_attachment(probe: dict | None, *, page_hint: bool = False) -> bool:
+    """True when probe/UI indicates a resume is already attached (incl. remount)."""
+    p = probe or {}
+    if p.get("uploaded_ui") or p.get("ashby_uploaded_ui") or p.get("workday_uploaded_ui"):
+        return True
+    if page_hint:
+        return True
+    if p.get("present") and not p.get("empty"):
+        return True
+    if accept_resume_after_empty_filelist(p, page_hint=page_hint):
+        return True
+    return False
+
+
+def should_skip_resume_reupload(
+    *,
+    already_verified: bool,
+    locked: bool = False,
+    force: bool = False,
+    probe: dict | None = None,
+    page_hint: bool = False,
+) -> tuple[bool, str]:
+    """Decide whether to skip another resume attach attempt.
+
+    ``force=True`` only bypasses "no file field yet" — it must **not** re-upload
+    when commit-verified / locked and the page still shows attachment chrome
+    (Workday remounts empty FileList after success — same thrash class as how-heard).
+    """
+    probe = probe or {}
+    attached = page_shows_resume_attachment(probe, page_hint=page_hint)
+    if locked:
+        return True, "field_locked_skip"
+    if already_verified and force and attached:
+        return True, "force_ignored_already_verified"
+    if already_verified and attached:
+        return True, "already_verified"
+    if already_verified and not force:
+        # Trust report verify even when probe is ambiguous (empty remount, SPA lag)
+        return True, "already_verified"
+    if already_verified and force and not attached:
+        # Genuine wipe after verify — allow one re-attach
+        return False, ""
+    if not force and attached:
+        return True, "already_uploaded_ui"
+    return False, ""
+
+
+def resume_upload_locked(report: dict | None) -> bool:
+    """True when RESUME_UPLOAD is page-session locked."""
+    if not report:
+        return False
+    try:
+        from field_lock import get_field_locks, resolve_lock_report
+
+        sess = get_field_locks(resolve_lock_report(report))
+        if sess is None:
+            return False
+        return sess.is_locked(
+            field_type=RESUME_UPLOAD, automation_id="file-upload-input-ref"
+        )
+    except Exception:
+        return False
+
+
+def lock_resume_after_verify(
+    report: dict | None,
+    *,
+    readback: str | None = None,
+    via: str | None = None,
+    selector: str | None = None,
+) -> None:
+    """Lock RESUME_UPLOAD after commit-verify (idempotent)."""
+    if not report:
+        return
+    try:
+        from field_lock import attach_field_locks, lock_verified_field, resolve_lock_report
+
+        parent = resolve_lock_report(report) or report
+        attach_field_locks(parent)
+        lock_verified_field(
+            parent,
+            field_type=RESUME_UPLOAD,
+            label="Resume",
+            automation_id="file-upload-input-ref",
+            selector=selector,
+            readback=readback,
+            via=via or "ensure_resume",
+        )
+    except Exception:
+        pass
+
+
 def accept_resume_after_empty_filelist(
     post_probe: dict | None, *, page_hint: bool = False
 ) -> bool:
@@ -560,6 +652,12 @@ def report_has_verified_resume(report: dict | None) -> bool:
                 "files_on_input",
                 "filename_visible_ui",
                 "gh_upload_ui",
+                "ashby_upload_ui",
+                "workday_upload_ui",
+                "already_verified",
+                "force_ignored_already_verified",
+                "field_locked_skip",
+                "already_uploaded_ui",
             ):
                 return True
             continue
@@ -568,7 +666,17 @@ def report_has_verified_resume(report: dict | None) -> bool:
     ru = report.get("resume_upload") or {}
     if isinstance(ru, dict) and ru.get("verified") is True:
         probe = ru.get("probe") if isinstance(ru.get("probe"), dict) else {}
+        # Empty FileList remount is OK when we already marked verified
+        if ru.get("skipped") in (
+            "already_verified",
+            "force_ignored_already_verified",
+            "field_locked_skip",
+            "already_uploaded_ui",
+        ):
+            return True
         if not probe.get("present") or not probe.get("empty"):
+            return True
+        if page_shows_resume_attachment(probe):
             return True
     # Workday Autofill-with-Resume: phase_a_resume.upload.verified must agree
     # with top-level resume_verified (Quantiphi/BBH mismatch).
@@ -1148,68 +1256,187 @@ async def ensure_resume_uploaded(
 
     Sets ``report['resume_upload']`` and appends a verified filled row on success.
     Retries once if still empty after the first attempt.
+
+    ``force=True`` means try even when probe finds no field yet (SPA lag). It
+    does **not** bypass commit-verified / field-lock / attachment-chrome skips —
+    re-upload is never a stuck-page hammer (dates / missing fields).
     """
     probe = await probe_resume_field(page)
     already = report_has_verified_resume(report)
+    locked = resume_upload_locked(report)
+    page_hint = False
+    try:
+        pdf_name = resume_pdf_from_values(values).name
+        if pdf_name:
+            page_hint = bool(await page.evaluate(_PAGE_FILENAME_HINT_JS, pdf_name))
+    except Exception:
+        page_hint = False
+
     summary: dict[str, Any] = {
         "attempted": False,
         "field_present": bool(probe.get("present")),
         "field_empty": bool(probe.get("empty")),
         "already_verified": already,
-        "verified": already,
-        "probe": {k: probe.get(k) for k in ("present", "empty", "selectors", "error")},
+        "locked": locked,
+        "verified": already or locked,
+        "force": bool(force),
+        "probe": {
+            k: probe.get(k)
+            for k in (
+                "present",
+                "empty",
+                "selectors",
+                "error",
+                "uploaded_ui",
+                "workday_uploaded_ui",
+                "ashby_uploaded_ui",
+            )
+        },
     }
 
-    if already and not force and not probe.get("empty"):
-        summary["skipped"] = "already_verified"
-        report["resume_upload"] = summary
-        return summary
+    skip, skip_reason = should_skip_resume_reupload(
+        already_verified=already,
+        locked=locked,
+        force=force,
+        probe=probe,
+        page_hint=page_hint,
+    )
+    if skip:
+        summary["skipped"] = skip_reason
+        summary["verified"] = True
+        if locked and skip_reason == "field_locked_skip":
+            try:
+                from field_lock import gate_field_action
 
-    if already and not force and not probe.get("empty"):
-        summary["skipped"] = "already_verified"
-        report["resume_upload"] = summary
-        return summary
-
-    if not force and probe.get("present") and not probe.get("empty"):
-        if probe.get("uploaded_ui") or await gh_resume_uploaded_on_page(page):
-            gh_ui = await _verify_gh_resume_ui(
-                page, resume_pdf_from_values(values).name
+                g = gate_field_action(
+                    report,
+                    field_type=RESUME_UPLOAD,
+                    automation_id="file-upload-input-ref",
+                    label="Resume",
+                )
+                if g and g.get("action") == "lock_skip":
+                    summary["thrash_retouch"] = True
+                    note_step(
+                        report,
+                        action="lock_skip",
+                        field_type=RESUME_UPLOAD,
+                        label="Resume",
+                        after=str(g.get("readback") or ""),
+                        reason="field_locked_skip",
+                        via="ensure_resume",
+                        extra={"thrash_retouch": True, "force": bool(force)},
+                    )
+            except Exception:
+                pass
+        else:
+            note_step(
+                report,
+                action="skip_already_correct",
+                field_type=RESUME_UPLOAD,
+                label="Resume",
+                reason=skip_reason,
+                via="ensure_resume",
+                extra={"force": bool(force), "probe_empty": bool(probe.get("empty"))},
             )
-            if gh_ui.get("verified"):
-                summary["attempted"] = False
-                summary["verified"] = True
-                summary["skipped"] = "already_uploaded_ui"
-                summary["result"] = {
+        # Ensure filled row + lock exist for downstream gates
+        if not report_has_verified_resume(report):
+            rb = (
+                (probe.get("selectors") and str(probe["selectors"][0]))
+                or resume_pdf_from_values(values).name
+            )
+            report.setdefault("filled", []).append(
+                {
+                    "via": "ensure_resume",
+                    "layer": "0.5",
+                    "label": "Resume",
+                    "type": RESUME_UPLOAD,
+                    "mode": "already_on_page",
+                    "selector": "workday_upload_ui",
+                    "value": rb,
+                    "readback": rb,
                     "ok": True,
                     "verified": True,
-                    "reason": gh_ui.get("reason") or "gh_upload_ui",
-                    "readback": gh_ui.get("readback"),
-                    "selector": "gh_file_upload_ui",
-                    "mode": "gh_upload_ui",
+                    "reason": skip_reason,
+                    "automation_id": "file-upload-input-ref",
                 }
-                if not report_has_verified_resume(report):
-                    report.setdefault("filled", []).append(
-                        {
-                            "via": "ensure_resume",
-                            "layer": "0.5",
-                            "label": "Resume",
-                            "type": RESUME_UPLOAD,
-                            "mode": "gh_upload_ui",
-                            "selector": "gh_file_upload_ui",
-                            "value": gh_ui.get("readback"),
-                            "readback": gh_ui.get("readback"),
-                            "ok": True,
-                            "verified": True,
-                            "reason": gh_ui.get("reason") or "gh_upload_ui",
-                        }
-                    )
-                report["resume_upload"] = summary
-                return summary
+            )
+        lock_resume_after_verify(
+            report,
+            readback=resume_pdf_from_values(values).name,
+            via="ensure_resume",
+        )
+        report["resume_verified"] = True
+        report["resume_field_present"] = True
+        report["resume_upload"] = summary
+        return summary
 
+    # force may proceed without present field (SPA); otherwise bail
     if not probe.get("present") and not force:
         summary["skipped"] = "no_resume_field"
         report["resume_upload"] = summary
         return summary
+
+    # Capture UI-only already-attached without report verify (first sight)
+    if (
+        not already
+        and not force
+        and page_shows_resume_attachment(probe, page_hint=page_hint)
+    ):
+        gh_ui = await _verify_gh_resume_ui(page, resume_pdf_from_values(values).name)
+        ashby_ui = await _verify_ashby_resume_ui(
+            page, resume_pdf_from_values(values).name
+        )
+        ui_ok = gh_ui.get("verified") or ashby_ui.get("verified") or page_hint or (
+            probe.get("workday_uploaded_ui") or probe.get("uploaded_ui")
+        )
+        if ui_ok:
+            rb = (
+                (gh_ui.get("readback") if gh_ui.get("verified") else None)
+                or (ashby_ui.get("readback") if ashby_ui.get("verified") else None)
+                or resume_pdf_from_values(values).name
+            )
+            reason = (
+                (gh_ui.get("reason") if gh_ui.get("verified") else None)
+                or (ashby_ui.get("reason") if ashby_ui.get("verified") else None)
+                or (
+                    "workday_upload_ui"
+                    if probe.get("workday_uploaded_ui")
+                    else "filename_visible_ui"
+                )
+            )
+            summary["attempted"] = False
+            summary["verified"] = True
+            summary["skipped"] = "already_uploaded_ui"
+            summary["result"] = {
+                "ok": True,
+                "verified": True,
+                "reason": reason,
+                "readback": rb,
+                "selector": "upload_ui",
+                "mode": "upload_ui",
+            }
+            if not report_has_verified_resume(report):
+                report.setdefault("filled", []).append(
+                    {
+                        "via": "ensure_resume",
+                        "layer": "0.5",
+                        "label": "Resume",
+                        "type": RESUME_UPLOAD,
+                        "mode": "upload_ui",
+                        "selector": "upload_ui",
+                        "value": rb,
+                        "readback": rb,
+                        "ok": True,
+                        "verified": True,
+                        "reason": reason,
+                        "automation_id": "file-upload-input-ref",
+                    }
+                )
+            lock_resume_after_verify(report, readback=rb, via="ensure_resume")
+            report["resume_verified"] = True
+            report["resume_field_present"] = True
+            report["resume_upload"] = summary
+            return summary
 
     summary["attempted"] = True
     result = await upload_resume_to_page(page, values, via="ensure_resume", report=report)
@@ -1242,11 +1469,20 @@ async def ensure_resume_uploaded(
     if result.get("verified"):
         post_probe = await probe_resume_field(page)
         summary["post_probe"] = {
-            k: post_probe.get(k) for k in ("present", "empty", "selectors", "error")
+            k: post_probe.get(k)
+            for k in (
+                "present",
+                "empty",
+                "selectors",
+                "error",
+                "uploaded_ui",
+                "workday_uploaded_ui",
+                "ashby_uploaded_ui",
+            )
         }
         if post_probe.get("present") and post_probe.get("empty"):
             # GH/Ashby/Workday remount — trust UI filename / sibling widget probe
-            page_hint = False
+            page_hint2 = False
             try:
                 pdf_name = str(
                     (result.get("value") or "")
@@ -1254,14 +1490,15 @@ async def ensure_resume_uploaded(
                 )
                 base = Path(pdf_name).name if pdf_name else ""
                 if base:
-                    page_hint = bool(
+                    page_hint2 = bool(
                         await page.evaluate(_PAGE_FILENAME_HINT_JS, base)
                     )
             except Exception:
-                page_hint = False
+                page_hint2 = False
             if accept_resume_after_empty_filelist(
                 post_probe,
-                page_hint=page_hint
+                page_hint=page_hint2
+                or page_hint
                 or await gh_resume_uploaded_on_page(page)
                 or await ashby_resume_uploaded_on_page(page),
             ):
@@ -1271,7 +1508,7 @@ async def ensure_resume_uploaded(
                     result.get("reason")
                     or (
                         "workday_upload_ui"
-                        if post_probe.get("workday_uploaded_ui") or page_hint
+                        if post_probe.get("workday_uploaded_ui") or page_hint2
                         else (
                             "ashby_upload_ui"
                             if post_probe.get("ashby_uploaded_ui")
@@ -1315,8 +1552,17 @@ async def ensure_resume_uploaded(
                     "ok": True,
                     "verified": True,
                     "reason": result.get("reason"),
+                    "automation_id": "file-upload-input-ref",
                 }
             )
+        lock_resume_after_verify(
+            report,
+            readback=str(result.get("readback") or result.get("value") or ""),
+            via=str(result.get("via") or "ensure_resume"),
+            selector=str(result.get("selector") or ""),
+        )
+        report["resume_verified"] = True
+        report["resume_field_present"] = True
         report["leftovers"] = filter_resume_leftovers(
             [
                 u
