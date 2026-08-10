@@ -132,6 +132,23 @@ EMPTY_FIELDS_JS = """() => {
     el.required || el.getAttribute('aria-required') === 'true' ||
     /\\*/.test(labelFor(el)) ||
     (el.closest('[data-required], .required') != null);
+  // Voluntary EEO/demographic self-ID. Left blank is a COMPLETE state — and on
+  // GH cascading-ethnicity tenants the "race" sub-select is intentionally left
+  // empty to preserve the required "Hispanic/Latino=No" answer (filling it
+  // clobbers Hispanic). Only treat as optional when NOT required.
+  const DEMO_RE =
+    /race|ethnic|hispanic|latino|gender|veteran|disab|self[-\\s]?identif|sexual\\s+orientation|transgender|pronoun/i;
+  const optionalDemographic = (el, label) =>
+    !requiredish(el) && DEMO_RE.test(label || '');
+  // Non-required derived location components (city / postcode / country / state)
+  // on Google-Places-style address autocompletes (Workable): they only populate
+  // when a place SUGGESTION is selected, which a fake dummy address can't match,
+  // so they stay blank while the combined address field carries the value. Left
+  // blank on an optional derived component is a submittable/COMPLETE state.
+  const LOCATION_RE =
+    /^(city|town|postcode|postal|zip|country|state|province|region|county)\\b/i;
+  const optionalLocation = (el, label) =>
+    !requiredish(el) && LOCATION_RE.test((label || '').trim());
 
   document.querySelectorAll('input, textarea, select').forEach((el) => {
     if (!isVisible(el)) return;
@@ -164,10 +181,13 @@ EMPTY_FIELDS_JS = """() => {
     const ph = (el.getAttribute('placeholder') || '').trim();
     const essayish = el.tagName === 'TEXTAREA' || /why|tell us|cover|essay|describe/i.test(label);
     if (!val) {
+      const effLabel = label || ph || el.name || 'field';
       out.push({
-        label: label || ph || el.name || 'field',
+        label: effLabel,
         kind: essayish ? 'essay_empty' : (ph ? 'placeholder' : 'blank'),
         required: requiredish(el),
+        optional_demographic: optionalDemographic(el, effLabel),
+        optional_location: !essayish && optionalLocation(el, effLabel),
         selector: el.name ? el.tagName.toLowerCase() + '[name="' + el.name + '"]' : '',
       });
       return;
@@ -389,8 +409,17 @@ def finalize_verdict(result: dict) -> dict:
 
     # COMPLETE requires zero empties (including optional-looking essays on apply forms)
     # and an honest source — stub/heuristic never COMPLETE for SOTA gate consumers.
-    complete = len(empties) == 0 and result.get("confidence") != "ambiguous"
-    if result.get("confidence") == "ambiguous" and empties:
+    # Exception: voluntary EEO/demographic self-ID left blank is a legitimately
+    # complete state (and the GH cascading-ethnicity "race" sub-select is left
+    # empty on purpose to preserve Hispanic=No). Such non-required demographics
+    # stay visible in empty_fields but do NOT block completion.
+    blocking_empties = [
+        e
+        for e in empties
+        if not (e.get("optional_demographic") or e.get("optional_location"))
+    ]
+    complete = len(blocking_empties) == 0 and result.get("confidence") != "ambiguous"
+    if result.get("confidence") == "ambiguous" and blocking_empties:
         complete = False
     if complete and source == "heuristic_report":
         # Allow only when no screenshot was provided (dry unit paths).
