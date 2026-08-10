@@ -25,6 +25,8 @@ scripts/fastfill/fixtures/us_apartment_addresses.json.lock
 # NOTE: keep scripts/fastfill/learning_store/{experience.jsonl,selector_stats.json} TRACKED — they are
 # the accumulated learning seed consulted on fresh clones, not disposable cache.
 scripts/fastfill/replay_cache.json
+# Regenerable eval metrics timeline (append-only diagnostic rows; recreated by eval_suite).
+scripts/fastfill/learning_store/metrics_timeline.jsonl
 partyrock_chrome_profile/
 dashboard_chrome_profile/
 dashboard_ui_profile/
@@ -110,3 +112,4 @@ skyvern_runtime/*_profile/
 # Export output (produced by export.sh)
 export_build/
 *.export.zip
+scripts/fastfill/learning_store/llm_traces.jsonl

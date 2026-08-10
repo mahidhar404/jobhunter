@@ -377,7 +377,12 @@ def main() -> int:
         fails = _check_row(row, report, suite.get("slo") or {})
         stem = f"eval_{plat}_{i:02d}.json"
         path = out_dir / stem
-        path.write_text(json.dumps(report, indent=2))
+        # Strip internal live handles (_attempt_log / _fill_step_log / _page)
+        # that the fill returns re-attached; default=str is a final safety net so
+        # any stray object (e.g. an early blocker-return report) never crashes the
+        # eval writer.
+        report_json = {k: v for k, v in report.items() if not str(k).startswith("_")}
+        path.write_text(json.dumps(report_json, indent=2, default=str))
         results.append(
             {
                 "url": url,
@@ -425,7 +430,15 @@ def main() -> int:
         "slo_rollup": rollup,
     }
     summary_path = out_dir / "eval_summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2))
+    summary_path.write_text(json.dumps(summary, indent=2, default=str))
+    # Phase 5: append one reduced row to the metrics timeline (best-effort;
+    # never let observability break the eval run).
+    try:
+        from metrics_timeline import append_row
+
+        append_row(summary_path, label="eval_suite")
+    except Exception:
+        pass
     print(
         f"\n=== eval suite: passed={summary['passed']}/{summary['n']} "
         f"in {summary['elapsed_seconds']}s → {summary_path}",

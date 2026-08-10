@@ -76,6 +76,37 @@ services:
     restart: unless-stopped
 
   # -------------------------------------------------------------------------
+  # OmniRoute (OPTIONAL) — MIT OpenAI-compatible AI gateway (github.com/
+  # diegosouzapw/OmniRoute). Behind the `gateway` profile so it never runs for
+  # the core quickstart. Isolated container reached via compose DNS at
+  # http://omniroute:20128/v1 — NOT baked into the app image.
+  #
+  # Purpose: DeepSeek stays the primary target; OmniRoute adds quota-aware
+  # free-tier fallback + RTK/Caveman token compression on large-context calls.
+  # It is a young Node service, so it is opt-in and the app DEFAULTS to DeepSeek
+  # direct — if the gateway is stopped or flaky the fill still runs.
+  #
+  # To use it:
+  #   docker compose --profile gateway up -d omniroute
+  #   # open http://127.0.0.1:20128, add providers + generate a Bearer token,
+  #   # then set in .env (dummy-mode only — never real PII through free pools):
+  #   OPENAI_COMPATIBLE_API_BASE=http://omniroute:20128/v1
+  #   OPENAI_COMPATIBLE_API_KEY=<token from the OmniRoute dashboard>
+  # The fastfill dummy-mode guard (llm_config.assert_dummy_for_gateway) refuses
+  # this base whenever real-profile mode is on.
+  # -------------------------------------------------------------------------
+  omniroute:
+    profiles: ["gateway"]
+    image: "diegosouzapw/omniroute:latest"
+    # Loopback-only, matching the app's local-first posture.
+    ports:
+      - "127.0.0.1:20128:20128"
+    volumes:
+      - omniroute_data:/app/data
+    stop_grace_period: 40s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
   # Skyvern (OPTIONAL, heavy) — behind the `skyvern` profile so it never runs
   # for the core quickstart. This is a documented PLACEHOLDER wired to `db`:
   # it uses the upstream Skyvern image as a starting point. The repo's own
@@ -101,3 +132,4 @@ services:
 volumes:
   jobhunter_data:
   pgdata:
+  omniroute_data:

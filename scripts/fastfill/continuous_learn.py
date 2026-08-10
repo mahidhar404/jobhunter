@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -583,6 +584,33 @@ def similar_leftover_answers(
     for lab in want_labels:
         want_tokens.update(t for t in lab.split() if len(t) >= 4)
 
+    # Semantic recall (default ON; disable via FASTFILL_ANSWER_MEMORY=0 /
+    # FASTFILL_SEMANTIC_MEMORY=0 / master FASTFILL_SEMANTIC_MATCH=0). When on, a
+    # past answer also matches if its label is a paraphrase (semantic_sim >=
+    # threshold) of any wanted label, and matches are ranked by that similarity.
+    # Disabled => byte-for-byte the prior lexical behavior (first-come, early
+    # break). The Phase 6 A/B (answer_memory_ab.py) quantifies the live lift.
+    # Default ON. Disabled if the master switch (FASTFILL_SEMANTIC_MATCH) or
+    # either answer-memory flag (FASTFILL_ANSWER_MEMORY / FASTFILL_SEMANTIC_MEMORY,
+    # the alias) is set to "0". Only widens recall to paraphrases; matches are
+    # still sanitized experience values and ranked below exact/type matches.
+    _sem_on = (
+        os.environ.get("FASTFILL_SEMANTIC_MATCH", "1") != "0"
+        and os.environ.get("FASTFILL_ANSWER_MEMORY", "1") != "0"
+        and os.environ.get("FASTFILL_SEMANTIC_MEMORY", "1") != "0"
+    )
+    try:
+        _sem_thresh = float(os.environ.get("FASTFILL_SEMANTIC_MEMORY_THRESHOLD", "0.72") or 0.72)
+    except (TypeError, ValueError):
+        _sem_thresh = 0.72
+    _sem_sim = None
+    if _sem_on:
+        try:
+            from semantic_match import semantic_sim as _sem_sim
+        except Exception:
+            _sem_sim = None
+    want_labels_list = [wl for wl in want_labels if wl]
+
     hits: list[dict[str, Any]] = []
     seen: set[str] = set()
     plat = (platform or "").lower()
@@ -601,32 +629,46 @@ def similar_leftover_answers(
         if val.startswith("{{") and val.endswith("}}"):
             continue
         match = False
+        rank = 0.0
         if ftype and ftype in want_types:
-            match = True
+            match, rank = True, 2.0  # type match is the strongest signal
         elif label and label in want_labels:
-            match = True
+            match, rank = True, 1.5  # exact label match next
         elif label and want_tokens:
             toks = set(label.split())
             if len(toks & want_tokens) >= 2:
-                match = True
+                match, rank = True, 1.0  # token overlap
+        if _sem_sim is not None and label and want_labels_list:
+            sem_score = max((_sem_sim(label, wl) for wl in want_labels_list), default=0.0)
+            if not match and sem_score >= _sem_thresh:
+                match, rank = True, sem_score  # paraphrase recall (< lexical ranks)
+            elif match:
+                rank += sem_score * 0.001  # tie-break only; never reorders tiers
         if not match:
             continue
         key = f"{ftype}|{label}|{val[:40]}"
         if key in seen:
             continue
         seen.add(key)
-        hits.append(
-            {
-                "type": ftype or None,
-                "label": row.get("label"),
-                "value": val[:200],
-                "value_shape": row.get("value_shape"),
-                "platform": row.get("platform"),
-                "via": "experience",
-            }
-        )
-        if len(hits) >= top_n:
+        hit = {
+            "type": ftype or None,
+            "label": row.get("label"),
+            "value": val[:200],
+            "value_shape": row.get("value_shape"),
+            "platform": row.get("platform"),
+            "via": "experience",
+        }
+        if _sem_sim is not None:
+            hit["_score"] = rank
+        hits.append(hit)
+        # Lexical mode keeps the cheap early break; semantic mode collects all
+        # matches first so it can rank the best paraphrases.
+        if _sem_sim is None and len(hits) >= top_n:
             break
+
+    if _sem_sim is not None and hits:
+        hits.sort(key=lambda h: h.pop("_score", 0.0), reverse=True)
+        hits = hits[:top_n]
     return hits
 
 
