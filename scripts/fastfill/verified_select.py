@@ -393,31 +393,51 @@ def is_uncommitted_filter_text(
     return False
 
 
+def is_how_heard_category_option(text: str | None) -> bool:
+    """True when option text is a Workday how-heard category/subsection header."""
+    try:
+        from fill_verify import is_how_heard_category_option as _cat
+
+        return bool(_cat(text))
+    except Exception:
+        t = " ".join(str(text or "").strip().lower().split())
+        return t in {
+            "internet job board",
+            "job board",
+            "job boards",
+            "social media",
+            "social network",
+            "internet",
+        }
+
+
 def how_heard_source_committed(
     shown: str | None,
     candidates: Iterable[str] | None = None,
 ) -> bool:
     """True when Workday How-Heard / source multi-select has a committed chip/token.
 
-    Accepts ``N items selected`` chrome (≥1) or a full option token matching an
-    intended alias. Rejects shorter filter fragments (``Internet`` for
-    ``Internet job board``) so alias thrash stops only on real commits.
+    Requires ``N items selected`` chrome (≥1). Category headers and bare filter
+    text (``Indeed`` typed into the search box, ``Internet job board``) are
+    never enough — Walmart hierarchical menus leave that text without a chip.
     """
     s = (shown or "").strip()
     if not s or is_multiselect_uncommitted(s):
         return False
-    if multiselect_has_chip(s):
-        return True
+    if not multiselect_has_chip(s):
+        # No chip chrome → typed filter / category header / single-value lookalike
+        return False
+    # Chip present. Optional: prefer that it mentions an intended leaf when given.
     cands = [str(c).strip() for c in (candidates or []) if str(c or "").strip()]
+    if not cands:
+        return True
+    leaf_cands = [c for c in cands if not is_how_heard_category_option(c)] or cands
     sl = s.lower()
-    for c in cands:
-        cl = c.lower()
-        if sl == cl:
+    for c in leaf_cands:
+        if soft_value_match(c, s) or c.lower() in sl:
             return True
-        # Shown wraps the full option (label + chip text) — not a typed prefix
-        if soft_value_match(c, s) and len(s) >= len(c):
-            return True
-    return False
+    # Chip exists for some other concrete source — still committed (stop thrash)
+    return True
 
 
 async def settle_open_listbox(page) -> None:
@@ -1195,6 +1215,386 @@ async def fiber_search_select(
         detail["error"] = str(e)[:120]
         detail["ok"] = False
         return detail
+
+
+_HOW_HEARD_OPTION_SELS = [
+    '[data-automation-id="promptOption"]',
+    '[role="option"]',
+    '[data-automation-id*="promptOption" i]',
+]
+
+_HOW_HEARD_INPUT_SELS = (
+    'input[name="source--source"], '
+    '[data-automation-id="source--source"], '
+    '[data-automation-id="formField-source"] input, '
+    '[data-automation-id="formField-how_heard"] input, '
+    '[data-automation-id="multiSelectContainer"] input'
+)
+
+_HOW_HEARD_WRAP_SELS = (
+    '[data-automation-id="formField-source"], '
+    '[data-automation-id="formField-how_heard"], '
+    '[data-automation-id="formField-howDidYouHear"], '
+    '[data-automation-id="multiSelectContainer"]'
+)
+
+
+async def _read_how_heard_wrap_text(page) -> str:
+    """Chip chrome for how-heard / source (prefer formField, not filter alone)."""
+    for sel in _HOW_HEARD_WRAP_SELS.split(", "):
+        try:
+            loc = page.locator(sel.strip()).first
+            if await loc.count() == 0:
+                continue
+            try:
+                if not await loc.is_visible(timeout=200):
+                    continue
+            except Exception:
+                pass
+            snip = ((await loc.inner_text()) or "").strip()
+            if snip:
+                return snip[:240]
+        except Exception:
+            continue
+    return ""
+
+
+async def _list_how_heard_options(page, *, max_n: int = 40) -> list[dict[str, Any]]:
+    """Visible prompt/listbox options with category heuristics."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for sel in _HOW_HEARD_OPTION_SELS:
+        try:
+            loc = page.locator(sel)
+            n = await loc.count()
+        except Exception:
+            n = 0
+        if n <= 0:
+            continue
+        for i in range(min(n, max_n)):
+            el = loc.nth(i)
+            try:
+                if not await el.is_visible(timeout=120):
+                    continue
+                text = ((await el.inner_text()) or "").strip()
+            except Exception:
+                continue
+            if not text or len(text) > 120:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            meta: dict[str, Any] = {"text": text, "index": i, "selector": sel}
+            try:
+                meta.update(
+                    await el.evaluate(
+                        """el => {
+                          const t = (el.innerText || el.textContent || '').trim();
+                          const ariaExp = el.getAttribute('aria-expanded');
+                          const hasPopup = el.getAttribute('aria-haspopup');
+                          const role = el.getAttribute('role') || '';
+                          const cls = (el.className || '').toString();
+                          const chevron = !!(
+                            el.querySelector('[data-automation-id*="icon" i], svg, [class*="caret" i], [class*="chevron" i], [class*="arrow" i]')
+                          );
+                          return {
+                            ariaExpanded: ariaExp,
+                            hasPopup: hasPopup,
+                            role: role,
+                            chevron: chevron,
+                            classHint: cls.slice(0, 80),
+                          };
+                        }"""
+                    )
+                )
+            except Exception:
+                pass
+            is_cat = is_how_heard_category_option(text)
+            # Expandable rows often have chevron / aria-expanded even when label
+            # is not in our static category list.
+            if not is_cat and (
+                meta.get("chevron")
+                or meta.get("ariaExpanded") in ("true", "false")
+                or str(meta.get("hasPopup") or "").lower() in ("true", "menu", "listbox")
+            ):
+                # Don't treat concrete leaves (Indeed) as expandable categories
+                leafish = text.lower() in {
+                    "indeed",
+                    "linkedin",
+                    "company website",
+                    "careerbuilder",
+                    "google for jobs",
+                    "other",
+                }
+                if not leafish:
+                    is_cat = True
+            meta["is_category"] = bool(is_cat)
+            out.append(meta)
+        if out:
+            break
+    return out
+
+
+async def _click_option_by_text(page, text: str, *, timeout_ms: int = 4000) -> bool:
+    """Click the first visible option whose text soft-matches *text*."""
+    want = (text or "").strip()
+    if not want:
+        return False
+    opts = await _list_how_heard_options(page)
+    best = None
+    best_score = 0
+    for o in opts:
+        t = str(o.get("text") or "")
+        tl, wl = t.lower(), want.lower()
+        if tl == wl:
+            sc = 100
+        elif soft_value_match(want, t):
+            sc = 90
+        elif wl in tl or tl in wl:
+            sc = 70
+        else:
+            sc = 0
+        if sc > best_score:
+            best_score = sc
+            best = o
+    if not best or best_score < 70:
+        return False
+    sel = str(best.get("selector") or _HOW_HEARD_OPTION_SELS[0])
+    idx = int(best.get("index") or 0)
+    try:
+        await page.locator(sel).nth(idx).click(timeout=timeout_ms)
+        return True
+    except Exception:
+        try:
+            loc = page.get_by_role("option", name=want, exact=False).first
+            await loc.click(timeout=timeout_ms)
+            return True
+        except Exception:
+            return False
+
+
+async def fill_hierarchical_how_heard(
+    page,
+    filter_input: Any,
+    *,
+    leaf_candidates: list[str] | None = None,
+    category_candidates: list[str] | None = None,
+    wait_ms: int = 450,
+) -> dict[str, Any]:
+    """Walmart-style Workday how-heard: type → open subsection → pick leaf → chip.
+
+    Flow:
+      1. Type a concrete leaf (Indeed / LinkedIn / …)
+      2. If a leaf option is visible, click it
+      3. Else if category/subsection headers appear, open the right one, then
+         click the leaf inside the subsection
+      4. Verify via formField chip chrome (``N items selected``); never treat
+         category filter text as committed
+    """
+    detail: dict[str, Any] = {
+        "algorithm": "hierarchical_how_heard",
+        "option_clicked": False,
+        "ok": False,
+        "verified": False,
+        "committed": False,
+        "status": "not_attempted",
+    }
+    try:
+        from fill_verify import (
+            how_heard_category_candidates,
+            how_heard_leaf_candidates,
+        )
+
+        leaves = [
+            c
+            for c in (leaf_candidates or how_heard_leaf_candidates())
+            if c and not is_how_heard_category_option(c)
+        ][:3]
+        cats = list(category_candidates or how_heard_category_candidates())[:3]
+    except Exception:
+        leaves = list(leaf_candidates or ["Indeed", "LinkedIn", "Company Website"])[:3]
+        cats = list(category_candidates or ["Internet job board", "Job Board"])[:3]
+
+    detail["leaves"] = leaves
+    detail["categories"] = cats
+
+    async def _ensure_open() -> None:
+        try:
+            await filter_input.click(timeout=2000, force=True)
+        except Exception:
+            try:
+                await filter_input.focus()
+            except Exception:
+                pass
+
+    async def _type_query(q: str) -> None:
+        await _ensure_open()
+        try:
+            await filter_input.fill("")
+        except Exception:
+            pass
+        try:
+            await filter_input.fill(str(q)[:80])
+        except Exception:
+            try:
+                await page.keyboard.type(str(q)[:80], delay=15)
+            except Exception:
+                pass
+        # Prefer a short settle over heavy nudge (nudge can hang on fixture DOMs)
+        try:
+            await page.wait_for_timeout(wait_ms)
+        except Exception:
+            pass
+        opts_now = await _list_how_heard_options(page)
+        if not opts_now:
+            try:
+                await nudge_listbox_after_type(page, filter_input, allow_enter=True)
+                await page.wait_for_timeout(wait_ms)
+            except Exception:
+                pass
+
+    async def _chip_ok(leaf: str) -> tuple[bool, str]:
+        snip = await _read_how_heard_wrap_text(page)
+        ok = how_heard_source_committed(snip, [leaf, *leaves])
+        if is_multiselect_uncommitted(snip):
+            ok = False
+        return ok, snip
+
+    snip0 = await _read_how_heard_wrap_text(page)
+    if how_heard_source_committed(snip0, leaves):
+        detail.update(
+            {
+                "status": "already_committed",
+                "ok": True,
+                "verified": True,
+                "committed": True,
+                "readback": snip0[:120],
+                "picked": snip0[:120],
+                "skipped_already_correct": True,
+            }
+        )
+        return detail
+
+    async def _try_pick_leaf(leaf: str, *, path: str, subsection: str = "") -> bool:
+        opts = await _list_how_heard_options(page)
+        for o in opts:
+            if o.get("is_category"):
+                continue
+            t = str(o.get("text") or "")
+            if soft_value_match(leaf, t) or t.lower() == leaf.lower():
+                clicked = await _click_option_by_text(page, t)
+                detail["option_clicked"] = clicked
+                detail["picked"] = t
+                detail["path"] = path
+                if subsection:
+                    detail["subsection"] = subsection
+                try:
+                    await page.wait_for_timeout(350)
+                except Exception:
+                    pass
+                ok, snip = await _chip_ok(leaf)
+                if ok:
+                    try:
+                        await settle_open_listbox(page)
+                    except Exception:
+                        pass
+                    detail.update(
+                        {
+                            "status": "picked",
+                            "ok": True,
+                            "verified": True,
+                            "committed": True,
+                            "readback": snip[:120],
+                            "value": leaf,
+                        }
+                    )
+                    return True
+        return False
+
+    for leaf in leaves:
+        detail["attempted_leaf"] = leaf
+        await _type_query(leaf)
+        opts = await _list_how_heard_options(page)
+        detail["options_after_leaf_type"] = [o.get("text") for o in opts[:12]]
+
+        if await _try_pick_leaf(leaf, path="leaf_direct"):
+            return detail
+
+        # Open a visible category / known category, then pick leaf
+        cat_opts = [o for o in opts if o.get("is_category")]
+        nav_cats: list[str] = []
+        for o in cat_opts:
+            t = str(o.get("text") or "")
+            if t and t not in nav_cats:
+                nav_cats.append(t)
+        for c in cats:
+            if c not in nav_cats:
+                nav_cats.append(c)
+        nav_cats = nav_cats[:3]
+
+        try:
+            from fill_step_log import note_step
+
+            note_step(
+                None,
+                action="how_heard_hierarchy_open",
+                label="how_heard",
+                field_type="HOW_HEARD",
+                after=leaf,
+                via="hierarchical_how_heard",
+                reason=f"opts={len(opts)} cats={len(cat_opts)}",
+            )
+        except Exception:
+            pass
+
+        for cat in nav_cats:
+            visible = [str(o.get("text") or "") for o in cat_opts]
+            if visible and not any(soft_value_match(cat, v) for v in visible):
+                # Category not in current list — type it to surface
+                await _type_query(cat)
+                opts = await _list_how_heard_options(page)
+                cat_opts = [o for o in opts if o.get("is_category")]
+            opened = await _click_option_by_text(page, cat)
+            detail.setdefault("subsection_opens", []).append(
+                {"category": cat, "opened": opened}
+            )
+            if not opened:
+                continue
+            try:
+                await page.wait_for_timeout(wait_ms)
+            except Exception:
+                pass
+            if await _try_pick_leaf(leaf, path="category_then_leaf", subsection=cat):
+                return detail
+            # Filter inside subsection
+            try:
+                await filter_input.fill("")
+                await filter_input.fill(leaf[:80])
+                await page.wait_for_timeout(wait_ms)
+            except Exception:
+                pass
+            if await _try_pick_leaf(
+                leaf, path="category_then_leaf_filtered", subsection=cat
+            ):
+                return detail
+
+    snip_f = await _read_how_heard_wrap_text(page)
+    detail.update(
+        {
+            "status": "no_leaf_chip",
+            "ok": False,
+            "verified": False,
+            "committed": False,
+            "readback": (snip_f or "")[:120],
+            "reason": "hierarchical_no_chip",
+        }
+    )
+    try:
+        await settle_open_listbox(page)
+    except Exception:
+        pass
+    return detail
 
 
 async def wait_for_option_texts(
@@ -2571,11 +2971,22 @@ async def fill_workday_combobox(
 ) -> dict[str, Any]:
     """Workday listbox combobox via universal word-by-word typable dropdown."""
     score_fn = _default_score_option
+    rejectors: list[Callable[[str], bool]] = []
     if reject_option is not None:
+        rejectors.append(reject_option)
+    # HOW_HEARD: never commit category/subsection headers as the selected option
+    if str(field_type or "").upper() == "HOW_HEARD":
+        rejectors.append(is_how_heard_category_option)
+
+    if rejectors:
 
         def _score_with_reject(opt: str, alias: str) -> int:
-            if reject_option(opt):
-                return 0
+            for rej in rejectors:
+                try:
+                    if rej(opt):
+                        return 0
+                except Exception:
+                    pass
             return int(score_fn(opt, alias) or 0)
 
         score_fn = _score_with_reject
@@ -2584,6 +2995,13 @@ async def fill_workday_combobox(
     cands = list(aliases or [])
     if value_n and value_n not in cands:
         cands = [value_n, *cands]
+    # Prefer leaf aliases for how-heard
+    if str(field_type or "").upper() == "HOW_HEARD":
+        leaves = [c for c in cands if not is_how_heard_category_option(c)]
+        cats = [c for c in cands if is_how_heard_category_option(c)]
+        cands = [*leaves, *cats]
+        if is_how_heard_category_option(value_n) and leaves:
+            value_n = leaves[0]
 
     detail = await fill_typable_dropdown(
         page,
@@ -2604,6 +3022,18 @@ async def fill_workday_combobox(
         ],
     )
     detail["mode"] = "workday_combobox"
+    # HOW_HEARD: category pick without chip chrome is not committed
+    if str(field_type or "").upper() == "HOW_HEARD":
+        picked = str(detail.get("picked") or "")
+        readback = str(detail.get("readback") or "")
+        if is_how_heard_category_option(picked) or not how_heard_source_committed(
+            readback or picked, cands
+        ):
+            if not how_heard_source_committed(readback, cands):
+                detail["ok"] = False
+                detail["verified"] = False
+                detail["committed"] = False
+                detail["reason"] = detail.get("reason") or "how_heard_category_not_chip"
     return detail
 
 

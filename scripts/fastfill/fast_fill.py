@@ -3316,7 +3316,11 @@ async def _demote_filled_against_required_empty(page, report: dict, values: dict
         )
         for f in (report.get("filled") or [])
     ):
-        from verified_select import is_multiselect_uncommitted
+        from verified_select import (
+            how_heard_source_committed,
+            is_multiselect_uncommitted,
+            is_uncommitted_filter_text as _hh_filter_text,
+        )
 
         live_hh_snip = ""
         try:
@@ -3324,7 +3328,8 @@ async def _demote_filled_against_required_empty(page, report: dict, values: dict
                 """() => {
                   const field = document.querySelector(
                     '[data-automation-id="formField-source"], '
-                    + '[data-automation-id*="formField-source"]'
+                    + '[data-automation-id*="formField-source"], '
+                    + '[data-automation-id="formField-how_heard"]'
                   );
                   return field
                     ? (field.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 200)
@@ -3333,8 +3338,9 @@ async def _demote_filled_against_required_empty(page, report: dict, values: dict
             )
         except Exception:
             live_hh_snip = ""
-        from verified_select import is_uncommitted_filter_text as _hh_filter_text
-
+        # Live chip chrome wins over stale required_empty (source--source) noise
+        if how_heard_source_committed(live_hh_snip):
+            how_heard_still_empty = False
         if is_multiselect_uncommitted(live_hh_snip) or how_heard_still_empty or any(
             isinstance(f, dict)
             and (
@@ -3366,6 +3372,10 @@ async def _demote_filled_against_required_empty(page, report: dict, values: dict
                         rb_hh, intended_hh, picked=f.get("picked"), from_input=True
                     )
                 )
+                # Never demote a row whose live/readback chip is committed
+                if is_hh and how_heard_source_committed(live_hh_snip or rb_hh):
+                    kept_hh.append(f)
+                    continue
                 if is_hh and (
                     how_heard_still_empty
                     or is_multiselect_uncommitted(live_hh_snip)
@@ -8073,33 +8083,50 @@ async def _hold_for_review(
         )
         reason = f"{seconds}s (never submit)"
     incomplete_hold = False
+    hold_action = "hold_incomplete"
     if report is not None:
         try:
             from page_progress import (
                 can_claim_ready,
                 finalize_ready_flag,
                 may_enter_review_hold,
+                workday_wizard_incomplete,
             )
 
             # Hold browser either way; Ready only when honesty gates pass.
             # Caller should have probed footer_primary (Next vs Submit) already.
-            if may_enter_review_hold(report) and can_claim_ready(report):
+            # Never frame as hold_review while footer ADVANCE / mid-wizard.
+            review_ok = bool(may_enter_review_hold(report) and can_claim_ready(report))
+            if review_ok and not workday_wizard_incomplete(report):
                 report["ready_for_review"] = True
+                hold_action = "hold_review"
             else:
                 report["ready_for_review"] = False
+                report["hold_incomplete"] = True
+                incomplete_hold = True
+                hold_action = "hold_incomplete"
                 if not may_enter_review_hold(report):
-                    report["hold_incomplete"] = True
-                    incomplete_hold = True
+                    report.setdefault(
+                        "hold_incomplete_reason",
+                        report.get("footer_primary_label")
+                        or report.get("workday_current_step")
+                        or "wizard_incomplete",
+                    )
             report["hold_indefinite"] = bool(indefinite)
             finalize_ready_flag(report)
             note_step(
                 report,
-                action="hold_review" if may_enter_review_hold(report) else "hold_incomplete",
+                action=hold_action,
                 reason=reason,
                 via="headed_hold",
             )
         except Exception:
             incomplete_hold = bool(report.get("hold_incomplete"))
+            hold_action = (
+                "hold_review"
+                if report and not report.get("hold_incomplete")
+                else "hold_incomplete"
+            )
 
     # Overlay → Continue (review or incomplete). Skip when CAPTCHA gate owns UI.
     pause_on = True
@@ -8135,7 +8162,12 @@ async def _hold_for_review(
                             try:
                                 note_step(
                                     report,
-                                    action="hold_review",
+                                    action=(
+                                        "hold_incomplete"
+                                        if incomplete_hold
+                                        or report.get("hold_incomplete")
+                                        else "hold_review"
+                                    ),
                                     reason="browser_closed",
                                     via="headed_hold",
                                 )
@@ -8211,7 +8243,11 @@ async def _hold_for_review(
             try:
                 note_step(
                     report,
-                    action="hold_review",
+                    action=(
+                        "hold_incomplete"
+                        if incomplete_hold or report.get("hold_incomplete")
+                        else "hold_review"
+                    ),
                     reason="interrupted by SIGINT",
                     via="headed_hold",
                 )

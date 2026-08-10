@@ -166,22 +166,93 @@ def is_verified_fill_row(row: dict | None) -> bool:
     return False
 
 
-def how_heard_candidates(values: dict[str, Any] | None = None) -> list[str]:
-    """Ordered HOW_HEARD option labels — never bare ``Internet`` (filter text)."""
-    heard = str((values or {}).get(HOW_HEARD) or "Internet job board").strip()
+# Workday tenants (Walmart etc.) use these as *category* headers, not leaf chips.
+HOW_HEARD_CATEGORY_LABELS = frozenset(
+    {
+        "internet job board",
+        "job board",
+        "job boards",
+        "social media",
+        "social network",
+        "social networks",
+        "career fair",
+        "career fairs",
+        "university",
+        "campus",
+        "agency",
+        "staffing agency",
+        "employee referral",
+        "internal",
+        "other source",
+        "other sources",
+    }
+)
+
+# Concrete source leaves — prefer these over category headers.
+HOW_HEARD_LEAF_LABELS = (
+    "Indeed",
+    "LinkedIn",
+    "Company Website",
+    "Google For Jobs",
+    "CareerBuilder",
+    "Other",
+)
+
+
+def is_how_heard_category_option(text: str | None) -> bool:
+    """True when option text is a Workday how-heard *subsection/category* header."""
+    t = " ".join(str(text or "").strip().lower().split())
+    if not t or t == "internet":
+        return True
+    if t in HOW_HEARD_CATEGORY_LABELS:
+        return True
+    # "Other Job Board" is a leaf-ish chip Walmart emits; not a navigable category.
+    if t.startswith("other ") and "board" in t:
+        return False
+    if t.endswith(" job board") or t.endswith(" job boards"):
+        return True
+    return False
+
+
+def how_heard_leaf_candidates(values: dict[str, Any] | None = None) -> list[str]:
+    """Concrete source leaves only (Indeed / LinkedIn / …) — never category headers."""
+    heard = str((values or {}).get(HOW_HEARD) or "").strip()
     out: list[str] = []
-    for alt in (
-        heard,
-        "Internet job board",
-        "Indeed",
-        "Company Website",
-        "LinkedIn",
-        "Other",
-        "Job Board",
+    if heard and not is_how_heard_category_option(heard):
+        out.append(heard)
+    for alt in HOW_HEARD_LEAF_LABELS:
+        if alt.lower() not in {c.lower() for c in out}:
+            out.append(alt)
+    return out or ["Indeed"]
+
+
+def how_heard_category_candidates(values: dict[str, Any] | None = None) -> list[str]:
+    """Category/subsection headers used only to *navigate* hierarchical menus."""
+    heard = str((values or {}).get(HOW_HEARD) or "").strip()
+    out: list[str] = []
+    if heard and is_how_heard_category_option(heard):
+        out.append(heard)
+    for alt in ("Internet job board", "Job Board", "Job Boards"):
+        if alt.lower() not in {c.lower() for c in out}:
+            out.append(alt)
+    return out
+
+
+def how_heard_candidates(values: dict[str, Any] | None = None) -> list[str]:
+    """Ordered HOW_HEARD labels — **leaves first**, categories last (navigation only).
+
+    Never bare ``Internet`` (filter text). Prefer Indeed/LinkedIn over
+    ``Internet job board`` / ``Job Board`` so hierarchical tenants (Walmart)
+    do not lock onto a category header as if it were a committed chip.
+    """
+    out: list[str] = []
+    for a in (
+        *how_heard_leaf_candidates(values),
+        *how_heard_category_candidates(values),
     ):
-        a = str(alt or "").strip()
-        if not a or a.lower() == "internet":
+        s = str(a or "").strip()
+        if not s or s.lower() == "internet":
             continue
-        if a.lower() not in {c.lower() for c in out}:
-            out.append(a)
-    return out or ["Internet job board"]
+        if s.lower() not in {c.lower() for c in out}:
+            out.append(s)
+    return out or ["Indeed"]
