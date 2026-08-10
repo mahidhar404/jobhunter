@@ -49,9 +49,12 @@ skyvern_runtime/venv/bin/python scripts/fastfill/dry_run.py --check-consistency
 # Blazing-fast fill (0 LLM; leftovers shape in report["flash"], Flash NOT invoked)
 skyvern_runtime/venv/bin/python scripts/fastfill/fast_fill.py URL --headed
 skyvern_runtime/venv/bin/python scripts/fastfill/fast_fill.py URL --headless --out results.json
-# CAPTCHA (headed default): human solves in browser, press Enter to continue
 # Pause fill (headed default): top-right Pause fill / Continue fill overlay;
-#   disable with --no-fill-pause or FASTFILL_FILL_PAUSE=0
+#   on hold + during CAPTCHA wait the button becomes Continue (resume);
+#   CAPTCHA still never auto-solved (FILL-008); disable with --no-fill-pause
+#   or FASTFILL_FILL_PAUSE=0
+# CAPTCHA (headed default): human solves in browser, then Continue overlay
+#   or Enter / .captcha_continue
 # Same-session leftover refill while browser stays open (AUTO — no Enter):
 skyvern_runtime/venv/bin/python scripts/fastfill/fast_fill.py URL --headed --hold-open \
   --flash-leftovers --refill-passes 2

@@ -6,10 +6,20 @@ Hard rules:
     mid-select / mid-upload). FILL3-009 — UX must not promise near-immediate stop.
   - Continue resumes; callers should rely on already_correct skips so
     human-filled / previously filled values are not thrashed
-  - FILL3-002 / FILL3-015 / FILL2-S03: while CAPTCHA wait is active, hide the
-    overlay (pointer-events:none, low z-index) so it cannot cover the challenge.
-    Remount observer respects the CAPTCHA gate flag.
-  - FILL2-S02: Continue fill does NOT clear CAPTCHA wait — Enter / .captcha_continue
+  - CAPTCHA wait: overlay stays **visible** with play (▶) / aria **Continue**
+    (human solved → click to resume). Same resume path as Enter /
+    ``.captcha_continue``; FILL-008 still requires the challenge to be gone
+    before clearing blocker. ``__jhCaptchaGate`` marks CAPTCHA ownership of
+    resume (pause-wait yields) but does **not** hide the button.
+  - Hold (review or incomplete): overlay switches to play (▶) / aria
+    **Continue**. Clicking clears hold so the fill loop can resume / advance
+    Next — never submit.
+  - While actively filling (not held / not CAPTCHA): pause symbol (❚❚) /
+    aria **Pause fill**. Mid-fill pause (not hold/CAPTCHA) uses ▶ /
+    aria **Continue fill**.
+  - Visible status strip on the control shows compact activity
+    (``L1 · filling Email``, ``hold · incomplete``, ``CAPTCHA``) without hover;
+    hover tip remains secondary detail.
   - FILL3-017: throttle overlay re-inject (skip CDP when already mounted recently)
   - Never auto-close the fill browser while Pause is engaged, or after a
     terminal fill when headed ``--hold-open`` (indefinite) is active — only the
@@ -32,6 +42,10 @@ OVERLAY_ID = "jh-fill-pause-overlay"
 CONTROL_GLOBAL = "__jhFillControl"
 CAPTCHA_GATE_GLOBAL = "__jhCaptchaGate"
 ACTIVITY_GLOBAL = "__jhFillActivity"
+
+# Visible control glyphs (aria-label / title keep full Pause fill / Continue words).
+SYM_PAUSE = "❚❚"
+SYM_PLAY = "▶"
 
 # FILL3-017: skip re-evaluate when overlay was injected this recently (seconds).
 _INJECT_THROTTLE_S = 2.0
@@ -69,6 +83,35 @@ LAYER_LABELS = {
     "captcha": "Waiting CAPTCHA (human)",
     "paused": "Idle (paused)",
     "refill": "In-session refill",
+}
+
+# Compact layer tags for the always-visible status strip on the control.
+COMPACT_LAYER = {
+    "0": "L0",
+    "layer0": "L0",
+    "pack": "L0",
+    "deterministic": "L0",
+    "1": "L1",
+    "layer1": "L1",
+    "extract": "L1",
+    "verified_select": "L1",
+    "2": "L2",
+    "layer2": "L2",
+    "flash": "L2",
+    "leftovers": "L2",
+    "entry": "entry",
+    "advance": "advance",
+    "hold": "hold",
+    "captcha": "CAPTCHA",
+    "paused": "paused",
+    "refill": "refill",
+    "workday": "WD",
+}
+
+_COMPACT_ACTION = {
+    "fill": "filling",
+    "select": "selecting",
+    "upload": "uploading",
 }
 
 
@@ -115,6 +158,34 @@ def format_fill_activity_text(act: dict[str, Any] | None = None) -> str:
     return " · ".join(parts)[:220]
 
 
+def format_fill_activity_compact(act: dict[str, Any] | None = None) -> str:
+    """Compact always-visible status for the overlay control (truncate labels)."""
+    a = act if isinstance(act, dict) else _CURRENT_ACTIVITY
+    key = str(a.get("layer") or "").strip().lower()
+    action = str(a.get("action") or "idle").strip()
+    label = str(a.get("label") or "").strip()
+    detail = str(a.get("detail") or "").strip()
+    if key == "captcha":
+        return "CAPTCHA"
+    if key == "hold":
+        blob = f"{action} {detail}".lower()
+        if "incomplete" in blob:
+            return "hold · incomplete"
+        return "hold · review"
+    if key == "paused":
+        return "paused"
+    layer = COMPACT_LAYER.get(key) or (key[:10] if key else "—")
+    verb = _COMPACT_ACTION.get(action.lower(), action[:22] or "idle")
+    if label:
+        # Prefer short field names over raw type ids.
+        short = label if len(label) <= 28 else (label[:27] + "…")
+        return f"{layer} · {verb} {short}"[:48].strip()
+    if detail and detail.lower() not in (action.lower(), verb.lower()):
+        short_d = detail if len(detail) <= 24 else (detail[:23] + "…")
+        return f"{layer} · {verb} · {short_d}"[:48].strip()
+    return f"{layer} · {verb}"[:48].strip()
+
+
 def should_keep_fill_browser_open(
     *,
     paused: bool = False,
@@ -155,19 +226,25 @@ _OVERLAY_CSS = f"""
   z-index: 2147483646 !important;
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif !important;
   pointer-events: auto !important;
+  max-width: 260px !important;
 }}
 #{OVERLAY_ID}.jh-captcha-gated {{
-  /* FILL3-002: do not intercept CAPTCHA clicks in the top-right */
-  z-index: 1 !important;
-  pointer-events: none !important;
-  opacity: 0 !important;
-  visibility: hidden !important;
+  /* CAPTCHA wait: keep play/Continue visible/clickable (top-right; never hide).
+     Gate flag only marks that CAPTCHA wait owns resume semantics. */
+  z-index: 2147483646 !important;
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  visibility: visible !important;
 }}
 #{OVERLAY_ID} button {{
   appearance: none !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
   border: 1px solid rgba(0,0,0,0.25) !important;
   border-radius: 8px !important;
-  padding: 10px 14px !important;
+  padding: 8px 10px !important;
+  max-width: 260px !important;
   font-size: 13px !important;
   font-weight: 600 !important;
   letter-spacing: 0.01em !important;
@@ -181,6 +258,27 @@ _OVERLAY_CSS = f"""
   color: #fffbeb !important;
   border-color: #92400e !important;
 }}
+#{OVERLAY_ID} .jh-sym {{
+  flex: 0 0 auto !important;
+  min-width: 1.15em !important;
+  text-align: center !important;
+  font-size: 14px !important;
+  line-height: 1 !important;
+  font-weight: 700 !important;
+}}
+#{OVERLAY_ID} .jh-status {{
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  max-width: 200px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0 !important;
+  opacity: .95 !important;
+  text-align: left !important;
+}}
 #{OVERLAY_ID} .jh-hint {{
   margin-top: 6px !important;
   font-size: 11px !important;
@@ -188,7 +286,7 @@ _OVERLAY_CSS = f"""
   background: rgba(255,255,255,0.92) !important;
   border-radius: 6px !important;
   padding: 4px 8px !important;
-  max-width: 220px !important;
+  max-width: 240px !important;
   line-height: 1.35 !important;
   box-shadow: 0 2px 8px rgba(0,0,0,0.12) !important;
 }}
@@ -217,6 +315,111 @@ _OVERLAY_CSS = f"""
 }}
 """
 
+# Shared UI sync body (OID / GID / CGATE / AGID must be in scope).
+_SYNC_UI_JS = f"""
+  const SYM_PAUSE = {SYM_PAUSE!r};
+  const SYM_PLAY = {SYM_PLAY!r};
+  const COMPACT_LAYER = {{
+    '0': 'L0', 'layer0': 'L0', 'pack': 'L0', 'deterministic': 'L0',
+    '1': 'L1', 'layer1': 'L1', 'extract': 'L1', 'verified_select': 'L1',
+    '2': 'L2', 'layer2': 'L2', 'flash': 'L2', 'leftovers': 'L2',
+    'entry': 'entry', 'advance': 'advance', 'hold': 'hold',
+    'captcha': 'CAPTCHA', 'paused': 'paused', 'refill': 'refill', 'workday': 'WD',
+  }};
+  const COMPACT_ACTION = {{ fill: 'filling', select: 'selecting', upload: 'uploading' }};
+  const activityText = () => {{
+    const a = window[AGID] || {{}};
+    if (a.text) return String(a.text);
+    const bits = [a.layer_label || a.layer || '—', a.action || 'idle'];
+    if (a.label) bits.push(a.label);
+    if (a.detail && a.detail !== a.label) bits.push(a.detail);
+    return bits.join(' · ');
+  }};
+  const compactStatus = () => {{
+    const a = window[AGID] || {{}};
+    if (a.compact) return String(a.compact);
+    const key = String(a.layer || '').toLowerCase();
+    const action = String(a.action || 'idle').trim();
+    const label = String(a.label || '').trim();
+    const detail = String(a.detail || '').trim();
+    if (key === 'captcha' || window[CGATE]) return 'CAPTCHA';
+    if (key === 'hold') {{
+      const blob = (action + ' ' + detail).toLowerCase();
+      return blob.indexOf('incomplete') >= 0 ? 'hold · incomplete' : 'hold · review';
+    }}
+    if (key === 'paused') return 'paused';
+    const layer = COMPACT_LAYER[key] || (key ? key.slice(0, 10) : '—');
+    const verb = COMPACT_ACTION[action.toLowerCase()] || action.slice(0, 22) || 'idle';
+    if (label) {{
+      const short = label.length <= 28 ? label : (label.slice(0, 27) + '…');
+      return (layer + ' · ' + verb + ' ' + short).slice(0, 48).trim();
+    }}
+    if (detail && detail.toLowerCase() !== action.toLowerCase()) {{
+      const shortD = detail.length <= 24 ? detail : (detail.slice(0, 23) + '…');
+      return (layer + ' · ' + verb + ' · ' + shortD).slice(0, 48).trim();
+    }}
+    return (layer + ' · ' + verb).slice(0, 48).trim();
+  }};
+  const ensureBtnParts = (btn) => {{
+    let sym = document.getElementById(OID + '-sym');
+    let status = document.getElementById(OID + '-status');
+    if (!sym || !status || !btn.contains(sym) || !btn.contains(status)) {{
+      btn.textContent = '';
+      sym = document.createElement('span');
+      sym.className = 'jh-sym';
+      sym.id = OID + '-sym';
+      status = document.createElement('span');
+      status.className = 'jh-status';
+      status.id = OID + '-status';
+      status.setAttribute('aria-hidden', 'true');
+      btn.appendChild(sym);
+      btn.appendChild(status);
+    }}
+    return {{ sym, status }};
+  }};
+  const syncButton = (btn, hint) => {{
+    if (!btn) return;
+    const c = window[GID] || {{}};
+    const parts = ensureBtnParts(btn);
+    const statusText = compactStatus();
+    parts.status.textContent = statusText;
+    if (c.paused || window[CGATE]) {{
+      // Hold / CAPTCHA → Continue; mid-fill pause → Continue fill (aria/title).
+      const resumeMode = !!(c.holdMode || window[CGATE]);
+      const a11y = resumeMode ? 'Continue' : 'Continue fill';
+      parts.sym.textContent = SYM_PLAY;
+      btn.setAttribute('aria-label', a11y);
+      btn.setAttribute('title', a11y + ' — ' + statusText);
+      btn.setAttribute('data-jh-symbol', 'play');
+      btn.setAttribute(
+        'data-jh-mode',
+        window[CGATE] ? 'captcha' : (c.holdMode ? 'hold' : 'paused')
+      );
+      btn.classList.add('jh-paused');
+      if (hint) {{
+        if (window[CGATE]) {{
+          hint.textContent = 'CAPTCHA — solve in browser, then click Continue (or Enter / .captcha_continue). Never auto-solved.';
+        }} else if (c.holdMode) {{
+          hint.textContent = 'On hold — Continue resumes fill / Next (never submits).';
+        }} else {{
+          hint.textContent = 'PAUSED between actions — edit fields, then Continue (skips already filled).';
+        }}
+      }}
+    }} else {{
+      parts.sym.textContent = SYM_PAUSE;
+      btn.setAttribute('aria-label', 'Pause fill');
+      btn.setAttribute('title', 'Pause fill — ' + statusText);
+      btn.setAttribute('data-jh-symbol', 'pause');
+      btn.setAttribute('data-jh-mode', 'active');
+      btn.classList.remove('jh-paused');
+      c.holdMode = false;
+      if (hint) {{
+        hint.textContent = 'Pause takes effect between fill actions (not mid-widget).';
+      }}
+    }}
+  }};
+"""
+
 _INSTALL_OVERLAY_JS = f"""
 () => {{
   const GID = {CONTROL_GLOBAL!r};
@@ -226,10 +429,13 @@ _INSTALL_OVERLAY_JS = f"""
   if (!window[GID]) {{
     window[GID] = {{
       paused: false,
+      holdMode: false,
       pauseCount: 0,
       continueCount: 0,
       installedAt: Date.now(),
     }};
+  }} else if (typeof window[GID].holdMode === 'undefined') {{
+    window[GID].holdMode = false;
   }}
   if (!window[AGID]) {{
     window[AGID] = {{
@@ -239,34 +445,30 @@ _INSTALL_OVERLAY_JS = f"""
       label: '',
       detail: '',
       text: 'idle',
+      compact: '— · idle',
       updated_at: 0,
     }};
   }}
-  const activityText = () => {{
-    const a = window[AGID] || {{}};
-    if (a.text) return String(a.text);
-    const bits = [a.layer_label || a.layer || '—', a.action || 'idle'];
-    if (a.label) bits.push(a.label);
-    if (a.detail && a.detail !== a.label) bits.push(a.detail);
-    return bits.join(' · ');
-  }};
+  {_SYNC_UI_JS}
   const applyCaptchaGate = (root) => {{
     if (!root) return;
     if (window[CGATE]) {{
       root.classList.add('jh-captcha-gated');
-      root.setAttribute('aria-hidden', 'true');
       root.setAttribute('data-jh-captcha-gated', '1');
-      root.classList.remove('jh-tip-open');
+      root.removeAttribute('aria-hidden');
     }} else {{
       root.classList.remove('jh-captcha-gated');
-      root.removeAttribute('aria-hidden');
       root.removeAttribute('data-jh-captcha-gated');
+      root.removeAttribute('aria-hidden');
     }}
   }};
   const ensure = () => {{
     let root = document.getElementById(OID);
     if (root && root.isConnected) {{
       applyCaptchaGate(root);
+      const btn = document.getElementById(OID + '-btn');
+      const hint = document.getElementById(OID + '-hint');
+      if (btn) syncButton(btn, hint);
       return root;
     }}
     root = document.createElement('div');
@@ -278,7 +480,10 @@ _INSTALL_OVERLAY_JS = f"""
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.id = OID + '-btn';
-    btn.setAttribute('aria-label', 'Pause or continue job-hunter autofill');
+    btn.setAttribute('aria-label', 'Pause fill');
+    btn.setAttribute('title', 'Pause fill');
+    btn.setAttribute('data-jh-symbol', 'pause');
+    btn.setAttribute('data-jh-mode', 'active');
     const hint = document.createElement('div');
     hint.className = 'jh-hint';
     hint.id = OID + '-hint';
@@ -289,15 +494,16 @@ _INSTALL_OVERLAY_JS = f"""
     tip.setAttribute('role', 'status');
     tip.textContent = activityText();
     let tipTimer = null;
-    const refreshTip = () => {{
+    const refreshStatus = () => {{
       tip.textContent = activityText();
+      syncButton(btn, hint);
     }};
     const openTip = () => {{
       if (window[CGATE]) return;
-      refreshTip();
+      refreshStatus();
       root.classList.add('jh-tip-open');
       if (tipTimer) clearInterval(tipTimer);
-      tipTimer = setInterval(refreshTip, 400);
+      tipTimer = setInterval(refreshStatus, 400);
     }};
     const closeTip = () => {{
       root.classList.remove('jh-tip-open');
@@ -308,27 +514,34 @@ _INSTALL_OVERLAY_JS = f"""
     btn.addEventListener('focus', openTip);
     btn.addEventListener('blur', closeTip);
     const sync = () => {{
-      const c = window[GID];
-      if (c.paused) {{
-        btn.textContent = 'Continue fill';
-        btn.classList.add('jh-paused');
-        hint.textContent = 'PAUSED between actions — edit fields, then Continue (skips already filled). Does NOT clear CAPTCHA wait.';
-      }} else {{
-        btn.textContent = 'Pause fill';
-        btn.classList.remove('jh-paused');
-        hint.textContent = 'Pause takes effect between fill actions (not mid-widget). During CAPTCHA use Enter / .captcha_continue, not Continue fill.';
-      }}
-      refreshTip();
+      syncButton(btn, hint);
+      tip.textContent = activityText();
     }};
     btn.addEventListener('click', (ev) => {{
       ev.preventDefault();
       ev.stopPropagation();
-      // FILL3-002: ignore clicks while CAPTCHA gate hides the overlay
-      if (window[CGATE]) return;
       const c = window[GID];
+      // CAPTCHA / hold: play/Continue — click requests resume (paused=false).
+      // CAPTCHA wait loop still enforces FILL-008 (challenge must be gone).
+      if (window[CGATE] || c.holdMode) {{
+        if (c.paused) {{
+          c.paused = false;
+          c.continueCount = (c.continueCount || 0) + 1;
+          c.holdMode = false;
+        }} else {{
+          c.paused = true;
+          c.pauseCount = (c.pauseCount || 0) + 1;
+          if (window[CGATE]) c.holdMode = true;
+        }}
+        sync();
+        return;
+      }}
       c.paused = !c.paused;
       if (c.paused) c.pauseCount = (c.pauseCount || 0) + 1;
-      else c.continueCount = (c.continueCount || 0) + 1;
+      else {{
+        c.continueCount = (c.continueCount || 0) + 1;
+        c.holdMode = false;
+      }}
       sync();
     }}, true);
     root.appendChild(btn);
@@ -370,31 +583,66 @@ _INSTALL_OVERLAY_JS = f"""
 _SET_CAPTCHA_GATE_JS = f"""
 (want) => {{
   const CGATE = {CAPTCHA_GATE_GLOBAL!r};
+  const GID = {CONTROL_GLOBAL!r};
   const OID = {OVERLAY_ID!r};
+  const AGID = {ACTIVITY_GLOBAL!r};
   window[CGATE] = !!want;
+  if (!window[GID]) {{
+    window[GID] = {{ paused: false, holdMode: false, pauseCount: 0, continueCount: 0 }};
+  }}
+  if (!window[AGID]) {{
+    window[AGID] = {{ layer: null, action: 'idle', label: '', detail: '', text: '', compact: '' }};
+  }}
+  const c = window[GID];
+  if (want) {{
+    // Show play/Continue (visible) — CAPTCHA wait owns resume; do not hide overlay.
+    if (!c.paused) {{
+      c.paused = true;
+      c.pauseCount = (c.pauseCount || 0) + 1;
+    }}
+    c.holdMode = true;
+  }} else {{
+    // Leaving CAPTCHA wait — drop holdMode; leave paused as-is for callers.
+    c.holdMode = false;
+  }}
   const root = document.getElementById(OID);
   if (root) {{
     if (want) {{
       root.classList.add('jh-captcha-gated');
-      root.setAttribute('aria-hidden', 'true');
       root.setAttribute('data-jh-captcha-gated', '1');
+      root.removeAttribute('aria-hidden');
     }} else {{
       root.classList.remove('jh-captcha-gated');
-      root.removeAttribute('aria-hidden');
       root.removeAttribute('data-jh-captcha-gated');
+      root.removeAttribute('aria-hidden');
     }}
   }}
-  return {{ captcha_gated: !!window[CGATE], overlay_present: !!root }};
+  {_SYNC_UI_JS}
+  const btn = document.getElementById(OID + '-btn');
+  const hint = document.getElementById(OID + '-hint');
+  syncButton(btn, hint);
+  return {{
+    captcha_gated: !!window[CGATE],
+    overlay_present: !!root,
+    paused: !!c.paused,
+    holdMode: !!c.holdMode,
+  }};
 }}
 """
 
 _READ_STATE_JS = f"""
 () => {{
   const c = window[{CONTROL_GLOBAL!r}];
-  if (!c) return {{ paused: false, installed: false, captcha_gated: !!window[{CAPTCHA_GATE_GLOBAL!r}] }};
+  if (!c) return {{
+    paused: false,
+    installed: false,
+    holdMode: false,
+    captcha_gated: !!window[{CAPTCHA_GATE_GLOBAL!r}],
+  }};
   return {{
     paused: !!c.paused,
     installed: true,
+    holdMode: !!c.holdMode,
     pauseCount: c.pauseCount || 0,
     continueCount: c.continueCount || 0,
     captcha_gated: !!window[{CAPTCHA_GATE_GLOBAL!r}],
@@ -406,15 +654,31 @@ _PUSH_ACTIVITY_JS = f"""
 (payload) => {{
   const AGID = {ACTIVITY_GLOBAL!r};
   const OID = {OVERLAY_ID!r};
+  const GID = {CONTROL_GLOBAL!r};
+  const CGATE = {CAPTCHA_GATE_GLOBAL!r};
   window[AGID] = Object.assign({{}}, window[AGID] || {{}}, payload || {{}});
+  const a = window[AGID];
   const tip = document.getElementById(OID + '-tip');
   if (tip) {{
-    const a = window[AGID];
     tip.textContent = a.text || [a.layer_label || a.layer || '—', a.action || 'idle']
       .concat(a.label ? [a.label] : [])
       .join(' · ');
   }}
-  return {{ ok: true, text: (window[AGID] && window[AGID].text) || '' }};
+  const status = document.getElementById(OID + '-status');
+  if (status) {{
+    status.textContent = a.compact || a.text || String(a.action || 'idle');
+  }}
+  const btn = document.getElementById(OID + '-btn');
+  if (btn) {{
+    const a11y = btn.getAttribute('aria-label') || 'Pause fill';
+    const st = status ? status.textContent : (a.compact || '');
+    if (st) btn.setAttribute('title', a11y + ' — ' + st);
+  }}
+  return {{
+    ok: true,
+    text: (window[AGID] && window[AGID].text) || '',
+    compact: (window[AGID] && window[AGID].compact) || '',
+  }};
 }}
 """
 
@@ -495,16 +759,60 @@ async def inject_fill_pause_overlay(
 
 
 async def set_fill_pause_captcha_gate(page, active: bool) -> dict[str, Any]:
-    """FILL3-002 / FILL3-015: hide/disable overlay while CAPTCHA wait is active.
+    """Mark CAPTCHA wait ownership and show play/Continue on the overlay.
 
-    Remount observer re-applies the gate. Never solves CAPTCHA.
+    When *active*, the overlay stays **visible** with ▶ / aria **Continue**
+    (human solved → click). ``wait_while_paused`` yields while gated so CAPTCHA
+    wait owns resume. Never solves CAPTCHA; FILL-008 still applies at the wait.
     """
     try:
-        # Ensure overlay exists so gate class can attach; force bypass throttle.
+        # Ensure overlay exists so Continue can attach; force bypass throttle.
         await inject_fill_pause_overlay(page, force=True)
-        return await page.evaluate(_SET_CAPTCHA_GATE_JS, bool(active)) or {}
+        out = await page.evaluate(_SET_CAPTCHA_GATE_JS, bool(active)) or {}
+        if active:
+            _last_paused_known[_page_inject_key(page)] = True
+            note_fill_activity(
+                layer="captcha",
+                action="waiting human solve",
+                detail="Continue when solved",
+            )
+            try:
+                await push_fill_activity(page)
+            except Exception:
+                pass
+        return out
     except Exception as e:
         return {"captcha_gated": bool(active), "error": str(e)[:120]}
+
+
+async def enter_hold_continue_mode(
+    page,
+    report: dict | None = None,
+    *,
+    incomplete: bool = False,
+) -> dict[str, Any]:
+    """Show Continue while fill is held (review or incomplete). Never submit."""
+    detail = (
+        "holding incomplete — Continue to resume"
+        if incomplete
+        else "hold for review — Continue to resume"
+    )
+    note_fill_activity(
+        layer="hold",
+        action="holding incomplete — not ready" if incomplete else "hold for review",
+        detail=detail,
+    )
+    try:
+        await push_fill_activity(page)
+    except Exception:
+        pass
+    out = await set_fill_paused(page, True, hold_mode=True)
+    if report is not None:
+        fp = report.setdefault("fill_pause", {})
+        if isinstance(fp, dict):
+            fp["hold_continue_mode"] = True
+            fp["hold_incomplete_ui"] = bool(incomplete)
+    return out
 
 
 async def install_fill_pause_on_context(context) -> None:
@@ -518,9 +826,10 @@ async def install_fill_pause_on_context(context) -> None:
 
 
 async def push_fill_activity(page, act: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Push current activity into ``window.__jhFillActivity`` for the hover tip."""
+    """Push activity into ``window.__jhFillActivity`` (status strip + hover tip)."""
     payload = dict(act or _CURRENT_ACTIVITY)
     payload["text"] = format_fill_activity_text(payload)
+    payload["compact"] = format_fill_activity_compact(payload)
     if page is None:
         return {"ok": False, "via": "no_page", **payload}
     try:
@@ -568,36 +877,42 @@ async def read_fill_pause_state(
     return {"paused": False, "installed": False}
 
 
-async def set_fill_paused(page, paused: bool) -> dict[str, Any]:
-    """Programmatic pause/resume (tests / sentinel). Updates overlay UI."""
+async def set_fill_paused(
+    page, paused: bool, *, hold_mode: bool = False
+) -> dict[str, Any]:
+    """Programmatic pause/resume (tests / sentinel / hold). Updates overlay UI.
+
+    ``hold_mode=True`` uses play (▶) / aria **Continue** (hold/CAPTCHA resume UX)
+    instead of mid-fill ▶ / aria **Continue fill**.
+    """
     js = f"""
-    (want) => {{
+    (payload) => {{
+      const want = !!(payload && payload.paused);
+      const holdMode = !!(payload && payload.hold_mode);
       const GID = {CONTROL_GLOBAL!r};
       const CGATE = {CAPTCHA_GATE_GLOBAL!r};
-      if (!window[GID]) window[GID] = {{ paused: false, pauseCount: 0, continueCount: 0 }};
+      const OID = {OVERLAY_ID!r};
+      const AGID = {ACTIVITY_GLOBAL!r};
+      if (!window[GID]) window[GID] = {{
+        paused: false, holdMode: false, pauseCount: 0, continueCount: 0
+      }};
+      if (!window[AGID]) {{
+        window[AGID] = {{ layer: null, action: 'idle', label: '', detail: '', text: '', compact: '' }};
+      }}
       const c = window[GID];
       const was = !!c.paused;
-      c.paused = !!want;
+      c.paused = want;
+      if (want) c.holdMode = holdMode || !!c.holdMode;
+      else c.holdMode = false;
       if (c.paused && !was) c.pauseCount = (c.pauseCount || 0) + 1;
       if (!c.paused && was) c.continueCount = (c.continueCount || 0) + 1;
-      const btn = document.getElementById({OVERLAY_ID!r} + '-btn');
-      const hint = document.getElementById({OVERLAY_ID!r} + '-hint');
-      if (btn) {{
-        if (c.paused) {{
-          btn.textContent = 'Continue fill';
-          btn.classList.add('jh-paused');
-        }} else {{
-          btn.textContent = 'Pause fill';
-          btn.classList.remove('jh-paused');
-        }}
-      }}
-      if (hint) {{
-        hint.textContent = c.paused
-          ? 'PAUSED between actions — edit fields, then Continue (skips already filled). Does NOT clear CAPTCHA wait.'
-          : 'Pause takes effect between fill actions (not mid-widget). During CAPTCHA use Enter / .captcha_continue, not Continue fill.';
-      }}
+      {_SYNC_UI_JS}
+      const btn = document.getElementById(OID + '-btn');
+      const hint = document.getElementById(OID + '-hint');
+      syncButton(btn, hint);
       return {{
         paused: !!c.paused,
+        holdMode: !!c.holdMode,
         pauseCount: c.pauseCount,
         continueCount: c.continueCount,
         captcha_gated: !!window[CGATE],
@@ -606,11 +921,13 @@ async def set_fill_paused(page, paused: bool) -> dict[str, Any]:
     """
     try:
         await inject_fill_pause_overlay(page, force=True)
-        out = await page.evaluate(js, bool(paused)) or {}
+        out = await page.evaluate(
+            js, {"paused": bool(paused), "hold_mode": bool(hold_mode)}
+        ) or {}
         _last_paused_known[_page_inject_key(page)] = bool(paused)
         return out
     except Exception as e:
-        return {"paused": bool(paused), "error": str(e)[:120]}
+        return {"paused": bool(paused), "holdMode": bool(hold_mode), "error": str(e)[:120]}
 
 
 def _note_pause(report: dict | None, **kwargs: Any) -> None:
@@ -647,8 +964,9 @@ async def wait_while_paused(
     On resume after a pause, sets ``report['fill_pause']['resume_rescan']=True``
     so callers know to prefer already_correct skips.
 
-    FILL3-002: when CAPTCHA gate is active, do not treat overlay pause as blocking
-    (overlay is hidden; CAPTCHA wait owns the human channel).
+    FILL3-002 / CAPTCHA gate: when CAPTCHA wait is active, do not treat overlay
+    pause as a nested block — CAPTCHA wait owns the human resume channel
+    (overlay shows Continue; click is handled there with FILL-008).
 
     While paused, CDP/evaluate errors keep the wait (fail closed) so fill cannot
     finish and tear down headed Chrome behind the human.
@@ -685,7 +1003,7 @@ async def wait_while_paused(
     was_paused = False
     t0 = time.monotonic()
     while True:
-        # FILL3-002 / FILL2-S02: CAPTCHA gate owns human resume — skip pause wait
+        # CAPTCHA wait owns human resume — yield (Continue handled in captcha_pause)
         st_gate = await read_fill_pause_state(
             page, assume_paused_on_error=was_paused
         )
@@ -777,11 +1095,11 @@ async def wait_while_paused(
             )
             print(
                 "\n*** FILL PAUSED (between actions) — edit the form in Chrome, "
-                "then click 'Continue fill' (top-right). "
+                "then click ▶ / Continue fill (top-right). "
                 "Browser stays open until you Continue or close the window "
                 "(never auto-closes while paused). "
-                "Pause is not mid-widget; Continue fill does NOT clear a "
-                "CAPTCHA wait — use Enter / .captcha_continue for CAPTCHA. ***\n",
+                "Pause is not mid-widget. During CAPTCHA the overlay shows "
+                "▶ / Continue (same as Enter / .captcha_continue). ***\n",
                 flush=True,
             )
             try:

@@ -4,15 +4,17 @@ Hard rules:
   - Never solve CAPTCHA / Turnstile / Cloudflare programmatically
   - Never dismiss CAPTCHA widgets/iframes/modals
   - Headless / captcha_wait off: keep blocker=captcha (cannot solve)
-  - Headed + captcha_wait: pause, human solves in browser, Enter to continue
-    same session — do NOT abort as BLOCKED while waiting
+  - Headed + captcha_wait: pause, human solves in browser, then resume via
+    overlay **Continue**, Enter, challenge-gone, or sentinel — do NOT abort
+    as BLOCKED while waiting
 
 Message shown to the human (exact)::
 
-    CAPTCHA detected — solve it in the browser, then press Enter here to continue
+    CAPTCHA detected — solve it in the browser, then click Continue
+    (top-right overlay) or press Enter here to continue
 
 No-TTY headed runs (nohup / background): still wait — poll until the challenge
-is gone, or until a sentinel continue-file appears (see
+is gone, overlay Continue, or until a sentinel continue-file appears (see
 ``captcha_continue_sentinel_path``). Never abort without waiting when headed
 captcha-wait is on. Never ``skipped_no_tty``.
 """
@@ -29,9 +31,9 @@ from pathlib import Path
 from typing import Any
 
 CAPTCHA_WAIT_MESSAGE = (
-    "CAPTCHA detected — solve it in the browser, then press Enter here to continue "
-    "(not the Pause/Continue fill overlay — that is hidden during CAPTCHA; "
-    "or: touch .captcha_continue)"
+    "CAPTCHA detected — solve it in the browser, then click Continue "
+    "(top-right overlay) or press Enter here to continue "
+    "(or: touch .captcha_continue / .fill_continue)"
 )
 DEFAULT_CAPTCHA_TIMEOUT_S = 600  # 10 minutes
 CAPTCHA_BLOCKERS = frozenset({"captcha", "cloudflare"})
@@ -105,15 +107,16 @@ def write_captcha_waiting_marker(
             "# CAPTCHA waiting — human gate\n\n"
             f"**{CAPTCHA_WAIT_MESSAGE}**\n\n"
             "- Never solve/dismiss programmatically.\n"
-            "- TTY: press Enter in the fill process terminal.\n"
+            "- TTY: press Enter in the fill process terminal, **or** click "
+            "**Continue** on the in-page overlay (top-right).\n"
             "- No TTY (Cursor / nohup): solve in Chrome, then either wait until "
-            f"the challenge disappears **or**:\n\n"
+            f"the challenge disappears, click **Continue** on the overlay, **or**:\n\n"
             f"```bash\ntouch {sentinel}\n```\n\n"
             f"- Timeout: {timeout_s:.0f}s → blocker kept; orchestrator must **not** "
             "burn BLOCKED×3 — next variety URL.\n"
-            "- Refill leftovers auto-loop without Enter; Enter is CAPTCHA-only.\n"
-            "- Do **not** use the Pause/Continue fill overlay for CAPTCHA "
-            "(hidden during wait; Continue fill ≠ CAPTCHA continue).\n"
+            "- Refill leftovers auto-loop without Enter; Enter / overlay Continue "
+            "are CAPTCHA resume controls (FILL-008: challenge must be gone).\n"
+            "- Overlay shows **Continue** during CAPTCHA wait (never auto-solves).\n"
             f"- Or touch `.fill_continue` (also accepted during CAPTCHA wait).\n"
             f"- pid={os.getpid()} blocker={blocker}\n"
             f"- url={(page_url or '')[:200]}\n"
@@ -331,7 +334,7 @@ async def wait_for_human_captcha(
           "continued": bool,   # Enter/sentinel and/or challenge gone
           "solved_gone": bool, # interactive widget no longer visible
           "timed_out": bool,
-          "via": "enter"|"gone"|"sentinel"|"timeout"|"skipped_headless"|...,
+          "via": "enter"|"gone"|"sentinel"|"overlay_continue"|"timeout"|"skipped_headless"|...,
           "blocker": str,
           "message": str,
         }
@@ -374,14 +377,14 @@ async def wait_for_human_captcha(
     if not has_tty:
         print(
             "[captcha] No TTY for Enter — browser stays open; solve in Chrome, "
-            f"then either wait until the challenge disappears or: "
-            f"touch {sentinel}",
+            "then click Continue (top-right), wait until the challenge "
+            f"disappears, or: touch {sentinel}",
             flush=True,
         )
     else:
         print(
-            f"[captcha] TTY ready — Enter here, or touch {sentinel}, "
-            "or wait until the challenge disappears.",
+            "[captcha] TTY ready — click Continue (top-right), Enter here, "
+            f"touch {sentinel}, or wait until the challenge disappears.",
             flush=True,
         )
 
@@ -394,13 +397,14 @@ async def wait_for_human_captcha(
     )
     _bring_chrome_testing_to_front()
 
-    # FILL3-002 / FILL3-015 / FILL2-S03: hide Pause overlay so it cannot cover
-    # the CAPTCHA widget. FILL2-S02: Continue fill ≠ CAPTCHA continue.
+    # Show Continue on the pause overlay (visible). CAPTCHA wait owns resume;
+    # FILL-008 still requires the challenge to be gone before clearing blocker.
     try:
         from fill_pause import set_fill_pause_captcha_gate
 
         await set_fill_pause_captcha_gate(page, True)
-        out["pause_overlay_gated"] = True
+        out["pause_overlay_continue"] = True
+        out["pause_overlay_gated"] = True  # gate = owns resume (overlay visible)
     except Exception as e:
         out["pause_overlay_gate_error"] = str(e)[:120]
 
@@ -422,11 +426,35 @@ async def wait_for_human_captcha(
 
     async def _ungate_pause_overlay() -> None:
         try:
-            from fill_pause import set_fill_pause_captcha_gate
+            from fill_pause import set_fill_pause_captcha_gate, set_fill_paused
 
             await set_fill_pause_captcha_gate(page, False)
+            await set_fill_paused(page, False)
         except Exception:
             pass
+
+    async def _try_human_continue(via: str) -> dict[str, Any] | None:
+        """FILL-008: only finish when challenge is gone; else re-arm Continue."""
+        still = await page_shows_interactive_captcha(page)
+        if still:
+            print(
+                f"[captcha] {via} received but challenge still visible — "
+                "keep waiting (solve in browser, then Continue again)…",
+                flush=True,
+            )
+            try:
+                from fill_pause import set_fill_pause_captcha_gate
+
+                await set_fill_pause_captcha_gate(page, True)
+            except Exception:
+                pass
+            return None
+        print(
+            f"[captcha] {via} — resuming fill (challenge_visible={still})…",
+            flush=True,
+        )
+        await _ungate_pause_overlay()
+        return _finish(via, continued=True, solved_gone=True)
 
     try:
         while True:
@@ -435,29 +463,15 @@ async def wait_for_human_captcha(
                     enter_fut.result()
                 except Exception:
                     pass
-                still = await page_shows_interactive_captcha(page)
-                if still:
-                    # FILL-008: challenge still visible — keep waiting; do not
-                    # clear blocker / claim captcha_human_solved yet.
-                    print(
-                        "[captcha] Enter received but challenge still visible — "
-                        "keep waiting (solve in browser, then Enter again)…",
-                        flush=True,
-                    )
-                    if has_tty:
-                        enter_fut = loop.run_in_executor(None, sys.stdin.readline)
-                    await asyncio.sleep(0.75)
-                    continue
-                print(
-                    "[captcha] Enter received — resuming fill "
-                    f"(challenge_visible={still})…",
-                    flush=True,
-                )
-                await _ungate_pause_overlay()
-                return _finish("enter", continued=True, solved_gone=True)
+                finished = await _try_human_continue("enter")
+                if finished is not None:
+                    return finished
+                if has_tty:
+                    enter_fut = loop.run_in_executor(None, sys.stdin.readline)
+                await asyncio.sleep(0.75)
+                continue
 
-            # FILL2-S02: accept either captcha sentinel or fill_continue during wait
-            # (both mean human wants to resume after solving — never auto-solve).
+            # Sentinel files (.captcha_continue / .fill_continue)
             fill_sentinel_hit = False
             try:
                 from fill_pause import consume_fill_continue_sentinel
@@ -466,23 +480,26 @@ async def wait_for_human_captcha(
             except Exception:
                 fill_sentinel_hit = False
             if consume_captcha_continue_sentinel() or fill_sentinel_hit:
-                still = await page_shows_interactive_captcha(page)
-                if still:
-                    print(
-                        "[captcha] Continue sentinel seen but challenge still "
-                        "visible — keep waiting…",
-                        flush=True,
-                    )
+                via = "fill_continue_sentinel" if fill_sentinel_hit else "sentinel"
+                finished = await _try_human_continue(via)
+                if finished is not None:
+                    return finished
+                await asyncio.sleep(0.75)
+                continue
+
+            # Overlay Continue click (paused flipped to false while gated)
+            try:
+                from fill_pause import read_fill_pause_state
+
+                st = await read_fill_pause_state(page, assume_paused_on_error=True)
+                if st.get("captcha_gated") and not st.get("paused"):
+                    finished = await _try_human_continue("overlay_continue")
+                    if finished is not None:
+                        return finished
                     await asyncio.sleep(0.75)
                     continue
-                via = "fill_continue_sentinel" if fill_sentinel_hit else "sentinel"
-                print(
-                    f"[captcha] Continue sentinel seen ({via}) — resuming fill "
-                    f"(challenge_visible={still})…",
-                    flush=True,
-                )
-                await _ungate_pause_overlay()
-                return _finish(via, continued=True, solved_gone=True)
+            except Exception:
+                pass
 
             still = await page_shows_interactive_captcha(page)
             if not still:
@@ -505,7 +522,7 @@ async def wait_for_human_captcha(
                     "timeout", continued=False, solved_gone=False, timed_out=True
                 )
 
-            # Re-assert gate in case remount dropped the class (FILL3-002)
+            # Re-assert Continue mode in case remount dropped state
             try:
                 from fill_pause import set_fill_pause_captcha_gate
 

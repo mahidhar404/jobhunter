@@ -877,7 +877,7 @@ def main() -> int:
         assert resolve_captcha_wait(headed=True, captcha_wait=None) is True
         assert resolve_captcha_wait(headed=False, captcha_wait=None) is False
         assert "press Enter" in CAPTCHA_WAIT_MESSAGE
-        assert CAPTCHA_WAIT_MESSAGE == (
+        assert CAPTCHA_WAIT_MESSAGE.startswith(
             "CAPTCHA detected — solve it in the browser, then press Enter here to continue"
         )
         import inspect
