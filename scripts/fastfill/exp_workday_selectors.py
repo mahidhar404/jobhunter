@@ -1253,7 +1253,19 @@ def _norm_digits(s: str) -> str:
 
 
 async def _read_field_value(loc) -> str:
-    """Read visible value from input/textarea/combobox button."""
+    """Read visible value from input/textarea/combobox button.
+
+    For Workday How-Heard / source filter inputs, prefer formField chip chrome
+    via ``read_combobox_display`` so already-committed sources skip re-fill.
+    """
+    try:
+        from verified_select import read_combobox_display
+
+        combo = await read_combobox_display(loc)
+        if combo:
+            return combo
+    except Exception:
+        pass
     try:
         tag = (await loc.evaluate("el => el.tagName")).lower()
         role = (await loc.get_attribute("role")) or ""
@@ -1274,6 +1286,88 @@ async def _read_field_value(loc) -> str:
         return (await loc.inner_text()).strip()
     except Exception:
         return ""
+
+
+async def _read_how_heard_display(page) -> str:
+    """Read How-Heard / source formField chip chrome (not filter input alone)."""
+    sels = (
+        '[data-automation-id="formField-source"]',
+        '[data-automation-id*="formField-source"]',
+        '[data-automation-id="formField-how_heard"]',
+        '[data-automation-id="formField-howDidYouHear"]',
+        '[data-automation-id="formField-candidateSource"]',
+        '[data-automation-id="multiSelectContainer"]',
+    )
+    for sel in sels:
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() == 0:
+                continue
+            try:
+                if not await loc.is_visible(timeout=250):
+                    continue
+            except Exception:
+                pass
+            snip = ((await loc.inner_text()) or "").strip()
+            if snip:
+                return snip[:240]
+        except Exception:
+            continue
+    return ""
+
+
+async def _probe_how_heard_already_committed(
+    page, candidates: list[str]
+) -> dict | None:
+    """If How-Heard already has a committed chip/token, return keep result.
+
+    Stops Indeed → Company Website → LinkedIn → Other alias thrash once any
+    concrete source is selected (prefer matching intended; else keep any chip).
+    """
+    from verified_select import (
+        how_heard_source_committed,
+        is_multiselect_uncommitted,
+        multiselect_has_chip,
+        settle_open_listbox,
+        soft_value_match,
+    )
+
+    snip = await _read_how_heard_display(page)
+    if not snip or is_multiselect_uncommitted(snip):
+        return None
+    if not how_heard_source_committed(snip, candidates):
+        # Still accept any ≥1 chip even if label isn't in our alias list
+        if not multiselect_has_chip(snip):
+            return None
+    matched = ""
+    for c in candidates:
+        if soft_value_match(c, snip):
+            matched = c
+            break
+    if not matched and multiselect_has_chip(snip):
+        # Concrete chip present — keep it; do not thrash to next alias
+        matched = str(candidates[0] if candidates else "selected")
+    if not matched:
+        return None
+    try:
+        await settle_open_listbox(page)
+    except Exception:
+        pass
+    return {
+        "automation_id": "how_heard",
+        "status": "filled",
+        "reason": "already_correct_keep",
+        "mode": "how_heard_chip",
+        "type": HOW_HEARD,
+        "value": matched,
+        "readback": snip[:120],
+        "option_text": matched,
+        "picked": matched,
+        "option_clicked": False,
+        "verified": True,
+        "committed": True,
+        "skipped_already_correct": True,
+    }
 
 
 async def _resolve_contact_locator(page, automation_id: str):
@@ -2137,9 +2231,37 @@ async def _fill_automation_id(page, automation_id: str, value: str, *, combobox:
                     "verified": True,
                     "skipped_already_correct": True,
                 }
+            # How-Heard / source: any committed chip → keep (stop alias thrash)
+            if automation_id in ("how_heard", "source--source", "source"):
+                try:
+                    from verified_select import how_heard_source_committed
+
+                    if how_heard_source_committed(existing_cb, [fill_value]):
+                        try:
+                            from verified_select import settle_open_listbox
+
+                            await settle_open_listbox(page)
+                        except Exception:
+                            pass
+                        return {
+                            "automation_id": automation_id,
+                            "status": "filled",
+                            "reason": "already_correct_keep",
+                            "mode": "combobox",
+                            "value": value,
+                            "readback": (existing_cb or "")[:120],
+                            "selector": sel,
+                            "option_clicked": False,
+                            "option_text": (existing_cb or "")[:80] or None,
+                            "verified": True,
+                            "committed": True,
+                            "skipped_already_correct": True,
+                        }
+                except Exception:
+                    pass
 
         if combobox or role == "combobox" or tag == "button":
-            from verified_select import fill_workday_combobox
+            from verified_select import fill_workday_combobox, settle_open_listbox
 
             typed = page.locator(
                 f"{sel} input, "
@@ -2174,10 +2296,19 @@ async def _fill_automation_id(page, automation_id: str, value: str, *, combobox:
                 readback = await _read_field_value(loc)
             if not ok and readback:
                 ok = _value_matches_readback(fill_value, readback, mode="combobox")
+            if ok:
+                try:
+                    await settle_open_listbox(page)
+                except Exception:
+                    pass
             return {
                 "automation_id": automation_id,
                 "status": "filled" if ok else "missed",
-                "reason": None if ok else detail.get("error") or "readback_mismatch",
+                "reason": (
+                    detail.get("reason")
+                    if detail.get("skipped_already_correct")
+                    else (None if ok else detail.get("error") or "readback_mismatch")
+                ),
                 "mode": "combobox",
                 "value": value,
                 "readback": readback[:120] if readback else "",
@@ -2187,6 +2318,8 @@ async def _fill_automation_id(page, automation_id: str, value: str, *, combobox:
                 "verified": ok,
                 "algorithm": detail.get("algorithm"),
                 "steps": detail.get("steps"),
+                "skipped_already_correct": bool(detail.get("skipped_already_correct")),
+                "committed": ok,
             }
 
         # If locator is a wrapper div (formField-*), drill into nested input
@@ -4358,6 +4491,10 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
 
     Prefer fiber ``searchSelect`` (ChamPro) before type+nudge. Never tries bare
     ``Internet`` — that is uncommitted filter text, not a chip.
+
+    Once a chip/token is verified committed, **stop** — do not thrash aliases
+    (Indeed → Company Website → LinkedIn → Other…). Prefer
+    ``already_correct_keep`` when live readback already has a concrete source.
     """
     aid = "how_heard"
     candidates = _how_heard_candidates(values)
@@ -4423,11 +4560,36 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
             pass
         return ok_result
 
+    async def _settle_ok(ok_result: dict) -> dict:
+        """Close open search menu after commit; learn mapping."""
+        try:
+            from verified_select import settle_open_listbox
+
+            await settle_open_listbox(page)
+        except Exception:
+            pass
+        return _learn(ok_result)
+
+    # Already committed? Keep and stop — never reopen for next alias.
+    keep0 = await _probe_how_heard_already_committed(page, candidates)
+    if keep0 is not None:
+        return _learn(keep0)
+
+    other_tried = False
     for cand in candidates:
+        # Prefer one concrete Other* option once — do not cycle Other variants
+        if re.search(r"^other\b", str(cand), re.I):
+            if other_tried:
+                continue
+            other_tried = True
         result = await _fill_automation_id(page, aid, cand, combobox=True)
         result.setdefault("type", HOW_HEARD)
         if _is_verified_fill(result):
-            return _learn(result)
+            return await _settle_ok(result)
+        # Chip may have committed even when this candidate's readback gate failed
+        keep_mid = await _probe_how_heard_already_committed(page, candidates)
+        if keep_mid is not None:
+            return _learn(keep_mid)
         if result.get("reason") in ("not_in_dom", "not_visible"):
             break
     # Fiber searchSelect on source / how_heard filter inputs (Quantiphi etc.)
@@ -4450,7 +4612,16 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
                         continue
                 except Exception:
                     continue
+                # Re-check before each fiber pass — prior alias may have stuck a chip
+                keep_f = await _probe_how_heard_already_committed(page, candidates)
+                if keep_f is not None:
+                    return _learn(keep_f)
+                other_fiber = False
                 for cand in candidates:
+                    if re.search(r"^other\b", str(cand), re.I):
+                        if other_fiber:
+                            continue
+                        other_fiber = True
                     fiber = await fiber_search_select(
                         page,
                         inp,
@@ -4459,6 +4630,12 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
                         wait_ms=1600,
                     )
                     if not (fiber.get("option_clicked") and fiber.get("picked")):
+                        # Stop alias thrash if a chip appeared mid-loop
+                        keep_f2 = await _probe_how_heard_already_committed(
+                            page, candidates
+                        )
+                        if keep_f2 is not None:
+                            return _learn(keep_f2)
                         continue
                     body_snip = ""
                     try:
@@ -4490,7 +4667,12 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
                         "reason": None if verified else "multiselect_no_chip",
                     }
                     if verified:
-                        return _learn(result)
+                        return await _settle_ok(result)
+                    keep_f3 = await _probe_how_heard_already_committed(
+                        page, candidates
+                    )
+                    if keep_f3 is not None:
+                        return _learn(keep_f3)
         except Exception as e:
             result = {
                 "automation_id": aid,
@@ -4502,7 +4684,12 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
             }
     # BBH/wd5: multi-select source--source shows "0 items selected" until option chip
     if not _is_verified_fill(result):
+        keep_pre = await _probe_how_heard_already_committed(page, candidates)
+        if keep_pre is not None:
+            return _learn(keep_pre)
         for cand in candidates:
+            if re.search(r"^other\b", str(cand), re.I) and other_tried:
+                continue
             for hear_label in (
                 "How Did You Hear About Us",
                 "Where Did You Hear About Us",
@@ -4516,7 +4703,7 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
                     [cand],
                 )
                 if sr.get("verified") or _is_verified_fill(sr):
-                    return _learn({
+                    return await _settle_ok({
                         "automation_id": aid,
                         "status": "filled",
                         "mode": "select_one",
@@ -4573,7 +4760,12 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
                             "reason": None if verified else "multiselect_no_chip",
                         }
                         if verified:
-                            return _learn(result)
+                            return await _settle_ok(result)
+                        keep_ms = await _probe_how_heard_already_committed(
+                            page, candidates
+                        )
+                        if keep_ms is not None:
+                            return _learn(keep_ms)
                     try:
                         await _escape_unless_captcha(page)
                     except Exception:
@@ -4588,6 +4780,9 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
         "multiselect_no_chip",
         "fiber_search_error",
     ):
+        keep_late = await _probe_how_heard_already_committed(page, candidates)
+        if keep_late is not None:
+            return _learn(keep_late)
         label_btn = page.locator(
             'label:has-text("How Did You Hear"), '
             'label:has-text("Where Did You Hear"), '
@@ -4609,6 +4804,8 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
                     from verified_select import fill_workday_combobox
 
                     for cand in candidates:
+                        if re.search(r"^other\b", str(cand), re.I) and other_tried:
+                            continue
                         wd = await fill_workday_combobox(
                             page,
                             btn,
@@ -4645,7 +4842,12 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
                             "algorithm": wd.get("algorithm"),
                         }
                         if verified:
-                            return _learn(result)
+                            return await _settle_ok(result)
+                        keep_cb = await _probe_how_heard_already_committed(
+                            page, candidates
+                        )
+                        if keep_cb is not None:
+                            return _learn(keep_cb)
                         try:
                             await _escape_unless_captcha(page)
                         except Exception:
@@ -4659,6 +4861,10 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
                 "verified": False,
                 "type": HOW_HEARD,
             }
+    # Final keep probe — never leave an open menu spinning after a late chip
+    keep_final = await _probe_how_heard_already_committed(page, candidates)
+    if keep_final is not None:
+        return _learn(keep_final)
     result.setdefault("type", HOW_HEARD)
     return _learn(result) if _is_verified_fill(result) else result
 
@@ -6534,11 +6740,20 @@ async def _fill_select_one_by_label(page, label: str, candidates: list[str]) -> 
                 continue
             cur = ((await btn.inner_text()) or "").strip().lower()
             if cur and cur not in ("select one", "select") and not cur.startswith("select "):
-                # already filled
+                # already filled — do not reopen (same-page thrash)
+                try:
+                    from verified_select import settle_open_listbox
+
+                    await settle_open_listbox(page)
+                except Exception:
+                    pass
                 detail["status"] = "filled"
                 detail["verified"] = True
+                detail["committed"] = True
                 detail["readback"] = cur[:120]
                 detail["already_set"] = True
+                detail["reason"] = "already_correct_keep"
+                detail["skipped_already_correct"] = True
                 return detail
             target_btn = btn
             break

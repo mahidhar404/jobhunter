@@ -351,6 +351,10 @@ def is_uncommitted_filter_text(
     # Workday chip chrome: "1 item selected, Indeed" is committed, not a place filter
     if multiselect_has_chip(s):
         return False
+    # Picked option that soft-matches display = committed token (Indeed chip / single-value)
+    # — never thrash aliases because shown == typed filter string after a real pick.
+    if picked and soft_value_match(picked, s):
+        return False
     # Location filter paste "City, State, Country" is never committed from input alone
     if from_input and "," in s and len(s) >= 12:
         return True
@@ -387,6 +391,46 @@ def is_uncommitted_filter_text(
     if len(fl) >= 6 and (sl.startswith(fl) or fl.startswith(sl)):
         return True
     return False
+
+
+def how_heard_source_committed(
+    shown: str | None,
+    candidates: Iterable[str] | None = None,
+) -> bool:
+    """True when Workday How-Heard / source multi-select has a committed chip/token.
+
+    Accepts ``N items selected`` chrome (≥1) or a full option token matching an
+    intended alias. Rejects shorter filter fragments (``Internet`` for
+    ``Internet job board``) so alias thrash stops only on real commits.
+    """
+    s = (shown or "").strip()
+    if not s or is_multiselect_uncommitted(s):
+        return False
+    if multiselect_has_chip(s):
+        return True
+    cands = [str(c).strip() for c in (candidates or []) if str(c or "").strip()]
+    sl = s.lower()
+    for c in cands:
+        cl = c.lower()
+        if sl == cl:
+            return True
+        # Shown wraps the full option (label + chip text) — not a typed prefix
+        if soft_value_match(c, s) and len(s) >= len(c):
+            return True
+    return False
+
+
+async def settle_open_listbox(page) -> None:
+    """Close open prompt/listbox menus after a successful commit (never Submit)."""
+    try:
+        from captcha_pause import press_escape_unless_captcha
+
+        await press_escape_unless_captcha(page)
+    except Exception:
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
 
 
 def _default_score_option(opt: str, alias: str) -> int:
@@ -1138,6 +1182,11 @@ async def fiber_search_select(
             detail["status"] = "picked"
             detail["option_clicked"] = True
             detail["ok"] = True
+            # Close search menu after commit — do not leave mid-widget idle open
+            try:
+                await settle_open_listbox(page)
+            except Exception:
+                pass
         else:
             detail["ok"] = False
         return detail
@@ -2089,6 +2138,8 @@ async def read_combobox_display(locator) -> str:
         tag = (await locator.evaluate("el => (el.tagName || '').toLowerCase()"))
         role = ((await locator.get_attribute("role")) or "").lower()
         cls = ((await locator.get_attribute("class")) or "").lower()
+        name = ((await locator.get_attribute("name")) or "").lower()
+        aid = ((await locator.get_attribute("data-automation-id")) or "").lower()
         if tag == "select":
             raw = await locator.evaluate(
                 """el => {
@@ -2098,6 +2149,28 @@ async def read_combobox_display(locator) -> str:
                 }"""
             )
             return "" if is_placeholder_select_value(raw) else (raw or "")
+        # Workday How-Heard / source multiselect: prefer formField chip chrome
+        # over empty filter input (input_value alone causes alias thrash).
+        if tag == "input" and (
+            "source" in name
+            or "source" in aid
+            or "how" in aid
+            or role == "combobox"
+        ):
+            try:
+                wrap = locator.locator(
+                    "xpath=ancestor::*[@data-automation-id='formField-source' "
+                    "or contains(@data-automation-id,'formField-source') "
+                    "or contains(@data-automation-id,'formField-how') "
+                    "or @data-automation-id='multiSelectContainer' "
+                    "or contains(@data-automation-id,'multiSelect')][1]"
+                ).first
+                if await wrap.count():
+                    chip = ((await wrap.inner_text()) or "").strip()
+                    if chip and how_heard_source_committed(chip):
+                        return chip[:200]
+            except Exception:
+                pass
         if "select__" in cls or role == "combobox":
             try:
                 container = locator.locator(

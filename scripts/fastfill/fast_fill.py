@@ -4984,12 +4984,21 @@ def _apply_demote_result(
 
 
 def _already_types_skip_refill(report: dict) -> set[str]:
-    """Types already filled — minus any demoted leftovers needing reclaim."""
-    already = {
-        f.get("type")
-        for f in (report.get("filled") or [])
-        if isinstance(f, dict) and f.get("ok") is not False and f.get("type")
-    }
+    """Types already filled — minus any demoted leftovers needing reclaim.
+
+    Honors ``already_correct_keep`` / ``already_correct_skip`` so same-page
+    refill / continue-before-hold does not re-touch committed widgets.
+    """
+    already: set[str] = set()
+    for f in report.get("filled") or []:
+        if not isinstance(f, dict):
+            continue
+        ftype = f.get("type")
+        if not ftype or f.get("ok") is False:
+            continue
+        if f.get("verified") is False and not f.get("skipped_already_correct"):
+            continue
+        already.add(str(ftype))
     for t in _demoted_refill_types(report):
         already.discard(t)
     return already
