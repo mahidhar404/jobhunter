@@ -621,14 +621,10 @@ def workday_wizard_incomplete(report: dict) -> bool:
 
     Footer primary (Next/Continue vs Submit) is first-class when probed:
     ADVANCE → incomplete; FINAL → Review end (not incomplete from this signal).
+    Applies to any platform when footer was probed — never review-hold while
+    Next / Save and Continue is the primary footer control.
     """
-    platform = str(report.get("platform") or "").lower()
-    coverage = str(report.get("coverage_path") or "")
-    wd = report.get("workday") if isinstance(report.get("workday"), dict) else None
-    if platform != "workday" and coverage != "workday_multipage" and not wd:
-        return False
-
-    # Live / attached footer primary — complementary to phase/progress checks.
+    # Live / attached footer primary — first-class for ALL platforms.
     footer_dec = footer_primary_wizard_incomplete(
         report.get("footer_primary_kind"),
         report.get("footer_primary_label"),
@@ -637,6 +633,19 @@ def workday_wizard_incomplete(report: dict) -> bool:
         return True
     if footer_dec is False:
         # Submit visible as primary → Review end state for hold framing.
+        # Still allow Workday phase heuristics below when platform is workday
+        # and phase says incomplete (do not early-return False yet).
+        pass
+
+    platform = str(report.get("platform") or "").lower()
+    coverage = str(report.get("coverage_path") or "")
+    wd = report.get("workday") if isinstance(report.get("workday"), dict) else None
+    if platform != "workday" and coverage != "workday_multipage" and not wd:
+        # Non-Workday: footer ADVANCE already returned True above; FINAL/absent
+        # means this helper does not force incomplete.
+        return False
+
+    if footer_dec is False:
         return False
 
     pe = (wd or {}).get("phase_e") if isinstance(wd, dict) else None
@@ -1008,6 +1017,15 @@ def apply_progress_verdict_gates(report: dict) -> dict:
     if flash_attempt_failed(report) and report.get("verdict") == "SUCCESS":
         report["verdict"] = "FAIL"
         report.setdefault("verdict_reason", "flash_leftovers_failed")
+
+    # Field-lock thrash: re-touch of commit-verified fields is wasted work
+    try:
+        from field_lock import apply_thrash_verdict_gate, fold_lock_metrics
+
+        fold_lock_metrics(report)
+        apply_thrash_verdict_gate(report)
+    except Exception:
+        pass
 
     report.setdefault("pages_seen", report.get("pages_seen") or [])
     report.setdefault("advanced_count", int(report.get("advanced_count") or 0))

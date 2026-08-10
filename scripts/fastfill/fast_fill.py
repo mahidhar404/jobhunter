@@ -335,6 +335,12 @@ def _attach_fill_step_log(
     try:
         cycle_dir = _resolve_attempt_cycle_dir(report, out=out, screenshot=screenshot)
         log = attach_fill_step_log(report, out_dir=cycle_dir)
+        try:
+            from field_lock import attach_field_locks
+
+            attach_field_locks(report)
+        except Exception as e:
+            report.setdefault("errors", []).append({"field_lock_attach": str(e)[:120]})
         print(
             f"[step_log] attached → {log.jsonl_path} (cycle_dir={cycle_dir})",
             flush=True,
@@ -4346,6 +4352,12 @@ async def try_advance_if_page_complete(page, report: dict | None = None) -> dict
     result["advanced"] = True
     if report is not None:
         report["advanced"] = True
+        try:
+            from field_lock import clear_locks_on_advance
+
+            clear_locks_on_advance(report)
+        except Exception:
+            pass
     try:
         await page.wait_for_timeout(1200)
     except Exception:
@@ -4988,6 +5000,7 @@ def _already_types_skip_refill(report: dict) -> set[str]:
 
     Honors ``already_correct_keep`` / ``already_correct_skip`` so same-page
     refill / continue-before-hold does not re-touch committed widgets.
+    Also honors page-session field locks.
     """
     already: set[str] = set()
     for f in report.get("filled") or []:
@@ -4999,6 +5012,14 @@ def _already_types_skip_refill(report: dict) -> set[str]:
         if f.get("verified") is False and not f.get("skipped_already_correct"):
             continue
         already.add(str(ftype))
+    try:
+        from field_lock import get_field_locks, resolve_lock_report
+
+        sess = get_field_locks(resolve_lock_report(report))
+        if sess is not None:
+            already |= sess.locked_types()
+    except Exception:
+        pass
     for t in _demoted_refill_types(report):
         already.discard(t)
     return already
@@ -5087,6 +5108,47 @@ async def _fill_selector(
 ) -> dict:
     """Fill one CSS selector. ok/verified only after read-back (file = action ok)."""
     out: dict[str, Any] = {"selector": sel, "type": ftype, "mode": mode}
+    # Field lock: skip re-touch of commit-verified fields (no DOM probe)
+    try:
+        from field_lock import gate_field_action, get_field_locks, resolve_lock_report
+
+        g = gate_field_action(
+            report, field_type=ftype, selector=sel, label=str(ftype or "")
+        )
+        if g and g.get("action") == "lock_skip":
+            sess = get_field_locks(resolve_lock_report(report))
+            skip = (
+                sess.lock_skip_result(g, field_type=ftype)
+                if sess
+                else {
+                    "reason": "field_locked_skip",
+                    "skipped_locked": True,
+                    "skipped_already_correct": True,
+                    "ok": True,
+                    "verified": True,
+                    "readback": g.get("readback"),
+                }
+            )
+            out.update(skip)
+            out["selector"] = sel
+            out["type"] = ftype
+            out["mode"] = mode
+            try:
+                note_step(
+                    report,
+                    action="lock_skip",
+                    field_type=ftype,
+                    label=str(ftype or sel)[:80],
+                    after=str(g.get("readback") or "")[:120],
+                    via="field_lock",
+                    reason="field_locked_skip",
+                    extra={"thrash_retouch": True, "selector": sel[:120]},
+                )
+            except Exception:
+                pass
+            return out
+    except Exception:
+        pass
     try:
         await wait_while_paused(page, report)
     except Exception:
@@ -6616,6 +6678,15 @@ async def apply_selector_pack(
             # SmartRecruiters / Taleo / SF: confirm-email & username reuse EMAIL.
             if not confirm_email:
                 continue
+        # Skip locked fields before any DOM work (no thrash retouch)
+        try:
+            from field_lock import get_field_locks, resolve_lock_report
+
+            sess = get_field_locks(resolve_lock_report(report))
+            if sess is not None and sess.is_locked(field_type=ftype, selector=sel):
+                continue
+        except Exception:
+            pass
         if ftype == RESUME_UPLOAD and resume_done:
             continue
         if ftype == RESUME_UPLOAD:
@@ -6648,6 +6719,18 @@ async def apply_selector_pack(
                     "verified": True,
                 }
             )
+            try:
+                from field_lock import lock_verified_field
+
+                lock_verified_field(
+                    report,
+                    {**row, "type": ftype, "ok": True, "verified": True},
+                    field_type=ftype,
+                    selector=sel,
+                    via=row["via"],
+                )
+            except Exception:
+                pass
             seen_types.add(ftype)
             if ftype == RESUME_UPLOAD:
                 resume_done = True
@@ -11319,6 +11402,12 @@ def _finalize(report: dict, *, close_step_log: bool = False) -> dict:
     apply_progress_verdict_gates(report)
     finalize_ready_flag(report)
     apply_resume_success_gate(report)
+    try:
+        from field_lock import fold_lock_metrics
+
+        fold_lock_metrics(report)
+    except Exception:
+        pass
     assert report.get("never_submit") is True, "never_submit must be True"
     assert report.get("submit_clicked") is False, "submit_clicked must be False"
     ep = report.get("entry_prepass") or {}

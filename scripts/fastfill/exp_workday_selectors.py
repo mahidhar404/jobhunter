@@ -2137,13 +2137,54 @@ async def _fill_country_region_state(
         return result
 
 
-async def _fill_automation_id(page, automation_id: str, value: str, *, combobox: bool = False) -> dict:
+async def _fill_automation_id(page, automation_id: str, value: str, *, combobox: bool = False, report: dict | None = None) -> dict:
     """Fill input/button tied to data-automation-id. Returns status dict.
 
     Comboboxes: click → type → click matching role=option. Never press Enter
     (Enter can submit the whole Workday step). Never click a non-matching option.
     After fill, read back the value; only status=filled when verified non-empty match.
     """
+    # Field lock: skip re-touch without DOM probe (refill / phase re-entry)
+    ftype_guess = next((ft for a, ft in WD_CONTACT_PACK if a == automation_id), None)
+    if ftype_guess is None:
+        ftype_guess = next(
+            (ft for a, ft, _ in WD_CONTACT_EXTRAS if a == automation_id),
+            automation_id,
+        )
+    try:
+        from field_lock import (
+            gate_field_action,
+            get_field_locks,
+            lock_verified_field,
+            resolve_lock_report,
+        )
+
+        g = gate_field_action(
+            report,
+            field_type=str(ftype_guess or ""),
+            automation_id=automation_id,
+        )
+        if g and g.get("action") == "lock_skip":
+            sess = get_field_locks(resolve_lock_report(report))
+            skip = (
+                sess.lock_skip_result(
+                    g, automation_id=automation_id, field_type=str(ftype_guess or "")
+                )
+                if sess
+                else {
+                    "automation_id": automation_id,
+                    "status": "filled",
+                    "reason": "field_locked_skip",
+                    "skipped_locked": True,
+                    "skipped_already_correct": True,
+                    "verified": True,
+                    "readback": g.get("readback"),
+                }
+            )
+            skip.setdefault("type", ftype_guess)
+            return skip
+    except Exception:
+        pass
     loc, sel = await _resolve_contact_locator(page, automation_id)
     try:
         count = await loc.count()
@@ -4486,7 +4527,7 @@ async def _click_next_advance(page) -> list[dict]:
 # _is_verified_fill / _how_heard_candidates imported from fill_verify at module load
 
 
-async def _fill_how_heard(page, values: dict | None = None) -> dict:
+async def _fill_how_heard(page, values: dict | None = None, report: dict | None = None) -> dict:
     """Fill Workday How-Heard via automation-id / label / multiselect (dummy only).
 
     Prefer fiber ``searchSelect`` (ChamPro) before type+nudge. Never tries bare
@@ -4495,8 +4536,42 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
     Once a chip/token is verified committed, **stop** — do not thrash aliases
     (Indeed → Company Website → LinkedIn → Other…). Prefer
     ``already_correct_keep`` when live readback already has a concrete source.
+    Field lock: after first commit, subsequent alias attempts are lock_skip.
     """
     aid = "how_heard"
+    lock_verified_field = None  # type: ignore[assignment]
+    # Locked? Skip without alias walk / DOM reopen
+    try:
+        from field_lock import (
+            gate_field_action,
+            get_field_locks,
+            lock_verified_field as _lock_vf,
+            resolve_lock_report,
+        )
+
+        lock_verified_field = _lock_vf
+        g = gate_field_action(report, field_type=HOW_HEARD, automation_id=aid)
+        if g and g.get("action") == "lock_skip":
+            sess = get_field_locks(resolve_lock_report(report))
+            skip = (
+                sess.lock_skip_result(g, automation_id=aid, field_type=HOW_HEARD)
+                if sess
+                else {
+                    "automation_id": aid,
+                    "type": HOW_HEARD,
+                    "status": "filled",
+                    "reason": "field_locked_skip",
+                    "skipped_locked": True,
+                    "skipped_already_correct": True,
+                    "verified": True,
+                    "readback": g.get("readback"),
+                }
+            )
+            skip.setdefault("type", HOW_HEARD)
+            return skip
+    except Exception:
+        pass
+
     candidates = _how_heard_candidates(values)
     # Learned option aliases (auto-apply style) before static candidates
     try:
@@ -4558,6 +4633,18 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
             )
         except Exception:
             pass
+        # Permanent page-session lock — kills Indeed→LinkedIn→Other walks
+        if lock_verified_field is not None:
+            try:
+                lock_verified_field(
+                    report,
+                    ok_result,
+                    field_type=HOW_HEARD,
+                    automation_id=aid,
+                    via="how_heard",
+                )
+            except Exception:
+                pass
         return ok_result
 
     async def _settle_ok(ok_result: dict) -> dict:
@@ -4582,7 +4669,7 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
             if other_tried:
                 continue
             other_tried = True
-        result = await _fill_automation_id(page, aid, cand, combobox=True)
+        result = await _fill_automation_id(page, aid, cand, combobox=True, report=report)
         result.setdefault("type", HOW_HEARD)
         if _is_verified_fill(result):
             return await _settle_ok(result)
@@ -4900,10 +4987,20 @@ def _log_wd_fill_step(report: dict, result: dict) -> None:
         )
 
 
-async def _fill_contact_extras(page, values: dict) -> list[dict]:
+async def _fill_contact_extras(page, values: dict, report: dict | None = None) -> list[dict]:
     """Fill How-Heard / worked-here / contact email using dummy profile values only."""
     results: list[dict] = []
+    try:
+        from field_lock import get_field_locks, lock_verified_field, resolve_lock_report
+
+        sess = get_field_locks(resolve_lock_report(report))
+    except Exception:
+        sess = None
+        lock_verified_field = None  # type: ignore[assignment]
+
     for aid, ftype, widget in WD_CONTACT_EXTRAS:
+        if sess is not None and sess.is_locked(field_type=ftype, automation_id=aid):
+            continue
         val = values.get(ftype)
         if not val:
             results.append({
@@ -4918,20 +5015,45 @@ async def _fill_contact_extras(page, values: dict) -> list[dict]:
             rr = await _fill_radio_yes_no(page, aid, str(val))
             rr.setdefault("type", ftype)
             results.append(rr)
+            if lock_verified_field is not None and _is_verified_fill(rr):
+                try:
+                    lock_verified_field(
+                        report, rr, field_type=ftype, automation_id=aid, via="workday_extras"
+                    )
+                except Exception:
+                    pass
             continue
         if widget == "text":
-            result = await _fill_automation_id(page, aid, str(val), combobox=False)
+            result = await _fill_automation_id(
+                page, aid, str(val), combobox=False, report=report
+            )
             result.setdefault("type", ftype)
             results.append(result)
+            if lock_verified_field is not None and _is_verified_fill(result):
+                try:
+                    lock_verified_field(
+                        report, result, field_type=ftype, automation_id=aid, via="workday_extras"
+                    )
+                except Exception:
+                    pass
             continue
         # Combobox how-heard (shared helper — never bare "Internet")
         if ftype == HOW_HEARD or aid == "how_heard":
-            result = await _fill_how_heard(page, values)
+            result = await _fill_how_heard(page, values, report=report)
             results.append(result)
             continue
-        result = await _fill_automation_id(page, aid, str(val), combobox=True)
+        result = await _fill_automation_id(
+            page, aid, str(val), combobox=True, report=report
+        )
         result.setdefault("type", ftype)
         results.append(result)
+        if lock_verified_field is not None and _is_verified_fill(result):
+            try:
+                lock_verified_field(
+                    report, result, field_type=ftype, automation_id=aid, via="workday_extras"
+                )
+            except Exception:
+                pass
     return results
 
 
@@ -4980,19 +5102,53 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
 
     filled: list[dict] = []
     missed: list[dict] = []
+    # Ensure locks attach to parent step report when available
+    try:
+        from field_lock import attach_field_locks, get_field_locks, lock_verified_field
+
+        parent = report.get("_step_report") if isinstance(report.get("_step_report"), dict) else report
+        attach_field_locks(parent)
+    except Exception:
+        lock_verified_field = None  # type: ignore[assignment]
+        get_field_locks = None  # type: ignore[assignment]
+
     for aid, val, combobox in fill_plan:
+        # Filter locked fields before DOM work (no thrash)
+        try:
+            if get_field_locks is not None:
+                from field_lock import resolve_lock_report
+
+                sess = get_field_locks(resolve_lock_report(report))
+                ftype = next((ft for a, ft in WD_CONTACT_PACK if a == aid), aid)
+                if sess is not None and sess.is_locked(field_type=ftype, automation_id=aid):
+                    continue
+        except Exception:
+            pass
         try:
             from fill_pause import wait_while_paused
 
             await wait_while_paused(page, report.get("_step_report") or report)
         except Exception:
             pass
-        result = await _fill_automation_id(page, aid, val, combobox=combobox)
+        result = await _fill_automation_id(
+            page, aid, val, combobox=combobox, report=report
+        )
         result.setdefault("type", next((ft for a, ft in WD_CONTACT_PACK if a == aid), aid))
         _log_wd_fill_step(report, result)
         if _is_verified_fill(result):
             result["status"] = "filled"
             filled.append(result)
+            if lock_verified_field is not None:
+                try:
+                    lock_verified_field(
+                        report,
+                        result,
+                        field_type=result.get("type"),
+                        automation_id=aid,
+                        via="workday_contact_pack",
+                    )
+                except Exception:
+                    pass
         else:
             result["status"] = "missed"
             result.setdefault("verified", False)
@@ -5000,11 +5156,35 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
 
     # Country Phone Code (Markel-class): fix Anguilla/+wrong territory → US +1
     try:
+        try:
+            from fill_step_log import note_step
+
+            parent = report.get("_step_report") or report
+            note_step(
+                parent,
+                action="pack_phase",
+                reason="country_phone_code_start",
+                via="workday_contact_pack",
+            )
+        except Exception:
+            pass
         cpc = await _fill_country_phone_code(page)
         _log_wd_fill_step(report, cpc)
         if _is_verified_fill(cpc):
             cpc["status"] = "filled"
             filled.append(cpc)
+            try:
+                from field_lock import lock_verified_field
+
+                lock_verified_field(
+                    report,
+                    cpc,
+                    field_type="PHONE_COUNTRY_CODE",
+                    automation_id="countryPhoneCode",
+                    via="workday_contact_pack",
+                )
+            except Exception:
+                pass
         elif cpc.get("reason") not in ("not_in_dom", "not_visible"):
             missed.append(cpc)
     except Exception as e:
@@ -5013,7 +5193,19 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
     # Dummy-profile extras (how heard / worked here / contact email)
     extras_values = report.get("_contact_values") or {}
     if extras_values:
-        for result in await _fill_contact_extras(page, extras_values):
+        try:
+            from fill_step_log import note_step
+
+            parent = report.get("_step_report") or report
+            note_step(
+                parent,
+                action="pack_phase",
+                reason="contact_extras_start",
+                via="workday_contact_pack",
+            )
+        except Exception:
+            pass
+        for result in await _fill_contact_extras(page, extras_values, report=report):
             result.setdefault("type", result.get("type") or result.get("automation_id"))
             _log_wd_fill_step(report, result)
             if _is_verified_fill(result):
@@ -5069,11 +5261,37 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
                 if "email" in eid.lower() or re.search(r"\bemail\b", lab, re.I):
                     email_val = extras_values.get(EMAIL)
                     if email_val:
+                        try:
+                            from field_lock import get_field_locks, resolve_lock_report
+
+                            sess = get_field_locks(resolve_lock_report(report))
+                            if sess is not None and sess.is_locked(
+                                field_type=EMAIL, automation_id="contact_email"
+                            ):
+                                continue
+                        except Exception:
+                            pass
                         r = await _fill_automation_id(
-                            page, "contact_email", str(email_val), combobox=False
+                            page,
+                            "contact_email",
+                            str(email_val),
+                            combobox=False,
+                            report=report,
                         )
                         if _is_verified_fill(r):
                             filled.append(r)
+                            try:
+                                from field_lock import lock_verified_field
+
+                                lock_verified_field(
+                                    report,
+                                    r,
+                                    field_type=EMAIL,
+                                    automation_id="contact_email",
+                                    via="empty_sweep",
+                                )
+                            except Exception:
+                                pass
                 if (
                     "source" in eid.lower()
                     or re.search(
@@ -5083,8 +5301,18 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
                         re.I,
                     )
                 ):
+                    try:
+                        from field_lock import get_field_locks, resolve_lock_report
+
+                        sess = get_field_locks(resolve_lock_report(report))
+                        if sess is not None and sess.is_locked(
+                            field_type=HOW_HEARD, automation_id="how_heard"
+                        ):
+                            continue
+                    except Exception:
+                        pass
                     # Shared helper — never bare "Internet"
-                    hr = await _fill_how_heard(page, extras_values)
+                    hr = await _fill_how_heard(page, extras_values, report=report)
                     if _is_verified_fill(hr):
                         filled.append(hr)
             required_empty = await _required_empty_on_page(page)
@@ -5193,6 +5421,13 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
     advanced = any(c.get("action") == "clicked" for c in next_clicks)
     phase["advanced"] = advanced
     report["advanced"] = advanced
+    if advanced:
+        try:
+            from field_lock import clear_locks_on_advance
+
+            clear_locks_on_advance(report)
+        except Exception:
+            pass
 
     # ATS2-011: same SPA settle as _gate_then_advance — contact Next often
     # leaves URL/title flat; a fixed 1.5s sleep falsely sticky-stuck and skipped C–E.
@@ -5397,6 +5632,13 @@ async def _gate_then_advance(page, report: dict, phase: dict) -> bool:
     advanced = any(c.get("action") == "clicked" for c in next_clicks)
     phase["advanced"] = advanced
     report["advanced"] = advanced
+    if advanced:
+        try:
+            from field_lock import clear_locks_on_advance
+
+            clear_locks_on_advance(report)
+        except Exception:
+            pass
     # Workday SPA: URL/title often unchanged — poll for step container / fingerprint
     after, moved_dom = await _poll_wd_spa_after_advance(page, phase, before)
     before_dom = phase.get("spa_dom_before") or {}
@@ -6593,6 +6835,13 @@ def _finalize_workday_verdict(report: dict) -> str:
 
     Contact-only or mid-wizard SUCCESS is a metrics lie (see dates9 artifact).
     """
+    try:
+        from field_lock import apply_thrash_verdict_gate, fold_lock_metrics
+
+        fold_lock_metrics(report)
+        apply_thrash_verdict_gate(report)
+    except Exception:
+        pass
     if report.get("advanced_incomplete") or report.get("validation_after_advance"):
         report["verdict"] = "FAIL"
         report.setdefault("verdict_reason", "validation_or_incomplete_advance")
@@ -6600,6 +6849,10 @@ def _finalize_workday_verdict(report: dict) -> str:
     if report.get("stuck_on_same_page"):
         report["verdict"] = "FAIL"
         report.setdefault("verdict_reason", "stuck_on_same_page")
+        return report["verdict"]
+    if report.get("thrash_demoted") or report.get("verdict_reason") == "thrash_retouches":
+        report["verdict"] = "FAIL"
+        report.setdefault("verdict_reason", "thrash_retouches")
         return report["verdict"]
     required = report.get("required_empty_before_advance") or []
     if required:
