@@ -397,6 +397,17 @@ def _row_step_key(row: dict[str, Any], *, action: str = "") -> str:
 
 def infer_action_from_row(row: dict[str, Any]) -> str:
     reason = str(row.get("reason") or "")
+    if row.get("skipped_locked") or reason in (
+        "field_locked_skip",
+        "lock_skip",
+    ):
+        return "lock_skip"
+    if row.get("thrash_retouch") and reason not in (
+        "already_correct_skip",
+        "already_correct_keep",
+        "field_locked_skip",
+    ):
+        return "thrash_retouch"
     if row.get("skipped_already_correct") or reason in (
         "already_correct_skip",
         "already_correct_keep",
