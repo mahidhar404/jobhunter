@@ -2258,7 +2258,40 @@ async def _fill_automation_id(page, automation_id: str, value: str, *, combobox:
                 existing_cb = await _read_field_value(loc)
             except Exception:
                 existing_cb = ""
-            if _value_matches_readback(fill_value, existing_cb, mode="combobox"):
+            # How-Heard / source: any committed chip → keep (stop alias thrash)
+            if automation_id in ("how_heard", "source--source", "source"):
+                try:
+                    from verified_select import how_heard_source_committed
+
+                    wrap = await _read_how_heard_display(page)
+                    probe = wrap or existing_cb
+                    if how_heard_source_committed(probe, [fill_value]):
+                        try:
+                            from verified_select import settle_open_listbox
+
+                            await settle_open_listbox(page)
+                        except Exception:
+                            pass
+                        return {
+                            "automation_id": automation_id,
+                            "status": "filled",
+                            "reason": "already_correct_keep",
+                            "mode": "combobox",
+                            "value": value,
+                            "readback": (probe or "")[:120],
+                            "selector": sel,
+                            "option_clicked": False,
+                            "option_text": (probe or "")[:80] or None,
+                            "verified": True,
+                            "committed": True,
+                            "skipped_already_correct": True,
+                        }
+                except Exception:
+                    pass
+            # Never treat bare filter text as already-correct for how-heard
+            if automation_id in ("how_heard", "source--source", "source"):
+                pass  # fall through to hierarchical / combobox fill
+            elif _value_matches_readback(fill_value, existing_cb, mode="combobox"):
                 return {
                     "automation_id": automation_id,
                     "status": "filled",
@@ -2272,34 +2305,6 @@ async def _fill_automation_id(page, automation_id: str, value: str, *, combobox:
                     "verified": True,
                     "skipped_already_correct": True,
                 }
-            # How-Heard / source: any committed chip → keep (stop alias thrash)
-            if automation_id in ("how_heard", "source--source", "source"):
-                try:
-                    from verified_select import how_heard_source_committed
-
-                    if how_heard_source_committed(existing_cb, [fill_value]):
-                        try:
-                            from verified_select import settle_open_listbox
-
-                            await settle_open_listbox(page)
-                        except Exception:
-                            pass
-                        return {
-                            "automation_id": automation_id,
-                            "status": "filled",
-                            "reason": "already_correct_keep",
-                            "mode": "combobox",
-                            "value": value,
-                            "readback": (existing_cb or "")[:120],
-                            "selector": sel,
-                            "option_clicked": False,
-                            "option_text": (existing_cb or "")[:80] or None,
-                            "verified": True,
-                            "committed": True,
-                            "skipped_already_correct": True,
-                        }
-                except Exception:
-                    pass
 
         if combobox or role == "combobox" or tag == "button":
             from verified_select import fill_workday_combobox, settle_open_listbox
@@ -2321,7 +2326,11 @@ async def _fill_automation_id(page, automation_id: str, value: str, *, combobox:
                 str(fill_value),
                 aliases=cands,
                 filter_input=filter_loc,
-                read_committed=lambda: _read_field_value(loc),
+                read_committed=(
+                    (lambda: _read_how_heard_display(page))
+                    if automation_id in ("how_heard", "source--source", "source")
+                    else (lambda: _read_field_value(loc))
+                ),
                 timeout_ms=7000 if automation_id in ("how_heard", "source--source") else 5000,
                 label=automation_id,
                 field_type=(
@@ -2333,9 +2342,23 @@ async def _fill_automation_id(page, automation_id: str, value: str, *, combobox:
             )
             ok = bool(detail.get("ok") and detail.get("committed"))
             readback = str(detail.get("readback") or detail.get("picked") or "")
+            if automation_id in ("how_heard", "source--source", "source"):
+                try:
+                    wrap = await _read_how_heard_display(page)
+                    if wrap:
+                        readback = wrap
+                    from verified_select import how_heard_source_committed
+
+                    ok = how_heard_source_committed(readback, [fill_value, *cands])
+                except Exception:
+                    ok = False
             if not readback:
                 readback = await _read_field_value(loc)
-            if not ok and readback:
+            if not ok and readback and automation_id not in (
+                "how_heard",
+                "source--source",
+                "source",
+            ):
                 ok = _value_matches_readback(fill_value, readback, mode="combobox")
             if ok:
                 try:
@@ -2728,6 +2751,20 @@ REQUIRED_EMPTY_JS = """() => {
     const wrap = el.closest('[data-automation-id*="formField"], [data-automation-id*="phone"]');
     if (wrap && wrap.querySelector('[data-automation-id="deleteSelected"], [aria-label*="remove" i], [data-automation-id*="selectedItem"]')) {
       return;
+    }
+    // How-heard / source multi-select: filter input stays empty after chip commit
+    if (wrap) {
+      const wt = (wrap.innerText || '').replace(/\\s+/g, ' ').toLowerCase();
+      const aid = (wrap.getAttribute('data-automation-id') || '').toLowerCase();
+      const isSource = aid.includes('formfield-source') || aid.includes('how_heard')
+        || aid.includes('howdidyouhear') || (el.name || '') === 'source--source';
+      if (isSource && /\\b([1-9]\\d*)\\s+items?\\s+selected\\b/.test(wt)) {
+        return;
+      }
+      if (isSource && wt.includes('0 items selected')) {
+        push(el, 'empty_required_multiselect');
+        return;
+      }
     }
     const v = (el.value || '').trim();
     const aid = el.getAttribute('data-automation-id') || '';
@@ -4662,8 +4699,93 @@ async def _fill_how_heard(page, values: dict | None = None, report: dict | None 
     if keep0 is not None:
         return _learn(keep0)
 
+    # Walmart-style hierarchy: type leaf → open subsection → pick leaf → chip.
+    # Prefer this BEFORE alias thrash that locks onto "Internet job board" /
+    # "Job Board" category headers without a real chip.
+    try:
+        from fill_verify import (
+            how_heard_category_candidates,
+            how_heard_leaf_candidates,
+        )
+        from verified_select import fill_hierarchical_how_heard
+
+        fiber_inps = page.locator(
+            'input[name="source--source"], '
+            '[data-automation-id="source--source"], '
+            '[data-automation-id="formField-source"] input, '
+            '[data-automation-id="formField-how_heard"] input, '
+            '[data-automation-id="multiSelectContainer"] input'
+        )
+        n_hier = await fiber_inps.count()
+        for ii in range(min(n_hier, 3)):
+            inp = fiber_inps.nth(ii)
+            try:
+                if not await inp.is_visible(timeout=400):
+                    continue
+            except Exception:
+                continue
+            hier = await fill_hierarchical_how_heard(
+                page,
+                inp,
+                leaf_candidates=how_heard_leaf_candidates(values),
+                category_candidates=how_heard_category_candidates(values),
+            )
+            if hier.get("ok") and hier.get("committed"):
+                return await _settle_ok(
+                    {
+                        "automation_id": aid,
+                        "status": "filled",
+                        "mode": "hierarchical_how_heard",
+                        "type": HOW_HEARD,
+                        "value": hier.get("value")
+                        or (how_heard_leaf_candidates(values) or ["Indeed"])[0],
+                        "readback": (hier.get("readback") or "")[:120],
+                        "option_text": hier.get("picked"),
+                        "picked": hier.get("picked"),
+                        "option_clicked": bool(hier.get("option_clicked")),
+                        "verified": True,
+                        "committed": True,
+                        "algorithm": "hierarchical_how_heard",
+                        "path": hier.get("path"),
+                        "subsection": hier.get("subsection"),
+                    }
+                )
+            # If hierarchy opened but no chip, keep probing — do not treat
+            # category filter text as success.
+            keep_h = await _probe_how_heard_already_committed(page, candidates)
+            if keep_h is not None:
+                return _learn(keep_h)
+            result = {
+                "automation_id": aid,
+                "status": "missed",
+                "reason": hier.get("reason") or hier.get("status") or "hierarchical_miss",
+                "mode": "hierarchical_how_heard",
+                "type": HOW_HEARD,
+                "verified": False,
+                "readback": (hier.get("readback") or "")[:120],
+                "path": hier.get("path"),
+            }
+            break
+    except Exception as e:
+        result = {
+            "automation_id": aid,
+            "status": "missed",
+            "reason": "hierarchical_error",
+            "error": str(e)[:120],
+            "verified": False,
+            "type": HOW_HEARD,
+        }
+
     other_tried = False
     for cand in candidates:
+        # Skip category headers in the flat alias walk — hierarchy above owns them.
+        try:
+            from fill_verify import is_how_heard_category_option
+
+            if is_how_heard_category_option(cand):
+                continue
+        except Exception:
+            pass
         # Prefer one concrete Other* option once — do not cycle Other variants
         if re.search(r"^other\b", str(cand), re.I):
             if other_tried:
@@ -4705,6 +4827,13 @@ async def _fill_how_heard(page, values: dict | None = None, report: dict | None 
                     return _learn(keep_f)
                 other_fiber = False
                 for cand in candidates:
+                    try:
+                        from fill_verify import is_how_heard_category_option
+
+                        if is_how_heard_category_option(cand):
+                            continue
+                    except Exception:
+                        pass
                     if re.search(r"^other\b", str(cand), re.I):
                         if other_fiber:
                             continue
@@ -4737,6 +4866,18 @@ async def _fill_how_heard(page, values: dict | None = None, report: dict | None 
                     verified = "0 items selected" not in body_snip.lower() and bool(
                         fiber.get("picked") or body_snip
                     )
+                    # Reject category-only "commits"
+                    try:
+                        from fill_verify import is_how_heard_category_option
+                        from verified_select import how_heard_source_committed
+
+                        verified = verified and how_heard_source_committed(
+                            body_snip, candidates
+                        )
+                        if is_how_heard_category_option(fiber.get("picked")):
+                            verified = False
+                    except Exception:
+                        pass
                     result = {
                         "automation_id": aid,
                         "status": "filled" if verified else "missed",
@@ -4775,6 +4916,13 @@ async def _fill_how_heard(page, values: dict | None = None, report: dict | None 
         if keep_pre is not None:
             return _learn(keep_pre)
         for cand in candidates:
+            try:
+                from fill_verify import is_how_heard_category_option
+
+                if is_how_heard_category_option(cand):
+                    continue
+            except Exception:
+                pass
             if re.search(r"^other\b", str(cand), re.I) and other_tried:
                 continue
             for hear_label in (
@@ -4834,6 +4982,17 @@ async def _fill_how_heard(page, values: dict | None = None, report: dict | None 
                         verified = "0 items selected" not in body_snip.lower() and bool(
                             opt or body_snip
                         )
+                        try:
+                            from fill_verify import is_how_heard_category_option
+                            from verified_select import how_heard_source_committed
+
+                            verified = verified and how_heard_source_committed(
+                                body_snip, candidates
+                            )
+                            if is_how_heard_category_option(opt):
+                                verified = False
+                        except Exception:
+                            pass
                         result = {
                             "automation_id": aid,
                             "status": "filled" if verified else "missed",
@@ -4866,6 +5025,9 @@ async def _fill_how_heard(page, values: dict | None = None, report: dict | None 
         "not_attempted",
         "multiselect_no_chip",
         "fiber_search_error",
+        "hierarchical_miss",
+        "hierarchical_no_chip",
+        "hierarchical_error",
     ):
         keep_late = await _probe_how_heard_already_committed(page, candidates)
         if keep_late is not None:
@@ -4891,6 +5053,13 @@ async def _fill_how_heard(page, values: dict | None = None, report: dict | None 
                     from verified_select import fill_workday_combobox
 
                     for cand in candidates:
+                        try:
+                            from fill_verify import is_how_heard_category_option
+
+                            if is_how_heard_category_option(cand):
+                                continue
+                        except Exception:
+                            pass
                         if re.search(r"^other\b", str(cand), re.I) and other_tried:
                             continue
                         wd = await fill_workday_combobox(
@@ -4915,6 +5084,18 @@ async def _fill_how_heard(page, values: dict | None = None, report: dict | None 
                                 and bool(opt)
                             )
                         )
+                        try:
+                            from fill_verify import is_how_heard_category_option
+                            from verified_select import how_heard_source_committed
+
+                            wrap = await _read_how_heard_display(page)
+                            verified = verified and how_heard_source_committed(
+                                wrap or readback or opt, candidates
+                            )
+                            if is_how_heard_category_option(opt):
+                                verified = False
+                        except Exception:
+                            pass
                         result = {
                             "automation_id": aid,
                             "status": "filled" if verified else "missed",
@@ -5247,6 +5428,7 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
     pack_missed = [
         m for m in missed
         if not m.get("optional_miss")
+        and m.get("reason") not in ("not_in_dom", "not_visible")
         and m.get("automation_id") in {aid for aid, _, _ in fill_plan}
     ]
     required_empty = await _required_empty_on_page(page)

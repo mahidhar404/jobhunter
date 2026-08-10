@@ -469,18 +469,32 @@ FOOTER_PRIMARY_PROBE_JS = """() => {
   );
   const floor = window.innerHeight * 0.55;
   const cands = [];
+  const skipRe = /phone|mobile|device|country.?code|prefix|language|sign.?in|menu/i;
+  const preferRe = /save\\s+and\\s+continue|continue|\\bnext\\b|submit|review/i;
   for (const el of nodes) {
     if (!visible(el)) continue;
     const t = labelOf(el);
     if (!t) continue;
+    const aid = el.getAttribute('data-automation-id') || '';
+    if (skipRe.test(t) || skipRe.test(aid)) continue;
     const r = el.getBoundingClientRect();
     if (r.bottom < floor) continue;
-    cands.push({ t, r, aid: el.getAttribute('data-automation-id') || '' });
+    cands.push({
+      t,
+      r,
+      aid,
+      prefer: preferRe.test(t) ? 1 : 0,
+    });
   }
   if (!cands.length) {
     return { label: '', source: 'none', automation_id: '' };
   }
-  cands.sort((a, b) => b.r.bottom - a.r.bottom || b.r.right - a.r.right);
+  cands.sort(
+    (a, b) =>
+      b.prefer - a.prefer ||
+      b.r.bottom - a.r.bottom ||
+      b.r.right - a.r.right
+  );
   const best = cands[0];
   return {
     label: best.t,
