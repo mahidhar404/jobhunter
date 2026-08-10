@@ -22,5 +22,6 @@ from exp_workday_selectors import (  # noqa: F401
     _is_verified_fill,
     _required_empty_on_page,
     _required_empties_as_leftovers,
+    detect_workday_current_step,
     workday_two_phase_on_page,
 )

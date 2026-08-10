@@ -85,6 +85,9 @@ def test_ats2_016_poll_helper_replaces_long_sleeps():
         _click_workday_apply_path,
         _fallback_apply_manually_from_autofill,
         _poll_spa_settle,
+        _poll_wd_spa_after_advance,
+        _wait_contact_phase,
+        _wait_step,
     )
 
     assert callable(_poll_spa_settle)
@@ -92,9 +95,71 @@ def test_ats2_016_poll_helper_replaces_long_sleeps():
     assert "_poll_spa_settle" in src_apply
     assert "wait_for_timeout(4000)" not in src_apply
     assert "wait_for_timeout(4500)" not in src_apply
+    assert "wait_for_timeout(1500)" not in src_apply
     src_fb = inspect.getsource(_fallback_apply_manually_from_autofill)
     assert "_poll_spa_settle" in src_fb
     assert "wait_for_timeout(3500)" not in src_fb
+
+    # Thales stall: post-advance / contact waits must poll fast and early-exit
+    src_spa = inspect.getsource(_poll_wd_spa_after_advance)
+    assert "poll_ms" in src_spa
+    assert "wait_for_timeout(350)" not in src_spa
+    src_contact = inspect.getsource(_wait_contact_phase)
+    assert "poll_ms" in src_contact
+    assert "wait_for_timeout(1000)" not in src_contact
+    src_step = inspect.getsource(_wait_step)
+    assert "wait_for_timeout(800)" not in src_step
+    assert "wait_for_timeout(150)" in src_step
+
+
+def test_thales_contact_probes_include_source():
+    """Thales wd3 mounts source--source before classic contactInformationPage."""
+    from exp_workday_selectors import (
+        WD_CONTACT_SELECTORS,
+        _contact_phase_present,
+        _dummy_answer_for_wd_label,
+        _fill_how_heard,
+    )
+    from field_map import HOW_HEARD
+    from fill_verify import how_heard_candidates
+
+    src = inspect.getsource(_contact_phase_present)
+    assert "source--source" in src
+    assert "formField-source" in src
+    hh = WD_CONTACT_SELECTORS.get("how_heard") or []
+    assert any("source--source" in s for s in hh)
+    assert any("Where Did You Hear" in s or "Where did you hear" in s for s in hh)
+
+    vals = {HOW_HEARD: "Internet job board"}
+    assert how_heard_candidates(vals)[0]
+    for lab in (
+        "Where did you hear about us?",
+        "source--source",
+        "How Did You Hear About Us",
+        "Referral source",
+    ):
+        cands = _dummy_answer_for_wd_label(lab, vals)
+        assert cands, lab
+        assert any("internet" in c.lower() or "job board" in c.lower() for c in cands)
+
+    hh_src = inspect.getsource(_fill_how_heard)
+    assert "Where Did You Hear" in hh_src
+    assert "source--source" in hh_src
+
+
+def test_how_heard_classifies_workday_source_id():
+    from field_map import HOW_HEARD, classify_field
+
+    for field in (
+        {"label": "source--source", "name": "source--source", "id": "source--source"},
+        {"label": "", "name": "source--source", "id": ""},
+        {"label": "Where did you hear about us?", "name": "", "id": ""},
+        {"label": "Where Did You Hear About Us", "name": "source", "id": "source--source"},
+        {"label": "", "name": "", "id": "formField-source"},
+    ):
+        ftype, layer = classify_field(field)
+        assert ftype == HOW_HEARD, (field, ftype, layer)
+        assert layer in ("layer1_regex", "semantic", "layer0_autocomplete")
 
 
 def test_ats2_015_recursion_retry_once():
@@ -175,6 +240,8 @@ if __name__ == "__main__":
     test_ats3_011_spa_moved_helpers()
     test_ats2_011_clear_false_stuck_helper()
     test_ats2_016_poll_helper_replaces_long_sleeps()
+    test_thales_contact_probes_include_source()
+    test_how_heard_classifies_workday_source_id()
     test_ats2_015_recursion_retry_once()
     test_ats3_014_gh_pack_has_geo()
     test_ats2_015_phone_device_retry_flag_roundtrip()

@@ -160,12 +160,16 @@ from captcha_pause import (  # noqa: E402
     resolve_captcha_wait,
 )
 from fill_pause import (  # noqa: E402
+    consume_fill_continue_sentinel,
     drain_pause_before_close,
+    enter_hold_continue_mode,
     ensure_fill_pause_ready,
     install_fill_pause_on_context,
     note_fill_activity,
     push_fill_activity,
+    read_fill_pause_state,
     resolve_fill_pause,
+    set_fill_paused,
     should_keep_fill_browser_open,
     wait_while_paused,
 )
@@ -1433,16 +1437,29 @@ async def run_inpage_flash_leftovers(
     payload["inpage_attempted"] = attempted
     payload["leftovers"] = still
     payload["leftover_count"] = len(still)
-    # Refresh report leftovers to drop successfully filled ones
+    # Refresh report leftovers to drop successfully filled ones. Match by label
+    # AND by selector: essays/URL fields filled via replay/inpage often carry an
+    # empty label but a concrete selector (Ashby "favorite AI paper" essay filled
+    # via replay had label="" → the by-label match alone left a filled field
+    # falsely listed as an unclassified leftover → false FAIL).
     filled_labels = {
         (a.get("label") or "").lower()
         for a in attempted
-        if a.get("ok")
+        if a.get("ok") and a.get("label")
+    }
+    filled_selectors = {
+        (a.get("selector") or "").lower()
+        for a in attempted
+        if a.get("ok") and a.get("selector")
     }
     report["leftovers"] = [
         u
         for u in (report.get("leftovers") or [])
         if (u.get("label") or "").lower()[:80] not in filled_labels
+        and (
+            not (u.get("selector") or "")
+            or (u.get("selector") or "").lower() not in filled_selectors
+        )
     ]
     # Merge any still-unfilled rows that might not already be listed
     existing = {(u.get("label") or "")[:80].lower() for u in report["leftovers"]}
@@ -5083,6 +5100,11 @@ async def _fill_selector(
 
             # Prefer pack selector when it resolves; upload_resume_to_page verifies
             # FileList / UI filename (never claim verified on set_input_files alone).
+            _rt = os.environ.get("FASTFILL_PACK_TIMING") == "1"
+            _rt0 = time.monotonic()
+            def _mark(tag: str) -> None:
+                if _rt:
+                    print(f"[resume_timing] {tag} {time.monotonic() - _rt0:.2f}s", flush=True)
             pdf = resume_pdf_from_values({RESUME_UPLOAD: value} if value else None)
             handles = page.locator("input[type=file]")
             if sel:
@@ -5090,6 +5112,7 @@ async def _fill_selector(
                 if await specific.count() > 0:
                     handles = specific
             n = await handles.count()
+            _mark(f"after_count n={n}")
             if n == 0:
                 # Fall through to broader resume upload helper (chooser / alt sels)
                 got = await upload_resume_to_page(
@@ -5105,7 +5128,29 @@ async def _fill_selector(
                     "selector": got.get("selector") or sel,
                     "mode": got.get("mode") or "file",
                 }
-            await handles.first.set_input_files(str(pdf))
+            # Bound the file-input attach: a hidden / non-actionable
+            # input[type=file] (common on Greenhouse styled dropzones) would
+            # otherwise burn Playwright's 30s default actionability timeout
+            # before we fall through to the working upload_resume_to_page helper.
+            try:
+                await handles.first.set_input_files(str(pdf), timeout=6000)
+                _mark("after_set_input_files")
+            except Exception:
+                _mark("set_input_files_timeout")
+                # Non-actionable input → skip straight to the broader helper.
+                got = await upload_resume_to_page(
+                    page, {RESUME_UPLOAD: str(pdf)}, via="fill_selector_file", report=report
+                )
+                return {
+                    **out,
+                    "ok": bool(got.get("ok")),
+                    "verified": bool(got.get("verified")),
+                    "value": pdf.name,
+                    "readback": got.get("readback") or "",
+                    "reason": got.get("reason") or got.get("error") or "set_input_files_timeout",
+                    "selector": got.get("selector") or sel,
+                    "mode": got.get("mode") or "file",
+                }
             try:
                 await page.wait_for_timeout(350)
             except Exception:
@@ -5120,34 +5165,21 @@ async def _fill_selector(
             )
             name = str((info or {}).get("name") or "")
             verified = bool((info or {}).get("ok") and name)
+            _mark(f"after_evaluate verified={verified}")
             if not verified:
-                # One retry then broader helper
-                try:
-                    await handles.first.set_input_files(str(pdf))
-                    await page.wait_for_timeout(350)
-                    info = await handles.first.evaluate(
-                        """(el) => {
-                          const files = el && el.files;
-                          if (!files || files.length < 1)
-                            return {ok: false, name: '', count: 0};
-                          return {
-                            ok: true,
-                            name: files[0].name || '',
-                            count: files.length,
-                          };
-                        }"""
-                    )
-                    name = str((info or {}).get("name") or "")
-                    verified = bool((info or {}).get("ok") and name)
-                except Exception:
-                    pass
-            if not verified:
+                # Empty FileList after attach is EXPECTED on Greenhouse styled
+                # dropzones (the file is accepted + moved server-side, clearing
+                # the input). Re-attaching to the same churned/detached input
+                # burned ~30s (Playwright default timeout on the re-resolve, not
+                # honoring the per-call timeout). Go straight to the robust
+                # helper, which verifies via the uploaded-UI chrome fast.
                 got = await upload_resume_to_page(
                     page,
                     {RESUME_UPLOAD: str(pdf)},
                     via="fill_selector_retry",
                     report=report,
                 )
+                _mark("after_upload_resume_to_page")
                 return {
                     **out,
                     "ok": bool(got.get("ok")),
@@ -5448,7 +5480,15 @@ async def reassert_greenhouse_contact_after_resume(page, values: dict) -> list[d
                       return getVal(el);
                     }
                     el.focus();
-                    el.value = v;
+                    // React controlled inputs ignore a plain `el.value = v`
+                    // (state re-render reverts it to empty — Dragos GH LinkedIn
+                    // custom question). Use the native value setter so React's
+                    // onChange registers the value and it persists.
+                    const proto = window.HTMLInputElement
+                      && window.HTMLInputElement.prototype;
+                    const desc = proto && Object.getOwnPropertyDescriptor(proto, 'value');
+                    if (desc && desc.set) { desc.set.call(el, v); }
+                    else { el.value = v; }
                     el.dispatchEvent(new Event('input', {bubbles: true}));
                     el.dispatchEvent(new Event('change', {bubbles: true}));
                     return (el.value || '').trim().length > 0 ? el.value : '';
@@ -5828,6 +5868,78 @@ async def reassert_greenhouse_contact_after_resume(page, values: dict) -> list[d
     return rows
 
 
+async def _reassert_hispanic_if_race_clobbered(
+    page, values: dict, report: dict | None = None
+) -> bool:
+    """Heal the GH cascading-ethnicity clobber.
+
+    On some Greenhouse tenants "Please identify your race" is a dependent
+    sub-select revealed by answering "Are you Hispanic/Latino?"=No; committing
+    a race value collapses it and resets Hispanic to a Decline value. When we
+    detect Hispanic now showing a Decline while policy wants a concrete answer
+    (e.g. "No"), re-assert Hispanic (the required answer) and return True. The
+    dependent race select is intentionally left empty — the stable state.
+    """
+    try:
+        from gh_select import (
+            _resolve_gh_select_container,
+            aliases_for,
+            fill_gh_select,
+            is_decline_like_alias,
+        )
+        from verified_select import read_gh_select_display
+    except Exception:
+        return False
+    intended = str((values or {}).get(HISPANIC) or "").strip()
+    # Only heal toward a concrete policy answer — never re-assert a Decline.
+    if not intended or is_decline_like_alias(intended):
+        return False
+    hisp_label = ""
+    try:
+        labs = page.locator("label").filter(
+            has_text=re.compile(r"hispanic|latino", re.I)
+        )
+        if await labs.count():
+            hisp_label = (
+                await labs.first.inner_text()
+            ).replace("\n", " ").strip()[:160]
+    except Exception:
+        hisp_label = ""
+    if not hisp_label:
+        return False
+    live = ""
+    try:
+        _l, cont, _c, err = await _resolve_gh_select_container(page, hisp_label)
+        if not err and cont is not None and await cont.count():
+            live = (await read_gh_select_display(cont) or "").strip()
+    except Exception:
+        live = ""
+    # No clobber to heal when Hispanic already shows a concrete (non-Decline) answer.
+    if live and not is_decline_like_alias(live):
+        return False
+    try:
+        res = await fill_gh_select(
+            page,
+            hisp_label,
+            intended,
+            field_type=HISPANIC,
+            aliases=aliases_for(HISPANIC, intended),
+        )
+    except Exception:
+        return False
+    healed = bool(res.get("ok"))
+    if healed and report is not None:
+        report.setdefault("coupled_ethnicity_heals", []).append(
+            {
+                "label": hisp_label[:80],
+                "reasserted": intended,
+                "was": live[:60],
+                "shown": str(res.get("shown") or res.get("picked") or "")[:60],
+            }
+        )
+    return healed
+
+
 async def sweep_gh_unfilled_selects(page, values: dict, report: dict | None = None) -> list[dict]:
     """Fill Greenhouse react-selects still showing Select… for known policy types.
 
@@ -5941,6 +6053,11 @@ async def sweep_gh_unfilled_selects(page, values: dict, report: dict | None = No
                 ftype = MARKETING_CONSENT
             else:
                 continue
+        # Coupled cascading-ethnicity widget already healed once: never re-fill
+        # the dependent race sub-select (it reappears empty after each heal and
+        # re-filling it would just re-clobber Hispanic).
+        if ftype == RACE and (report or {}).get("coupled_ethnicity_heals"):
+            continue
         # Always retry SPONSORSHIP/WORK_AUTH/MARKETING if still showing Select…
         if ftype in already_types and ftype not in (
             SPONSORSHIP,
@@ -6007,6 +6124,21 @@ async def sweep_gh_unfilled_selects(page, values: dict, report: dict | None = No
             row["reason"] = result.get("error") or "gh_select_failed"
             row["options"] = (result.get("options") or [])[:8]
             row["flash_candidate"] = True
+        # Cascading-ethnicity guard: some GH tenants render "Please identify your
+        # race" as a dependent sub-select revealed by answering "Are you
+        # Hispanic/Latino?"=No. Committing a race value COLLAPSES it and resets
+        # Hispanic to "Decline To Self Identify" — clobbering the required
+        # answer. Detect that clobber, re-assert Hispanic=No (which the user
+        # explicitly requires), and drop the coupled race fill instead of
+        # looping (Hispanic demote → refill → race sweep → clobber → …).
+        if ftype == RACE and row.get("verified"):
+            healed = await _reassert_hispanic_if_race_clobbered(
+                page, values, report
+            )
+            if healed:
+                # Coupled widget: drop the race sub-fill entirely (voluntary,
+                # left empty) — Hispanic=No has been re-asserted as the answer.
+                continue
         rows.append(row)
         if row.get("verified"):
             already_labels.add(lab_key)
@@ -6483,9 +6615,13 @@ async def apply_selector_pack(
             val = local_values.get(ftype)
             if not val or not validate_filled(ftype, str(val)):
                 continue
+        _pack_t0 = time.monotonic()
         result = await _fill_selector(
             page, sel, ftype, str(val), mode=mode, report=report
         )
+        _pack_dt = time.monotonic() - _pack_t0
+        if os.environ.get("FASTFILL_PACK_TIMING") == "1" and _pack_dt > 1.0:
+            print(f"[pack_timing] {platform} {ftype} mode={mode} {_pack_dt:.2f}s", flush=True)
         row = {
             "via": f"{platform}_selector_pack",
             "layer": "0.5",
@@ -7811,48 +7947,92 @@ async def _hold_for_review(
     seconds: int,
     report: dict | None = None,
     browser=None,
-) -> None:
-    """Keep browser open for review until timeout, Ctrl+C, or browser closed.
+    page=None,
+) -> dict:
+    """Keep browser open for review until timeout, Ctrl+C, browser closed, or Continue.
 
-    ``seconds < 0`` (HOLD_INDEFINITE): wait forever until interrupt / disconnect.
+    ``seconds < 0`` (HOLD_INDEFINITE): wait forever until interrupt / disconnect /
+    overlay Continue / ``.fill_continue``.
     ``seconds == 0``: no hold. Positive: timed hold (interruptible).
     Never submits.
+
+    When *page* is set and fill-pause is enabled, overlay switches to **Continue**.
+    Clicking Continue (or touching ``.fill_continue``) returns
+    ``{"continued": True, ...}`` so the caller can resume fill / advance Next
+    before re-holding. CAPTCHA wait owns its own Continue path separately.
     """
+    out: dict = {"continued": False, "via": None, "waited": False}
     if seconds == 0:
-        return
+        out["via"] = "no_hold"
+        return out
     indefinite = seconds < 0
     if indefinite:
         print(
-            "[hold] keeping browser open for review until you close it "
-            "(or Ctrl+C / Cancel run); never submit…",
+            "[hold] keeping browser open for review until you Continue "
+            "(top-right), close the window, or Ctrl+C / Cancel run; never submit…",
             flush=True,
         )
         reason = "indefinite (never submit)"
     else:
         print(
             f"[hold] keeping browser open {seconds}s for review "
-            "(Ctrl+C to close early; never submit)…",
+            "(Continue / Ctrl+C to leave early; never submit)…",
             flush=True,
         )
         reason = f"{seconds}s (never submit)"
+    incomplete_hold = False
     if report is not None:
         try:
-            from page_progress import can_claim_ready, finalize_ready_flag
+            from page_progress import (
+                can_claim_ready,
+                finalize_ready_flag,
+                may_enter_review_hold,
+            )
 
             # Hold browser either way; Ready only when honesty gates pass.
-            if can_claim_ready(report):
+            # Caller should have probed footer_primary (Next vs Submit) already.
+            if may_enter_review_hold(report) and can_claim_ready(report):
                 report["ready_for_review"] = True
+            else:
+                report["ready_for_review"] = False
+                if not may_enter_review_hold(report):
+                    report["hold_incomplete"] = True
+                    incomplete_hold = True
             report["hold_indefinite"] = bool(indefinite)
             finalize_ready_flag(report)
             note_step(
                 report,
-                action="hold_review",
+                action="hold_review" if may_enter_review_hold(report) else "hold_incomplete",
                 reason=reason,
                 via="headed_hold",
             )
         except Exception:
-            pass
+            incomplete_hold = bool(report.get("hold_incomplete"))
+
+    # Overlay → Continue (review or incomplete). Skip when CAPTCHA gate owns UI.
+    pause_on = True
+    if report is not None and "fill_pause_enabled" in report:
+        pause_on = bool(report.get("fill_pause_enabled"))
+    hold_armed = False
+    if page is not None and pause_on:
+        try:
+            st0 = await read_fill_pause_state(page)
+            if st0.get("captcha_gated"):
+                out["captcha_gated"] = True
+            else:
+                await enter_hold_continue_mode(
+                    page, report, incomplete=incomplete_hold
+                )
+                hold_armed = True
+                out["hold_continue_mode"] = True
+        except Exception as e:
+            if report is not None:
+                report.setdefault("errors", []).append(
+                    {"hold_continue_mode": str(e)[:120]}
+                )
+
     end = None if indefinite else (time.monotonic() + seconds)
+    out["waited"] = True
     try:
         while True:
             if browser is not None:
@@ -7869,19 +8049,72 @@ async def _hold_for_review(
                                 )
                             except Exception:
                                 pass
+                        out["via"] = "browser_closed"
                         break
                 except Exception:
                     print("[hold] browser gone — ending hold", flush=True)
+                    out["via"] = "browser_gone"
                     break
+
+            # Continue from hold (overlay or .fill_continue) — resume fill loop.
+            if hold_armed and page is not None:
+                try:
+                    if consume_fill_continue_sentinel():
+                        await set_fill_paused(page, False)
+                        print(
+                            "[hold] Continue sentinel — resuming fill "
+                            "(will attempt Next / leftovers; never submit)…",
+                            flush=True,
+                        )
+                        out.update(continued=True, via="sentinel")
+                        if report is not None:
+                            report.setdefault("fill_pause", {})["resume_rescan"] = True
+                            report["hold_continued"] = True
+                            note_step(
+                                report,
+                                action="hold_continue",
+                                reason="sentinel",
+                                via="headed_hold",
+                            )
+                        break
+                    st = await read_fill_pause_state(
+                        page, assume_paused_on_error=True
+                    )
+                    if st.get("captcha_gated"):
+                        # CAPTCHA appeared mid-hold — yield to captcha wait path
+                        out["via"] = "captcha_gated"
+                        break
+                    if not st.get("paused"):
+                        print(
+                            "[hold] Continue — resuming fill "
+                            "(will attempt Next / leftovers; never submit)…",
+                            flush=True,
+                        )
+                        out.update(continued=True, via="overlay_continue")
+                        if report is not None:
+                            report.setdefault("fill_pause", {})["resume_rescan"] = True
+                            report["hold_continued"] = True
+                            note_step(
+                                report,
+                                action="hold_continue",
+                                reason="overlay_continue",
+                                via="headed_hold",
+                            )
+                        break
+                except Exception:
+                    pass
+
             if end is not None:
                 left = end - time.monotonic()
                 if left <= 0:
+                    out["via"] = "timeout"
                     break
-                await asyncio.sleep(min(left, 1.0))
+                await asyncio.sleep(min(left, 0.5 if hold_armed else 1.0))
             else:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.5 if hold_armed else 1.0)
     except KeyboardInterrupt:
         print("[hold] SIGINT — closing browser", flush=True)
+        out["via"] = "interrupt"
         if report is not None:
             try:
                 note_step(
@@ -7892,6 +8125,114 @@ async def _hold_for_review(
                 )
             except Exception:
                 pass
+    return out
+
+
+async def _resume_fill_after_hold(
+    page,
+    report: dict,
+    values: dict,
+    *,
+    platform: str,
+    identity,
+) -> dict:
+    """After Continue-from-hold: attempt more fill / Workday Next before re-hold.
+
+    Never submits. Clears incomplete-hold framing for the attempt, probes footer,
+    and runs Workday multipage continue when still mid-wizard. Returns a small
+    status dict.
+    """
+    out: dict = {"attempted": False, "platform": platform}
+    if page is None:
+        out["via"] = "no_page"
+        return out
+    report.pop("hold_incomplete", None)
+    report["hold_continue_resume"] = True
+    report.setdefault("hold_continue_count", 0)
+    report["hold_continue_count"] = int(report["hold_continue_count"]) + 1
+    out["attempted"] = True
+    out["round"] = report["hold_continue_count"]
+    note_fill_activity(
+        layer="1",
+        action="resume after hold",
+        detail=f"round {out['round']}",
+    )
+    try:
+        await push_fill_activity(page)
+    except Exception:
+        pass
+    try:
+        await set_fill_paused(page, False)
+    except Exception:
+        pass
+
+    try:
+        from page_progress import probe_footer_primary, workday_wizard_incomplete
+
+        try:
+            await probe_footer_primary(page, report)
+        except Exception as e:
+            report.setdefault("errors", []).append(
+                {"footer_primary_after_hold_continue": str(e)[:120]}
+            )
+
+        if platform == "workday" or workday_wizard_incomplete(report):
+            from workday_selectors import workday_two_phase_on_page
+
+            print(
+                "[hold] Continue — Workday/multipage resume from current step…",
+                flush=True,
+            )
+            note_fill_activity(
+                layer="workday",
+                action="continue multipage",
+                detail=str(report.get("workday_current_step") or "after_hold"),
+            )
+            try:
+                await push_fill_activity(page)
+            except Exception:
+                pass
+            wd_more = await workday_two_phase_on_page(
+                page,
+                values,
+                click_create_account=False,
+                do_apply_clicks=False,
+                resume_pdf=getattr(identity, "resume_pdf", None),
+                step_report=report,
+            )
+            _merge_workday_into_report(report, wd_more, values)
+            report["errors"].extend(wd_more.get("errors") or [])
+            report["workday_continue_after_hold"] = True
+            out["workday_continue"] = True
+            try:
+                await probe_footer_primary(page, report)
+            except Exception:
+                pass
+        else:
+            # Non-Workday: light leftover rescan via same-session helpers if any.
+            out["workday_continue"] = False
+            note_fill_activity(
+                layer="1",
+                action="rescan after hold",
+                detail="leftovers / already_correct",
+            )
+            try:
+                await push_fill_activity(page)
+            except Exception:
+                pass
+    except Exception as e:
+        report.setdefault("errors", []).append(
+            {"resume_fill_after_hold": str(e)[:160]}
+        )
+        out["error"] = str(e)[:160]
+
+    try:
+        from page_progress import apply_progress_verdict_gates
+
+        apply_progress_verdict_gates(report)
+    except Exception:
+        pass
+    return out
 
 
 async def _wait_enter_message(message: str, *, timeout_s: float = 600) -> dict:
@@ -8492,13 +8833,31 @@ async def _run_in_session_refill_loop(
             await _demote_filled_against_required_empty(page, report, values)
         except Exception:
             pass
+        # Promote still-unanswered required fields (radios / selects / yes-no) into
+        # flash-candidate leftovers so the loop retries them instead of stopping
+        # while required blanks remain (shared "not done" definition with the gate).
+        try:
+            from leftover_miss_scan import promote_l01_misses
+
+            await promote_l01_misses(page, report)
+        except Exception:
+            pass
         report = _finalize(report)
         left = _flash_candidate_leftovers(report)
         if report.get("blocker") and report.get("blocker") not in CAPTCHA_BLOCKERS:
             summary["stopped"] = f"blocker:{report.get('blocker')}"
             break
         if not left:
-            summary["stopped"] = "zero_blanks"
+            # No flash candidates: only honest to call it done when the gate's
+            # shared blank definition is also empty; otherwise stop honestly so
+            # _finalize's gate FAILs rather than implying completion.
+            try:
+                from page_progress import outstanding_required_blanks
+
+                required_remain = bool(outstanding_required_blanks(report))
+            except Exception:
+                required_remain = False
+            summary["stopped"] = "required_blanks_remain" if required_remain else "zero_blanks"
             break
 
         # FILL3-006: page + leftover fingerprint gate
@@ -8592,7 +8951,13 @@ async def _run_in_session_refill_loop(
             and int(detail.get("flash_filled") or 0) == 0
         )
         if detail.get("after_leftovers", 1) == 0:
-            summary["stopped"] = "zero_blanks"
+            try:
+                from page_progress import outstanding_required_blanks
+
+                required_remain = bool(outstanding_required_blanks(report))
+            except Exception:
+                required_remain = False
+            summary["stopped"] = "required_blanks_remain" if required_remain else "zero_blanks"
             break
         if no_progress:
             summary["stopped"] = "stable_fingerprint_no_progress"
@@ -8671,6 +9036,12 @@ def _merge_workday_into_report(report: dict, wd: dict, values: dict) -> None:
         report["vision_judge_live"] = wd["vision_judge_live"]
     if wd.get("vision_incomplete"):
         report["vision_incomplete"] = True
+    if wd.get("workday_current_step"):
+        report["workday_current_step"] = wd.get("workday_current_step")
+        report["workday"]["current_step"] = wd.get("workday_current_step")
+    if wd.get("workday_wizard_progress") is not None:
+        report["workday_wizard_progress"] = wd.get("workday_wizard_progress")
+        report["workday"]["wizard_progress"] = wd.get("workday_wizard_progress")
     report["identity_email"] = wd.get("identity_email") or report.get("identity_email")
 
     # Promote Workday required-empty leftovers (Select One blanks, etc.)
@@ -8896,6 +9267,21 @@ async def run_fast_fill_async(
     )
 
     use_real = (not test_mode) or is_real_profile_mode()
+    # Loop-entry dummy-only guard (defense in depth): a gateway / free-pool LLM
+    # base (OmniRoute / OpenRouter / any non-DeepSeek-direct) may be used only for
+    # dummy runs. flash_leftovers._post_chat_completion also enforces this per
+    # call; failing here stops a real-profile run before any field is touched.
+    try:
+        from llm_config import is_gateway_base, resolve_base_model  # noqa: PLC0415
+
+        _gw_base, _ = resolve_base_model()
+        if use_real and is_gateway_base(_gw_base):
+            raise RuntimeError(
+                "gateway/free-pool LLM base refused for a real-profile run: "
+                "real PII must use DeepSeek direct (unset OPENAI_COMPATIBLE_API_BASE)"
+            )
+    except ImportError:
+        pass
     if use_real:
         if test_mode:
             raise RuntimeError("conflict: test_mode=True but real-profile env set")
@@ -9525,6 +9911,27 @@ async def run_fast_fill_async(
                 report["platform"] = platform
                 report["platform_from_fill_url"] = True
                 report["coverage_path"] = coverage_path_for(platform)
+
+            # Resume-first: upload/parse the resume BEFORE the deterministic fill
+            # layers so a parsing ATS (Ashby, some Greenhouse/Workable) populates
+            # fields for us, and so a later parse can't wipe values we already
+            # typed (the reason Ashby/GH previously needed a post-upload
+            # re-assert). Idempotent — skips when already verified or no file field
+            # is present, and the existing post-extract ensure_resume_uploaded call
+            # then no-ops or completes it (e.g. when the field lives in an apply
+            # iframe that only resolves after the pack).
+            if report.get("blocker") not in (
+                "captcha",
+                "email_verify",
+                "akamai",
+                "cloudflare",
+            ):
+                try:
+                    await ensure_resume_uploaded(fill_ctx, values, report)
+                except Exception as e:
+                    report.setdefault("errors", []).append(
+                        {"ensure_resume_first": str(e)[:160]}
+                    )
 
             if fill_ctx is page:
                 pack_filled, fill_ctx = await apply_selector_pack_anywhere(
@@ -10407,6 +10814,58 @@ async def run_fast_fill_async(
                 if not report.get("blocker"):
                     report["blocker"] = "vision_incomplete"
 
+        # Workday multipage: if still mid-wizard (Experience / Questions / …),
+        # continue advancing BEFORE any review-hold. Never claim Ready early.
+        # Probe footer primary (Next vs Submit) so incomplete detection is live.
+        if (
+            page is not None
+            and platform == "workday"
+            and report.get("blocker") not in CAPTCHA_BLOCKERS
+        ):
+            try:
+                from page_progress import probe_footer_primary, workday_wizard_incomplete
+
+                try:
+                    await probe_footer_primary(page, report)
+                except Exception as e:
+                    report.setdefault("errors", []).append(
+                        {"footer_primary_before_continue": str(e)[:120]}
+                    )
+
+                if workday_wizard_incomplete(report):
+                    from workday_selectors import workday_two_phase_on_page
+
+                    print(
+                        "[workday] multipage incomplete — continuing from current "
+                        "step (not holding for review yet)…",
+                        flush=True,
+                    )
+                    note_fill_activity(
+                        layer="workday",
+                        action="continue multipage",
+                        detail=str(report.get("workday_current_step") or "unknown"),
+                    )
+                    try:
+                        await push_fill_activity(page)
+                    except Exception:
+                        pass
+                    wd_more = await workday_two_phase_on_page(
+                        page,
+                        values,
+                        click_create_account=False,
+                        do_apply_clicks=False,
+                        resume_pdf=identity.resume_pdf,
+                        step_report=report,
+                    )
+                    _merge_workday_into_report(report, wd_more, values)
+                    report["errors"].extend(wd_more.get("errors") or [])
+                    report["workday_continue_before_hold"] = True
+                    apply_progress_verdict_gates(report)
+            except Exception as e:
+                report.setdefault("errors", []).append(
+                    {"workday_continue_before_hold": str(e)[:160]}
+                )
+
         # SLO clock: fill work done (incl. refill); hold/CAPTCHA review excluded.
         report["fill_elapsed_seconds"] = round(time.time() - t0, 2)
 
@@ -10430,7 +10889,22 @@ async def run_fast_fill_async(
             )
             do_hold = hold_is_active(hold_sec) or force_indefinite
             if do_hold:
-                from page_progress import can_claim_ready, finalize_ready_flag
+                from page_progress import (
+                    can_claim_ready,
+                    finalize_ready_flag,
+                    may_enter_review_hold,
+                    probe_footer_primary,
+                    workday_wizard_incomplete,
+                )
+
+                # Fresh footer primary (Next vs Submit) before Ready / hold label.
+                if page is not None:
+                    try:
+                        await probe_footer_primary(page, report)
+                    except Exception as e:
+                        report.setdefault("errors", []).append(
+                            {"footer_primary_before_hold": str(e)[:120]}
+                        )
 
                 hold_for = (
                     HOLD_INDEFINITE
@@ -10438,17 +10912,38 @@ async def run_fast_fill_async(
                     else int(hold_sec)
                 )
                 report["headed_hold_ms"] = None if hold_for < 0 else hold_for * 1000
-                if can_claim_ready(report):
+                review_hold_ok = may_enter_review_hold(report)
+                if review_hold_ok and can_claim_ready(report):
                     report["ready_for_review"] = True
                 finalize_ready_flag(report)
-                note_fill_activity(
-                    layer="hold",
-                    action="hold for review",
-                    detail=(
+                incomplete_wd = workday_wizard_incomplete(report)
+                if review_hold_ok:
+                    hold_action = "hold for review"
+                    hold_detail = (
                         "indefinite — human closes browser"
                         if hold_for < 0
                         else f"{hold_for}s review"
-                    ),
+                    )
+                else:
+                    # Mid-wizard / incomplete: keep browser open if requested, but
+                    # never frame as Ready / "holding for review".
+                    hold_action = "holding incomplete — not ready"
+                    hold_detail = (
+                        str(report.get("workday_current_step") or "")
+                        or str(report.get("blocker") or "multipage_incomplete")
+                    )[:120]
+                    report["ready_for_review"] = False
+                    report["hold_incomplete"] = True
+                    if incomplete_wd:
+                        report.setdefault(
+                            "verdict_reason",
+                            report.get("verdict_reason")
+                            or "multipage_incomplete_not_ready_for_review",
+                        )
+                note_fill_activity(
+                    layer="hold",
+                    action=hold_action,
+                    detail=hold_detail,
                 )
                 try:
                     if page is not None:
@@ -10479,7 +10974,13 @@ async def run_fast_fill_async(
                     print(
                         f"[hold] snapshot {snap_path} "
                         f"filled={snap.get('filled_count')} "
-                        f"leftovers={snap.get('leftover_count')}",
+                        f"leftovers={snap.get('leftover_count')}"
+                        + (
+                            " incomplete=1"
+                            if snap.get("hold_incomplete")
+                            or workday_wizard_incomplete(snap)
+                            else ""
+                        ),
                         flush=True,
                     )
                 except Exception as e:
@@ -10493,9 +10994,68 @@ async def run_fast_fill_async(
                         bring_chrome_testing_to_front()
                     except Exception:
                         pass
-                await _hold_for_review(
-                    seconds=hold_for, report=report, browser=browser
-                )
+                # Hold loop: Continue → resume fill / Next → re-hold (cap rounds).
+                # Never re-enter hold without attempting progress after Continue.
+                MAX_HOLD_CONTINUE = 8
+                hold_round = 0
+                while True:
+                    hold_round += 1
+                    hold_result = await _hold_for_review(
+                        seconds=hold_for,
+                        report=report,
+                        browser=browser,
+                        page=page,
+                    )
+                    report["hold_result"] = hold_result
+                    if not (hold_result or {}).get("continued"):
+                        break
+                    if hold_round > MAX_HOLD_CONTINUE:
+                        print(
+                            f"[hold] Continue cap ({MAX_HOLD_CONTINUE}) — "
+                            "ending hold loop (never submit).",
+                            flush=True,
+                        )
+                        break
+                    try:
+                        if browser is not None and not browser.is_connected():
+                            break
+                    except Exception:
+                        break
+                    resume = await _resume_fill_after_hold(
+                        page,
+                        report,
+                        values,
+                        platform=platform,
+                        identity=identity,
+                    )
+                    report.setdefault("hold_resumes", []).append(resume)
+                    # Re-label hold honesty before next wait (don't claim Ready early).
+                    try:
+                        await probe_footer_primary(page, report)
+                    except Exception:
+                        pass
+                    review_hold_ok = may_enter_review_hold(report)
+                    if review_hold_ok and can_claim_ready(report):
+                        report["ready_for_review"] = True
+                        report.pop("hold_incomplete", None)
+                    else:
+                        report["ready_for_review"] = False
+                        report["hold_incomplete"] = True
+                    finalize_ready_flag(report)
+                    note_fill_activity(
+                        layer="hold",
+                        action=(
+                            "hold for review"
+                            if review_hold_ok
+                            else "holding incomplete — not ready"
+                        ),
+                        detail=f"after continue round {hold_round}",
+                    )
+                    try:
+                        await push_fill_activity(page)
+                    except Exception:
+                        pass
+                    # Keep holding (indefinite / timed) so human can Continue again.
         finally:
             report.pop("_page", None)
             # Only reach here after pause drain + hold (or no hold requested).
@@ -10651,6 +11211,39 @@ def _finalize(report: dict, *, close_step_log: bool = False) -> dict:
                 }
             )
     report["filled_count"] = len(filled_ok)
+    # Reconcile leftovers against VERIFIED fills by label OR selector. A field can
+    # be tracked under two identities — filled (e.g. COVER_LETTER essay via replay
+    # with an empty label but a concrete textarea selector, or a URL field) while
+    # an original extract-time leftover for the same DOM node lingers by label.
+    # Only verified fills clear a leftover (unverified attempts were just demoted
+    # into leftovers above), so this removes false FAILs without hiding real gaps;
+    # a truly-reverted field is still caught by the independent live vision gate.
+    if report.get("leftovers"):
+        _verified_labels = {
+            (f.get("label") or "").strip().lower()[:80]
+            for f in filled_ok
+            if f.get("label")
+        }
+        _verified_selectors = {
+            (f.get("selector") or "").strip().lower()
+            for f in filled_ok
+            if f.get("selector")
+        }
+
+        def _leftover_is_verified_filled(u: dict) -> bool:
+            lab = (u.get("label") or "").strip().lower()[:80]
+            sel = (u.get("selector") or "").strip().lower()
+            if lab and lab in _verified_labels:
+                return True
+            if sel and sel in _verified_selectors:
+                return True
+            return False
+
+        report["leftovers"] = [
+            u
+            for u in report["leftovers"]
+            if not (isinstance(u, dict) and _leftover_is_verified_filled(u))
+        ]
     report["leftover_count"] = len(report.get("leftovers") or [])
     # Persist scan/plan artifacts when an artifact dir is known
     try:

@@ -213,6 +213,10 @@ WD_CONTACT_SELECTORS: dict[str, list[str]] = {
         'label:has-text("How Did You Hear") ~ * button',
         'label:has-text("How Did You Hear About Us") ~ * [role="button"]',
         'label:has-text("How Did You Hear About Us") ~ * input',
+        'label:has-text("Where Did You Hear") ~ * button',
+        'label:has-text("Where Did You Hear About Us") ~ * [role="button"]',
+        'label:has-text("Where Did You Hear About Us") ~ * input',
+        'label:has-text("Where did you hear") ~ * [role="combobox"]',
     ],
     "contact_email": [
         'input[name="emailAddress"]',
@@ -360,6 +364,79 @@ APPLY_MANUAL_SELECTORS = [
 ]
 
 
+def prefer_manual_after_autofill_risk(report: dict | None) -> bool:
+    """True when Autofill-with-Resume should not be re-attempted this run.
+
+    After a CAPTCHA already cleared once (or autofill stuck/upload failed),
+    prefer Apply Manually — fewer upload/parse round-trips Cloudflare scores.
+    """
+    if not isinstance(report, dict):
+        return False
+    if report.get("prefer_manual_entry"):
+        return True
+    if report.get("autofill_captcha_seen"):
+        return True
+    if report.get("captcha_human_solved"):
+        return True
+    blocker = str(report.get("blocker") or "")
+    if blocker in ("captcha", "cloudflare"):
+        return True
+    cw = report.get("captcha_wait")
+    if isinstance(cw, dict) and (
+        cw.get("solved_gone") or cw.get("via") in ("enter", "sentinel", "gone")
+    ):
+        return True
+    reasons = report.get("autofill_risk_reasons") or []
+    if reasons:
+        return True
+    return False
+
+
+def mark_autofill_risk(report: dict | None, *, reason: str) -> None:
+    """Record that autofill path is captcha-prone / stuck — prefer manual next."""
+    if not isinstance(report, dict):
+        return
+    report["prefer_manual_entry"] = True
+    report.setdefault("autofill_risk_reasons", [])
+    if reason and reason not in report["autofill_risk_reasons"]:
+        report["autofill_risk_reasons"].append(reason)
+    if reason in ("captcha", "cloudflare", "captcha_reappeared", "interactive_captcha"):
+        report["autofill_captcha_seen"] = True
+
+
+def upload_stuck_reason(upload_meta: dict | None) -> str | None:
+    """Classify resume upload failure that should trigger manual fallback."""
+    if not isinstance(upload_meta, dict):
+        return None
+    reason = str(
+        upload_meta.get("reason")
+        or (upload_meta.get("result") or {}).get("reason")
+        or upload_meta.get("error")
+        or ""
+    ).lower()
+    if not reason:
+        if upload_meta.get("verified") is False and upload_meta.get("attempted"):
+            return "upload_unverified"
+        return None
+    needles = (
+        "no_file_input",
+        "chooser_unverified",
+        "filechooser",
+        "file_chooser",
+        "upload_error",
+        "pdf_missing",
+        "resume_unverified",
+        "probe_empty_after_upload",
+        "timeout",
+    )
+    for n in needles:
+        if n in reason:
+            return n
+    if upload_meta.get("verified") is False and upload_meta.get("attempted"):
+        return "upload_unverified"
+    return None
+
+
 def parse_automation_ids(notes_text: str) -> list[str]:
     """Extract data-automation-id values cited in ats_notes/workday.md."""
     ids = re.findall(
@@ -438,6 +515,37 @@ def _detect_hard_blocker(page_text: str, title: str, url: str) -> str | None:
         if any(n in blob for n in needles):
             return name
     return None
+
+
+async def _hard_blocker_live(page, *, limit: int = 6000) -> str | None:
+    """Text hard-blocker corroborated by a *visible* interactive challenge.
+
+    Cloudflare Turnstile / reCAPTCHA leave 'captcha' / 'challenge-platform' /
+    'just a moment' strings in the DOM even after a managed challenge passes, so
+    a pure-text match falsely hard-blocks a fully interactive page (observed on
+    Workday create-account: the interactive challenge cleared via captcha_pause,
+    yet the text detector re-flagged captcha and skipped the whole flow). For
+    captcha/cloudflare, require an actually-visible interactive challenge before
+    blocking; akamai / access-denied walls stay text-only (no widget to see).
+    """
+    body = await _body_text(page, limit)
+    try:
+        title = await page.title()
+    except Exception:
+        title = ""
+    name = _detect_hard_blocker(body, title, getattr(page, "url", "") or "")
+    if not name:
+        return None
+    if name in ("captcha", "cloudflare"):
+        try:
+            from captcha_pause import page_shows_interactive_captcha
+
+            if await page_shows_interactive_captcha(page):
+                return name
+            return None  # script/widget in DOM but no active challenge — passed
+        except Exception:
+            return name  # fail closed if the live check is unavailable
+    return name
 
 
 def _already_registered(page_text: str) -> bool:
@@ -519,7 +627,13 @@ async def _wd_spa_step_probe(page) -> dict:
                 contact: anyVisible([
                   'contactInformationPage', 'applyFlowMyInfoPage',
                   'legalNameSection_firstName',
-                ]),
+                  'source--source', 'formField-source',
+                ]) || !!(
+                  document.querySelector('input[name="legalName--firstName"]')
+                  || document.querySelector('input[name="source--source"]')
+                  || document.querySelector('[data-automation-id="source--source"]')
+                  || document.querySelector('#name--legalName--firstName')
+                ),
                 experience: anyVisible([
                   'myExperiencePage', 'workExperienceSection', 'workExperience-1',
                   'educationHistorySection', 'educationSection',
@@ -585,17 +699,210 @@ def _wd_spa_step_hint_from_probe(before_dom: dict, moved_dom: dict) -> str:
     return (moved_dom.get("progress") or "spa_dom_moved")[:80]
 
 
+def detect_workday_current_step(probe: dict | None = None, *, progress_text: str = "") -> str:
+    """Map SPA probe / progress text → contact|experience|app_questions|eeo|self_id|review|unknown."""
+    p = probe or {}
+    if p.get("review"):
+        return "review"
+    if p.get("selfId"):
+        return "self_id"
+    if p.get("eeo"):
+        return "eeo"
+    if p.get("appQ"):
+        return "app_questions"
+    if p.get("experience"):
+        return "experience"
+    if p.get("contact"):
+        return "contact"
+    prog = str(progress_text or p.get("progress") or "").strip().lower()
+    if prog:
+        try:
+            from page_progress import normalize_workday_step_label
+
+            canon = normalize_workday_step_label(prog)
+            if canon == "review":
+                return "review"
+            if canon == "self identify":
+                return "self_id"
+            if canon == "voluntary disclosures":
+                return "eeo"
+            if canon == "application questions":
+                return "app_questions"
+            if canon == "my experience":
+                return "experience"
+            if canon == "my information":
+                return "contact"
+        except Exception:
+            pass
+        if "review" in prog:
+            return "review"
+        if "self ident" in prog:
+            return "self_id"
+        if "voluntary" in prog or "disclosure" in prog:
+            return "eeo"
+        if "application question" in prog or "questionnaire" in prog:
+            return "app_questions"
+        if "experience" in prog:
+            return "experience"
+        if "information" in prog or "my info" in prog:
+            return "contact"
+    return "unknown"
+
+
+async def _detect_workday_current_step(page) -> tuple[str, dict]:
+    """Live SPA probe + current step id for mid-wizard resume."""
+    probe = await _wd_spa_step_probe(page)
+    step = detect_workday_current_step(probe, progress_text=str(probe.get("progress") or ""))
+    return step, probe
+
+
+async def _run_workday_phases_from(
+    page,
+    values: dict,
+    report: dict,
+    *,
+    start: str,
+) -> None:
+    """Run Phase C→E starting at ``start`` (experience|app_questions|eeo|self_id|review).
+
+    Never submits. Stops on hard blockers / validation. Used for first-pass
+    multipage and mid-wizard resume after captcha / contact-absent re-entry.
+    """
+    if start == "review":
+        report["workday_current_step"] = "review"
+        report.setdefault(
+            "phase_e",
+            {"name": "E_self_id", "skipped": "already_on_review", "stopped_at_review": True},
+        )
+        pe = report["phase_e"]
+        pe["stopped_at_review"] = True
+        try:
+            from page_progress import apply_live_vision_gate, can_claim_ready
+
+            await apply_live_vision_gate(page, report)
+            if can_claim_ready(report):
+                report["ready_for_review"] = True
+                report["verdict"] = "SUCCESS"
+        except Exception as e:
+            report.setdefault("errors", []).append({"review_resume_vision": str(e)[:120]})
+        return
+
+    if start not in ("experience", "app_questions", "eeo", "self_id"):
+        return
+
+    async def _pause() -> None:
+        try:
+            from fill_pause import ensure_fill_pause_ready
+
+            await ensure_fill_pause_ready(page, report.get("_step_report") or report)
+        except Exception:
+            pass
+
+    hard = (
+        "captcha",
+        "akamai",
+        "cloudflare",
+        "email_verify",
+        "validation_errors",
+    )
+
+    def _ok_to_continue() -> bool:
+        return (
+            not report.get("validation_after_advance")
+            and report.get("blocker") not in hard
+        )
+
+    # --- Experience ---
+    if start == "experience":
+        report["phase_c"] = await _phase_c_experience(page, values, report)
+        await _pause()
+        pc = report.get("phase_c") or {}
+        # Sparse Experience (title/company only) — one deterministic retry before
+        # giving up on ADVANCE (Thales-class early hold).
+        if (
+            pc.get("present")
+            and not pc.get("advanced")
+            and not report.get("validation_after_advance")
+            and report.get("blocker") in (None, "page_incomplete")
+            and not pc.get("_retried_sparse")
+        ):
+            filled_aids = {
+                str(f.get("automation_id") or "")
+                for f in (pc.get("filled") or [])
+                if isinstance(f, dict)
+            }
+            has_title = any("jobTitle" in a for a in filled_aids)
+            has_company = any("/company" in a or a.endswith("company") for a in filled_aids)
+            has_dates = any(
+                "startDate" in a or "endDate" in a or "Date" in a for a in filled_aids
+            )
+            if (has_title or has_company) and not has_dates:
+                report["blocker"] = None
+                report["advance_blocked_reason"] = None
+                report["phase_c"] = await _phase_c_experience(page, values, report)
+                await _pause()
+                pc = report.get("phase_c") or {}
+                pc["_retried_sparse"] = True
+                report["phase_c"] = pc
+        if pc.get("advanced") and not (
+            pc.get("validation_after_advance") or report.get("validation_after_advance")
+        ):
+            if report.get("blocker") == "page_incomplete":
+                report["blocker"] = None
+            report["advance_blocked_reason"] = None
+        if not (pc.get("advanced") and _ok_to_continue()):
+            return
+
+    # --- Application questions ---
+    if start in ("experience", "app_questions"):
+        if start == "app_questions" or (report.get("phase_c") or {}).get("advanced"):
+            report["phase_c2"] = await _phase_app_questions(page, values, report)
+            await _pause()
+            c2 = report.get("phase_c2") or {}
+            if c2.get("advanced") or c2.get("skipped"):
+                if report.get("blocker") == "page_incomplete" and c2.get("advanced"):
+                    report["blocker"] = None
+                    report["advance_blocked_reason"] = None
+            if not ((c2.get("advanced") or c2.get("skipped")) and _ok_to_continue()):
+                return
+        else:
+            return
+
+    # --- EEO / voluntary disclosures ---
+    if start in ("experience", "app_questions", "eeo"):
+        c2 = report.get("phase_c2") or {}
+        if start == "eeo" or c2.get("advanced") or c2.get("skipped"):
+            report["phase_d"] = await _phase_d_eeo(page, values, report)
+            await _pause()
+            if not (
+                (report.get("phase_d") or {}).get("advanced") and _ok_to_continue()
+            ):
+                return
+        else:
+            return
+
+    # --- Self-ID → Review ---
+    if start in ("experience", "app_questions", "eeo", "self_id"):
+        pd = report.get("phase_d") or {}
+        if start == "self_id" or pd.get("advanced"):
+            report["phase_e"] = await _phase_e_self_id(page, values, report)
+
+
 async def _poll_wd_spa_after_advance(
     page,
     phase: dict,
     before: dict,
     *,
-    polls: int = 16,
+    polls: int = 20,
+    poll_ms: int = 120,
 ) -> tuple[dict, dict]:
     """Poll SPA landmarks after Next click (ATS2-011 / ATS3-011).
 
     Workday often keeps URL/title flat; return (after_fp, moved_dom) with a
     differentiated fingerprint when DOM shows we left the prior step.
+
+    Fast poll (default 120ms) + early exit as soon as the next step mounts —
+    avoids the ~5–10s human-pacing stall after ADVANCE before Phase C fill.
     """
     from page_progress import capture_step_fingerprint, step_fingerprint
 
@@ -603,6 +910,7 @@ async def _poll_wd_spa_after_advance(
     phase["spa_dom_before"] = before_dom
     after = await capture_step_fingerprint(page)
     moved_dom: dict = {}
+    interval = max(60, int(poll_ms))
     for _ in range(polls):
         if after.get("fingerprint") and after["fingerprint"] != before["fingerprint"]:
             break
@@ -626,10 +934,10 @@ async def _poll_wd_spa_after_advance(
                 )
             phase["spa_dom_moved"] = moved_dom
             break
-        await page.wait_for_timeout(350)
+        await page.wait_for_timeout(interval)
         after = await capture_step_fingerprint(page)
     else:
-        await page.wait_for_timeout(150)
+        await page.wait_for_timeout(80)
         moved_dom = await _wd_spa_step_probe(page)
         if _wd_spa_moved(before_dom, moved_dom):
             phase["spa_dom_moved"] = moved_dom
@@ -708,7 +1016,8 @@ async def _click_workday_apply_path(
     step_report: dict | None = None,
     report: dict | None = None,
 ) -> list[dict]:
-    """Apply → prefer Autofill/Apply with Resume; manual only when resume path absent.
+    """Apply → prefer Autofill/Apply with Resume; manual when resume path absent
+    or when autofill is captcha-prone (prefer_manual_after_autofill_risk).
 
     ATS-003: never click \"Use My Last Application\" in dummy/test_mode.
     """
@@ -731,17 +1040,25 @@ async def _click_workday_apply_path(
     )
     await _wait_for_apply(page, timeout_ms=8000)
 
-    resume = await _click_gated(page, APPLY_WITH_RESUME_SELECTORS)
-    resume_ok = any(c.get("action") == "clicked" for c in resume)
-    # Real profile only: Use My Last may be the only resume path
-    test_mode = True
-    if report is not None:
-        test_mode = bool(report.get("test_mode", report.get("dummy", True)))
-    if not resume_ok and not test_mode:
-        last = await _click_gated(page, USE_MY_LAST_APPLICATION_SELECTORS)
-        if any(c.get("action") == "clicked" for c in last):
-            resume = last
-            resume_ok = True
+    prefer_manual = prefer_manual_after_autofill_risk(report)
+    resume_ok = False
+    resume: list[dict] = []
+    if not prefer_manual:
+        resume = await _click_gated(page, APPLY_WITH_RESUME_SELECTORS)
+        resume_ok = any(c.get("action") == "clicked" for c in resume)
+        # Real profile only: Use My Last may be the only resume path
+        test_mode = True
+        if report is not None:
+            test_mode = bool(report.get("test_mode", report.get("dummy", True)))
+        if not resume_ok and not test_mode:
+            last = await _click_gated(page, USE_MY_LAST_APPLICATION_SELECTORS)
+            if any(c.get("action") == "clicked" for c in last):
+                resume = last
+                resume_ok = True
+    else:
+        if report is not None:
+            report["workday_skipped_autofill"] = "prefer_manual_entry"
+
     if resume_ok:
         clicks.extend(resume)
         picked = next(c for c in resume if c.get("action") == "clicked")
@@ -768,14 +1085,23 @@ async def _click_workday_apply_path(
             # path in dummy/test_mode (ATS-003).
             if reason == "use_my_last_application":
                 report["prefill_keep_policy"] = "use_my_last_soft_match_keep"
-        # Wait for autofill/resume upload UI (SPA can lag after entry click)
-        for _ in range(12):
-            if await _on_autofill_with_resume_url(page) or await _workday_resume_upload_present(
-                page
-            ):
-                break
-            await page.wait_for_timeout(500)
-        await page.wait_for_timeout(1500)
+        # Short SPA poll only — no fixed multi-second settle after resume click
+        await _poll_spa_settle(
+            page,
+            timeout_ms=2800,
+            poll_ms=200,
+            predicates=[
+                _on_autofill_with_resume_url,
+                _workday_resume_upload_present,
+                _create_account_form,
+                _password_only_signin,
+                _contact_phase_present,
+            ],
+        )
+        # Live captcha after Autofill click → mark risk (manual on next opportunity)
+        hard = await _hard_blocker_live(page)
+        if hard in ("captcha", "cloudflare") and report is not None:
+            mark_autofill_risk(report, reason="captcha_after_autofill_entry")
         return clicks
 
     manual = await _click_gated(page, APPLY_MANUAL_SELECTORS)
@@ -786,11 +1112,19 @@ async def _click_workday_apply_path(
         _log_wd_entry_click(
             step_report,
             text=picked.get("text") or "Apply Manually",
-            reason="apply_manually_fallback",
+            reason=(
+                "apply_manually_prefer_after_captcha"
+                if prefer_manual
+                else "apply_manually_fallback"
+            ),
             ok=True,
         )
         if report is not None:
-            report["workday_entry_path"] = "apply_manually_fallback"
+            report["workday_entry_path"] = (
+                "apply_manually_prefer_after_captcha"
+                if prefer_manual
+                else "apply_manually_fallback"
+            )
     await _poll_spa_settle(
         page,
         timeout_ms=3500,
@@ -2379,8 +2713,10 @@ async def _create_account_form(page) -> bool:
 async def _contact_phase_present(page) -> bool:
     """True only when contact fields exist — NOT progress-bar step labels.
 
-    Covers classic ``contactInformationPage`` / ``legalNameSection_*`` and the
-    newer apply-flow ``applyFlowMyInfoPage`` + ``name=legalName--firstName``.
+    Covers classic ``contactInformationPage`` / ``legalNameSection_*``, the
+    newer apply-flow ``applyFlowMyInfoPage`` + ``name=legalName--firstName``,
+    and Thales/wd3 source / phone landmarks so we do not burn a 10s wait after
+    SPA mount when the classic container id is absent.
     """
     probes = [
         '[data-automation-id="contactInformationPage"]',
@@ -2389,6 +2725,15 @@ async def _contact_phase_present(page) -> bool:
         'input[name="legalName--firstName"]',
         '#name--legalName--firstName',
         '[data-automation-id="formField-legalName--firstName"]',
+        # Thales / wd3 My Information (fields mount before page container id)
+        '[data-automation-id="source--source"]',
+        'input[name="source--source"]',
+        '[data-automation-id="formField-source"]',
+        '[data-automation-id="phone-number"]',
+        'input[name="phoneNumber"]',
+        '[data-automation-id="formField-phoneNumber"]',
+        'input[data-automation-id="legalNameSection_lastName"]',
+        'input[name="legalName--lastName"]',
     ]
     for sel in probes:
         try:
@@ -2400,6 +2745,24 @@ async def _contact_phase_present(page) -> bool:
         except Exception:
             continue
     return False
+
+
+async def _wait_contact_phase(page, timeout_ms: int = 8000, *, poll_ms: int = 150) -> bool:
+    """Wait for Phase B contact fields after auth / Next.
+
+    Short poll interval + early exit when any contact landmark mounts.
+    Caps default at 8s (was 20s @ 1s ticks ≈ long stall after SPA paint).
+    """
+    deadline = time.time() + max(200, timeout_ms) / 1000.0
+    interval = max(60, int(poll_ms))
+    while time.time() < deadline:
+        if await _contact_phase_present(page):
+            return True
+        body = await _body_text(page, 2000)
+        if _detect_hard_blocker(body, await page.title(), page.url):
+            return False
+        await page.wait_for_timeout(interval)
+    return await _contact_phase_present(page)
 
 
 async def _read_create_account_checkbox_state(page) -> tuple[bool, str]:
@@ -2872,40 +3235,20 @@ async def _phase_a_auth(page, values: dict, report: dict) -> dict:
         prefer_stored_signin = False
 
     body = await _body_text(page)
-    hard = _detect_hard_blocker(body, await page.title(), page.url)
+    hard = await _hard_blocker_live(page)
     if hard:
         report["blocker"] = hard
         report["blocker_detail"] = body[:500]
         phase["stopped"] = hard
         return phase
 
-    # Prefer Sign In when web_keys has email+password for this host.
-    if prefer_stored_signin:
-        if await _create_account_form(page) and not await _password_only_signin(page):
-            switch = await _switch_to_sign_in(page)
-            phase["sign_in_switch_clicks"] = switch
-            report["clicks"].extend(switch)
-            await page.wait_for_timeout(1500)
-        on_signin = await _password_only_signin(page) or (
-            await _email_field_present(page) and not await _create_account_form(page)
-        )
-        if on_signin:
-            si = await _try_sign_in(page, values, click_submit=True)
-            phase["sign_in"] = si
-            report["sign_in"] = si
-            if si.get("clicks"):
-                report["clicks"].extend(si["clicks"])
-        elif await _create_account_form(page):
-            # Could not switch to Sign In — do not create a second account.
-            phase["stored_signin_failed"] = True
-            report["blocker"] = report.get("blocker") or "auth_wall"
-            report["blocker_detail"] = (
-                "web_keys sign-in preferred but still on create-account form"
-            )[:500]
-            return phase
+    async def _create_account_flow() -> None:
+        """Fill + click Create Account, settle the SPA, and record outcome.
 
-    # Prefer create-account form when present (no stored key / fresh dummy)
-    elif await _create_account_form(page):
+        Shared by the fresh-dummy path and the stored-key fallback so both get
+        the full post-create handling (already-registered → Sign In, contact
+        redirect, web_keys upsert) instead of just a bare click.
+        """
         ca = await _try_create_account(page, values, click_submit=True)
         phase["create_account"] = ca
         report["create_account"] = ca
@@ -2914,7 +3257,6 @@ async def _phase_a_auth(page, values: dict, report: dict) -> dict:
                 c for c in ca["clicks"] if c.get("action") != "skipped"
             )
 
-        # Wait for SPA redirect: Create Account → Sign In or contact
         created_ok = any(c.get("action") == "clicked" for c in (ca.get("clicks") or []))
         if created_ok:
             for _ in range(20):
@@ -2931,16 +3273,15 @@ async def _phase_a_auth(page, values: dict, report: dict) -> dict:
                     break
                 await page.wait_for_timeout(750)
 
-        body = await _body_text(page)
-        hard = _detect_hard_blocker(body, await page.title(), page.url)
-        if hard:
-            report["blocker"] = hard
-            report["blocker_detail"] = body[:500]
-            phase["stopped"] = hard
-            return phase
+        body2 = await _body_text(page)
+        hard2 = await _hard_blocker_live(page)
+        if hard2:
+            report["blocker"] = hard2
+            report["blocker_detail"] = body2[:500]
+            phase["stopped"] = hard2
+            return
 
-        # Already-registered error → switch + Sign In with SAME run alias
-        if _already_registered(body):
+        if _already_registered(body2):
             phase["already_registered"] = True
             if await _create_account_form(page) and not await _password_only_signin(page):
                 switch = await _switch_to_sign_in(page)
@@ -2952,16 +3293,12 @@ async def _phase_a_auth(page, values: dict, report: dict) -> dict:
             report["sign_in"] = si
             if si.get("clicks"):
                 report["clicks"].extend(si["clicks"])
-
-        # Create Account blocked (e.g. terms checkbox) — stay, don't fake Sign In
         elif any(c.get("action") == "blocked" for c in (ca.get("clicks") or [])):
             phase["create_blocked"] = True
-
         elif created_ok:
             if await _contact_phase_present(page):
                 phase["account_created"] = True
             elif await _password_only_signin(page):
-                # Post-create redirect to Sign In — fill same fresh alias (ADVANCE)
                 phase["account_created"] = True
                 phase["post_create_sign_in"] = True
                 si = await _try_sign_in(page, values, click_submit=True)
@@ -2974,8 +3311,49 @@ async def _phase_a_auth(page, values: dict, report: dict) -> dict:
             if phase.get("account_created"):
                 await _upsert_web_keys_after_auth(page, values, report)
 
+    # The apply-path click (Apply Manually / Autofill with Resume) may still be
+    # resolving into the auth form when we get here. Poll briefly so a create /
+    # sign-in form that mounts a beat later is not missed — missing it made
+    # _phase_a_auth skip both branches while the generic fill layer typed
+    # email/password, leaving the classic filled-but-Create-Account-never-clicked
+    # state (the recurring bug the user reported).
+    for _ in range(16):  # ~6s
+        if await _create_account_form(page) or await _password_only_signin(page):
+            break
+        if await _contact_phase_present(page):
+            break
+        await page.wait_for_timeout(375)
+
+    # Create-first auth. If a Create Account form is present, CREATE a dummy
+    # account rather than preferring Sign In. never-submit only guards the FINAL
+    # application submit; "Create Account" gates as ADVANCE, so clicking it is
+    # allowed and dummy accounts are explicitly permitted. The old "prefer Sign
+    # In when web_keys has a stored key" path switched forms mid-detection and
+    # frequently left the form filled-but-unclicked. A stored email is already
+    # registered (that's why a key exists), so reusing it on create would trip
+    # "email already in use" — mint a FRESH dummy +alias for a clean new account.
+    # Sign In is only attempted when the page is actually a sign-in form.
+    if await _create_account_form(page):
+        if prefer_stored_signin:
+            phase["stored_key_present"] = True
+            try:
+                from field_map import allocate_random_run_email
+
+                fresh = (allocate_random_run_email() or {}).get("email")
+                if fresh:
+                    values[EMAIL] = fresh
+                    phase["fresh_email_minted"] = True
+                    if values.get(PASSWORD) and not values.get(PASSWORD_CONFIRM):
+                        values[PASSWORD_CONFIRM] = values[PASSWORD]
+            except Exception as e:
+                phase["fresh_email_error"] = str(e)[:120]
+        await _create_account_flow()
+        if phase.get("stopped"):
+            return phase
+
     elif await _password_only_signin(page) or await _email_field_present(page):
-        # Landed directly on Sign In (no stored-key prefer path)
+        # Actual sign-in form (no create-account form present) — use stored /
+        # dummy creds. Overwritten above under prefer_stored_signin.
         si = await _try_sign_in(page, values, click_submit=True)
         phase["sign_in"] = si
         report["sign_in"] = si
@@ -2983,7 +3361,7 @@ async def _phase_a_auth(page, values: dict, report: dict) -> dict:
             report["clicks"].extend(si["clicks"])
 
     body = await _body_text(page)
-    hard = _detect_hard_blocker(body, await page.title(), page.url)
+    hard = await _hard_blocker_live(page)
     if hard:
         report["blocker"] = hard
         report["blocker_detail"] = body[:500]
@@ -3014,25 +3392,8 @@ async def _phase_a_auth(page, values: dict, report: dict) -> dict:
             ],
         )
         if not await _contact_phase_present(page):
-            # Re-try resume path only (primary Apply already clicked above)
-            resume_retry = await _click_gated(page, APPLY_WITH_RESUME_SELECTORS)
-            if any(c.get("action") == "clicked" for c in resume_retry):
-                report["clicks"].extend(resume_retry)
-                picked = next(c for c in resume_retry if c.get("action") == "clicked")
-                text = picked.get("text") or "Autofill with Resume"
-                reason = (
-                    "autofill_with_resume"
-                    if "autofill" in str(text).lower()
-                    else "apply_with_resume"
-                )
-                _log_wd_entry_click(
-                    report.get("_step_report"),
-                    text=text,
-                    reason=reason,
-                    ok=True,
-                )
-                report["workday_entry_path"] = reason
-            else:
+            # After captcha risk: prefer Apply Manually — do not re-hit Autofill
+            if prefer_manual_after_autofill_risk(report):
                 more2 = await _click_gated(page, APPLY_MANUAL_SELECTORS)
                 if any(c.get("action") == "clicked" for c in more2):
                     report["clicks"].extend(more2)
@@ -3040,9 +3401,40 @@ async def _phase_a_auth(page, values: dict, report: dict) -> dict:
                     _log_wd_entry_click(
                         report.get("_step_report"),
                         text=picked.get("text") or "Apply Manually",
-                        reason="apply_manually_fallback",
+                        reason="apply_manually_prefer_after_captcha",
                         ok=True,
                     )
+                    report["workday_entry_path"] = "apply_manually_prefer_after_captcha"
+            else:
+                # Re-try resume path only (primary Apply already clicked above)
+                resume_retry = await _click_gated(page, APPLY_WITH_RESUME_SELECTORS)
+                if any(c.get("action") == "clicked" for c in resume_retry):
+                    report["clicks"].extend(resume_retry)
+                    picked = next(c for c in resume_retry if c.get("action") == "clicked")
+                    text = picked.get("text") or "Autofill with Resume"
+                    reason = (
+                        "autofill_with_resume"
+                        if "autofill" in str(text).lower()
+                        else "apply_with_resume"
+                    )
+                    _log_wd_entry_click(
+                        report.get("_step_report"),
+                        text=text,
+                        reason=reason,
+                        ok=True,
+                    )
+                    report["workday_entry_path"] = reason
+                else:
+                    more2 = await _click_gated(page, APPLY_MANUAL_SELECTORS)
+                    if any(c.get("action") == "clicked" for c in more2):
+                        report["clicks"].extend(more2)
+                        picked = next(c for c in more2 if c.get("action") == "clicked")
+                        _log_wd_entry_click(
+                            report.get("_step_report"),
+                            text=picked.get("text") or "Apply Manually",
+                            reason="apply_manually_fallback",
+                            ok=True,
+                        )
             await _poll_spa_settle(
                 page,
                 timeout_ms=2800,
@@ -3309,7 +3701,12 @@ async def _workday_resume_upload_present(page) -> bool:
 
 
 async def _upload_workday_resume_page(page, resume_path: str | Path) -> dict:
-    """Upload resume via Workday file-upload-* controls (autofill / experience)."""
+    """Upload resume via Workday file-upload-* controls (autofill / experience).
+
+    Prefer ``set_input_files`` on the hidden/visible file input FIRST. Only fall
+    back to click + ``expect_file_chooser`` when no input is reachable — avoids
+    the 8s filechooser stall and dialog events Cloudflare inspects.
+    """
     resume_path = Path(str(resume_path))
     result: dict = {
         "ok": False,
@@ -3318,109 +3715,158 @@ async def _upload_workday_resume_page(page, resume_path: str | Path) -> dict:
         "type": "RESUME_UPLOAD",
         "value": resume_path.name,
         "path": str(resume_path),
+        "attach_preference": "set_input_files_first",
     }
     if not resume_path.is_file():
         result["reason"] = "pdf_missing"
         return result
 
-    upload = page.locator(
-        '[data-automation-id="file-upload-input-ref"], input[type="file"]'
-    ).first
-    upload_done = False
     try:
-        if await upload.count() == 0:
-            for sel_txt in (
-                '[data-automation-id="file-upload-select-button"]',
-                'button:has-text("Select files")',
-                'button:has-text("Select Files")',
-                'text=Select files',
-                'button:has-text("Upload")',
-                'button:has-text("Attach")',
-            ):
-                sel = page.locator(sel_txt).first
-                if not await sel.count():
-                    continue
-                try:
-                    if not await sel.is_visible(timeout=800):
-                        continue
-                except Exception:
-                    continue
-                try:
-                    async with page.expect_file_chooser(timeout=8000) as fc_info:
-                        await sel.click(timeout=3000)
-                    chooser = await fc_info.value
-                    await chooser.set_files(str(resume_path))
-                    await page.wait_for_timeout(1000)
-                    verified = False
-                    readback = resume_path.name
-                    for fi in range(min(await page.locator('input[type="file"]').count(), 6)):
-                        inp = page.locator('input[type="file"]').nth(fi)
-                        info = await inp.evaluate(
-                            """(el) => {
-                              const files = el && el.files;
-                              if (!files || files.length < 1) return {ok: false, name: ''};
-                              return {ok: true, name: files[0].name || ''};
-                            }"""
-                        )
-                        if (info or {}).get("ok"):
-                            verified = True
-                            readback = str(info["name"])[:120]
-                            break
-                    result.update(
-                        {
-                            "ok": verified,
-                            "verified": verified,
-                            "mode": "file_chooser",
-                            "readback": readback,
-                            "selector": sel_txt,
-                            "reason": "files_on_input" if verified else "chooser_unverified",
-                        }
-                    )
-                    upload_done = verified
-                    break
-                except Exception:
-                    continue
-        if not upload_done and await upload.count():
-            await upload.set_input_files(str(resume_path))
-            await page.wait_for_timeout(1000)
-            info = await upload.evaluate(
+        from resume_upload import file_chooser_fallback_timeout_ms
+    except ImportError:  # pragma: no cover
+        def file_chooser_fallback_timeout_ms(*, workday=False):  # type: ignore
+            return 3500
+
+    async def _verify_files_on(loc) -> tuple[bool, str]:
+        try:
+            info = await loc.evaluate(
                 """(el) => {
                   const files = el && el.files;
                   if (!files || files.length < 1) return {ok: false, name: ''};
                   return {ok: true, name: files[0].name || ''};
                 }"""
             )
-            verified = bool((info or {}).get("ok") and (info or {}).get("name"))
-            readback = str((info or {}).get("name") or resume_path.name)[:120]
+        except Exception:
+            return False, ""
+        if (info or {}).get("ok") and (info or {}).get("name"):
+            return True, str(info["name"])[:120]
+        return False, ""
+
+    async def _any_file_input():
+        loc = page.locator(
+            '[data-automation-id="file-upload-input-ref"], input[type="file"]'
+        )
+        try:
+            if await loc.count() > 0:
+                return loc.first
+        except Exception:
+            pass
+        return None
+
+    upload = await _any_file_input()
+    # Brief poll if SPA has not mounted the input yet
+    if upload is None:
+        for _ in range(6):
+            await page.wait_for_timeout(200)
+            upload = await _any_file_input()
+            if upload is not None:
+                break
+
+    # --- Primary path: set_input_files ---
+    if upload is not None:
+        try:
+            await upload.set_input_files(str(resume_path))
+            await page.wait_for_timeout(400)
+            verified, readback = await _verify_files_on(upload)
             if not verified:
+                # SPA remount — re-resolve and retry once
+                upload2 = await _any_file_input()
+                if upload2 is not None:
+                    await upload2.set_input_files(str(resume_path))
+                    await page.wait_for_timeout(400)
+                    verified, readback = await _verify_files_on(upload2)
+            if not verified:
+                # Workday often remounts empty FileList but shows filename chrome
                 try:
-                    await upload.set_input_files(str(resume_path))
-                    await page.wait_for_timeout(600)
-                    info = await upload.evaluate(
-                        """(el) => {
-                          const files = el && el.files;
-                          if (!files || files.length < 1) return {ok: false, name: ''};
-                          return {ok: true, name: files[0].name || ''};
-                        }"""
-                    )
-                    verified = bool((info or {}).get("ok") and (info or {}).get("name"))
-                    if (info or {}).get("name"):
-                        readback = str(info["name"])[:120]
+                    name = await _resume_filename_visible(page)
+                    if name:
+                        verified = True
+                        readback = name[:120]
                 except Exception:
                     pass
             result.update(
                 {
                     "ok": verified,
                     "verified": verified,
-                    "readback": readback,
+                    "mode": "set_input_files",
+                    "readback": readback or resume_path.name,
                     "selector": '[data-automation-id="file-upload-input-ref"]',
                     "reason": "files_on_input" if verified else "resume_unverified",
                 }
             )
-            upload_done = verified
-    except Exception as e:
-        result["reason"] = "upload_error"
-        result["error"] = str(e)[:160]
+            if verified:
+                return result
+        except Exception as e:
+            result["set_input_error"] = str(e)[:120]
+
+    # --- Fallback: click + file chooser only when no reachable input OR set_input_files raised ---
+    if result.get("verified"):
+        return result
+    if upload is not None and not result.get("set_input_error"):
+        # Input was reachable; set_input_files ran without raise but unverified —
+        # skip chooser (avoids multi-second stall Cloudflare scores as dialog noise).
+        if not result.get("reason"):
+            result["reason"] = "resume_unverified"
+        return result
+
+    fc_timeout = file_chooser_fallback_timeout_ms(workday=True)
+    for sel_txt in (
+        '[data-automation-id="file-upload-select-button"]',
+        'button:has-text("Select files")',
+        'button:has-text("Select Files")',
+        'text=Select files',
+        'button:has-text("Upload")',
+        'button:has-text("Attach")',
+    ):
+        sel = page.locator(sel_txt).first
+        if not await sel.count():
+            continue
+        try:
+            if not await sel.is_visible(timeout=800):
+                continue
+        except Exception:
+            continue
+        try:
+            async with page.expect_file_chooser(timeout=fc_timeout) as fc_info:
+                await sel.click(timeout=3000)
+            chooser = await fc_info.value
+            await chooser.set_files(str(resume_path))
+            await page.wait_for_timeout(500)
+            verified = False
+            readback = resume_path.name
+            for fi in range(min(await page.locator('input[type="file"]').count(), 6)):
+                inp = page.locator('input[type="file"]').nth(fi)
+                ok, name = await _verify_files_on(inp)
+                if ok:
+                    verified = True
+                    readback = name
+                    break
+            if not verified:
+                try:
+                    name = await _resume_filename_visible(page)
+                    if name:
+                        verified = True
+                        readback = name[:120]
+                except Exception:
+                    pass
+            result.update(
+                {
+                    "ok": verified,
+                    "verified": verified,
+                    "mode": "file_chooser",
+                    "file_chooser_fallback": True,
+                    "readback": readback,
+                    "selector": sel_txt,
+                    "reason": "files_on_input" if verified else "chooser_unverified",
+                }
+            )
+            if verified:
+                return result
+        except Exception:
+            continue
+
+    if not result.get("reason"):
+        result["reason"] = "no_file_input" if upload is None else "resume_unverified"
     return result
 
 
@@ -3575,12 +4021,48 @@ async def _fallback_apply_manually_from_autofill(
 async def _handle_autofill_resume_after_auth(
     page, values: dict, report: dict
 ) -> dict:
-    """After auth on apply-with-resume: upload resume, advance, or manual fallback."""
+    """After auth on apply-with-resume: upload resume, advance, or manual fallback.
+
+    Keep résumé/autofill preference when it works. When captcha / hard blocker /
+    stuck upload appears, fall back to Apply Manually quickly — do not re-click
+    Autofill with Resume after captcha already cleared once.
+    """
     summary: dict = {"handled": False, "reached_contact": False}
+
+    # Fast exit to manual when prior captcha / risk already recorded
+    if prefer_manual_after_autofill_risk(report):
+        hard = await _hard_blocker_live(page)
+        if hard in ("captcha", "cloudflare"):
+            mark_autofill_risk(report, reason="interactive_captcha")
+            summary["skipped_reason"] = "prefer_manual_captcha_risk"
+            summary["path"] = "manual_prefer"
+            fb = await _fallback_apply_manually_from_autofill(page, values, report)
+            summary["fallback_manual"] = fb
+            summary["reached_contact"] = fb
+            summary["handled"] = True
+            return summary
+
+    # Live captcha on autofill page → abandon autofill immediately
+    hard0 = await _hard_blocker_live(page)
+    if hard0 in ("captcha", "cloudflare"):
+        mark_autofill_risk(report, reason="captcha_on_autofill")
+        summary["handled"] = True
+        summary["skipped_reason"] = "captcha_on_autofill"
+        summary["path"] = "manual_fallback"
+        fb = await _fallback_apply_manually_from_autofill(page, values, report)
+        summary["fallback_manual"] = fb
+        summary["reached_contact"] = fb
+        return summary
+
     on_autofill = await _on_autofill_with_resume_url(page)
     resume_ui = await _workday_resume_upload_present(page)
-    # Prefer Autofill when choice screen still visible after auth bounce
-    if not on_autofill and not resume_ui:
+    # Prefer Autofill when choice screen still visible after auth bounce —
+    # but NEVER re-attempt Autofill if captcha was already cleared this run.
+    if (
+        not on_autofill
+        and not resume_ui
+        and not prefer_manual_after_autofill_risk(report)
+    ):
         retry = await _click_gated(page, APPLY_WITH_RESUME_SELECTORS)
         if any(c.get("action") == "clicked" for c in retry):
             report.setdefault("clicks", []).extend(retry)
@@ -3595,15 +4077,36 @@ async def _handle_autofill_resume_after_auth(
                 report.get("_step_report"), text=text, reason=reason, ok=True
             )
             report["workday_entry_path"] = reason
-            for _ in range(15):
-                if await _on_autofill_with_resume_url(page) or await _workday_resume_upload_present(
-                    page
-                ):
-                    break
-                await page.wait_for_timeout(500)
+            await _poll_spa_settle(
+                page,
+                timeout_ms=3000,
+                poll_ms=200,
+                predicates=[
+                    _on_autofill_with_resume_url,
+                    _workday_resume_upload_present,
+                    _create_account_form,
+                ],
+            )
+            hard_r = await _hard_blocker_live(page)
+            if hard_r in ("captcha", "cloudflare"):
+                mark_autofill_risk(report, reason="captcha_after_autofill_retry")
+                summary["handled"] = True
+                summary["path"] = "manual_fallback"
+                summary["skipped_reason"] = "captcha_after_autofill_retry"
+                fb = await _fallback_apply_manually_from_autofill(page, values, report)
+                summary["fallback_manual"] = fb
+                summary["reached_contact"] = fb
+                return summary
             on_autofill = await _on_autofill_with_resume_url(page)
             resume_ui = await _workday_resume_upload_present(page)
     if not on_autofill and not resume_ui:
+        if prefer_manual_after_autofill_risk(report):
+            summary["handled"] = True
+            summary["path"] = "manual_prefer"
+            fb = await _fallback_apply_manually_from_autofill(page, values, report)
+            summary["fallback_manual"] = fb
+            summary["reached_contact"] = fb
+            return summary
         summary["skipped_reason"] = "no_autofill_or_resume_ui"
         return summary
 
@@ -3614,16 +4117,18 @@ async def _handle_autofill_resume_after_auth(
         "autofill_with_resume" if on_autofill else "apply_with_resume"
     )
 
-    # Wait for Select files / file input after SPA auth redirect
-    ui_ok = await _wait_for_resume_upload_ui(page, timeout_ms=18000)
+    # Shorter UI wait — if upload chrome never mounts, fall back to manual fast
+    ui_ok = await _wait_for_resume_upload_ui(page, timeout_ms=8000)
     summary["resume_ui_wait"] = ui_ok
     if not ui_ok and on_autofill:
-        more = await _click_gated(page, APPLY_WITH_RESUME_SELECTORS)
-        if any(c.get("action") == "clicked" for c in more):
-            report.setdefault("clicks", []).extend(more)
-            await page.wait_for_timeout(2500)
-            ui_ok = await _wait_for_resume_upload_ui(page, timeout_ms=10000)
-            summary["resume_ui_wait_retry"] = ui_ok
+        # Do NOT re-click Autofill (re-triggers Cloudflare). Fall back to manual.
+        mark_autofill_risk(report, reason="resume_ui_never_mounted")
+        summary["path"] = "manual_fallback"
+        summary["skipped_reason"] = "resume_ui_never_mounted"
+        fb = await _fallback_apply_manually_from_autofill(page, values, report)
+        summary["fallback_manual"] = fb
+        summary["reached_contact"] = fb
+        return summary
 
     if await _create_account_form(page):
         cb = await _check_create_account_terms(page)
@@ -3657,6 +4162,9 @@ async def _handle_autofill_resume_after_auth(
             for k in ("attempted", "verified", "field_present", "skipped")
             if k in ru
         }
+        if isinstance(ru.get("result"), dict):
+            summary["upload"]["reason"] = ru["result"].get("reason")
+            summary["upload"]["mode"] = ru["result"].get("mode")
         if ru.get("verified"):
             report["resume_verified"] = True
             report["resume_field_present"] = True
@@ -3666,8 +4174,14 @@ async def _handle_autofill_resume_after_auth(
                 # phase_a_resume not attached yet; sync after caller assigns summary
             except Exception:
                 pass
+        else:
+            stuck = upload_stuck_reason(ru) or upload_stuck_reason(ru.get("result"))
+            if stuck:
+                mark_autofill_risk(report, reason=f"upload_stuck:{stuck}")
+                summary["upload_stuck"] = stuck
     except Exception as e:
         summary["upload_error"] = str(e)[:120]
+        mark_autofill_risk(report, reason="upload_exception")
 
     try:
         from resume_upload import report_has_verified_resume
@@ -3693,9 +4207,31 @@ async def _handle_autofill_resume_after_auth(
                     "automation_id": "file-upload-input-ref",
                 }
             )
+        else:
+            stuck = upload_stuck_reason(wd_up)
+            if stuck:
+                mark_autofill_risk(report, reason=f"workday_upload_stuck:{stuck}")
+                summary["workday_upload_stuck"] = stuck
+                # Stuck upload on autofill → manual sooner (skip long ready poll)
+                summary["path"] = "manual_fallback"
+                fb = await _fallback_apply_manually_from_autofill(page, values, report)
+                summary["fallback_manual"] = fb
+                summary["reached_contact"] = fb
+                return summary
 
-    # Wait for ATS filename / parse settle before Continue
-    ready = await _wait_for_autofill_resume_ready(page, timeout_ms=28000)
+    # Captcha may reappear after upload clicks — abandon before long ready wait
+    hard_u = await _hard_blocker_live(page)
+    if hard_u in ("captcha", "cloudflare"):
+        mark_autofill_risk(report, reason="captcha_reappeared")
+        summary["path"] = "manual_fallback"
+        summary["skipped_reason"] = "captcha_reappeared_after_upload"
+        fb = await _fallback_apply_manually_from_autofill(page, values, report)
+        summary["fallback_manual"] = fb
+        summary["reached_contact"] = fb
+        return summary
+
+    # Wait for ATS filename / parse settle before Continue (shorter than before)
+    ready = await _wait_for_autofill_resume_ready(page, timeout_ms=16000)
     summary["autofill_ready"] = ready
     if ready.get("filename") and not report_has_verified_resume(report):
         # FILL3-011: filename chrome alone is not verified when FileList empty
@@ -3763,7 +4299,7 @@ async def _handle_autofill_resume_after_auth(
         )
 
     if not await _contact_phase_present(page):
-        await _wait_contact_phase(page, timeout_ms=15000)
+        await _wait_contact_phase(page, timeout_ms=4500)
     summary["reached_contact"] = await _contact_phase_present(page)
 
     if (
@@ -3771,20 +4307,26 @@ async def _handle_autofill_resume_after_auth(
         and resume_ok
         and (ready.get("ready") or report_has_verified_resume(report))
     ):
-        adv2 = await _advance_from_autofill_resume(page)
-        summary["advance_retry"] = adv2
-        report.setdefault("clicks", []).extend(adv2)
-        await _poll_spa_settle(
-            page,
-            timeout_ms=2800,
-            poll_ms=250,
-            predicates=[_contact_phase_present],
-        )
-        if not await _contact_phase_present(page):
-            await _wait_contact_phase(page, timeout_ms=10000)
-        summary["reached_contact"] = await _contact_phase_present(page)
+        # If captcha reappeared after Continue, prefer manual over another advance
+        hard_a = await _hard_blocker_live(page)
+        if hard_a in ("captcha", "cloudflare"):
+            mark_autofill_risk(report, reason="captcha_reappeared")
+        else:
+            adv2 = await _advance_from_autofill_resume(page)
+            summary["advance_retry"] = adv2
+            report.setdefault("clicks", []).extend(adv2)
+            await _poll_spa_settle(
+                page,
+                timeout_ms=2800,
+                poll_ms=250,
+                predicates=[_contact_phase_present],
+            )
+            if not await _contact_phase_present(page):
+                await _wait_contact_phase(page, timeout_ms=3500)
+            summary["reached_contact"] = await _contact_phase_present(page)
 
     if not summary["reached_contact"]:
+        mark_autofill_risk(report, reason="autofill_stuck_no_contact")
         fb = await _fallback_apply_manually_from_autofill(page, values, report)
         summary["fallback_manual"] = fb
         summary["reached_contact"] = fb
@@ -3792,19 +4334,6 @@ async def _handle_autofill_resume_after_auth(
             summary["path"] = "manual_fallback"
 
     return summary
-
-
-async def _wait_contact_phase(page, timeout_ms: int = 20000) -> bool:
-    """Wait for Phase B contact container after auth."""
-    deadline = time.time() + timeout_ms / 1000
-    while time.time() < deadline:
-        if await _contact_phase_present(page):
-            return True
-        body = await _body_text(page, 2000)
-        if _detect_hard_blocker(body, await page.title(), page.url):
-            return False
-        await page.wait_for_timeout(1000)
-    return await _contact_phase_present(page)
 
 
 NEXT_BUTTON_SELECTORS = [
@@ -3974,23 +4503,30 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
     # BBH/wd5: multi-select source--source shows "0 items selected" until option chip
     if not _is_verified_fill(result):
         for cand in candidates:
-            sr = await _fill_select_one_by_label(
-                page,
+            for hear_label in (
                 "How Did You Hear About Us",
-                [cand],
-            )
-            if sr.get("verified") or _is_verified_fill(sr):
-                return _learn({
-                    "automation_id": aid,
-                    "status": "filled",
-                    "mode": "select_one",
-                    "type": HOW_HEARD,
-                    "value": cand,
-                    "readback": sr.get("readback"),
-                    "verified": True,
-                    "option_clicked": sr.get("option_clicked"),
-                    "committed": sr.get("committed", True),
-                })
+                "Where Did You Hear About Us",
+                "Where did you hear about us",
+                "How did you hear about us",
+                "How Did You Hear",
+            ):
+                sr = await _fill_select_one_by_label(
+                    page,
+                    hear_label,
+                    [cand],
+                )
+                if sr.get("verified") or _is_verified_fill(sr):
+                    return _learn({
+                        "automation_id": aid,
+                        "status": "filled",
+                        "mode": "select_one",
+                        "type": HOW_HEARD,
+                        "value": cand,
+                        "readback": sr.get("readback"),
+                        "verified": True,
+                        "option_clicked": sr.get("option_clicked"),
+                        "committed": sr.get("committed", True),
+                    })
             inp = page.locator(
                 'input[name="source--source"], '
                 '[data-automation-id="source--source"], '
@@ -4054,7 +4590,10 @@ async def _fill_how_heard(page, values: dict | None = None) -> dict:
     ):
         label_btn = page.locator(
             'label:has-text("How Did You Hear"), '
+            'label:has-text("Where Did You Hear"), '
+            'label:has-text("Where did you hear"), '
             'legend:has-text("How Did You Hear"), '
+            'legend:has-text("Where Did You Hear"), '
             '[data-automation-id="formField-source"]'
         ).first
         try:
@@ -4329,7 +4868,15 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
                         )
                         if _is_verified_fill(r):
                             filled.append(r)
-                if "source" in eid.lower() or "how did you hear" in lab.lower():
+                if (
+                    "source" in eid.lower()
+                    or re.search(
+                        r"how (did|do) you (hear|learn)|where did you hear|"
+                        r"hear about (us|this)|referral source",
+                        lab,
+                        re.I,
+                    )
+                ):
                     # Shared helper — never bare "Internet"
                     hr = await _fill_how_heard(page, extras_values)
                     if _is_verified_fill(hr):
@@ -4369,8 +4916,13 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
         filtered = []
         for g in normalize_gaps(pre_gaps):
             lab = (g.get("label") or "").lower()
-            if "how did you hear" in lab and (
-                "how_heard" in verified_blob or "indeed" in verified_blob
+            if re.search(
+                r"how (did|do) you (hear|learn)|where did you hear|hear about (us|this)",
+                lab,
+            ) and (
+                "how_heard" in verified_blob
+                or "indeed" in verified_blob
+                or "internet job board" in verified_blob
                 or "item selected" in lab
             ):
                 continue
@@ -4465,7 +5017,7 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
                 report["verdict"] = "FAIL"
         except Exception:
             try:
-                await page.wait_for_timeout(1500)
+                await page.wait_for_timeout(400)
                 if _capture_fp is not None:
                     after = await _capture_fp(page)
                     progress = _note_advance(
@@ -4481,7 +5033,7 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
             except Exception:
                 pass
     else:
-        await page.wait_for_timeout(1500)
+        await page.wait_for_timeout(400)
     validation = await _validation_banner_present(page)
     phase["validation_after_advance"] = validation
     report["validation_after_advance"] = validation
@@ -4514,12 +5066,13 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
 async def _automation_visible(page, automation_id: str) -> bool:
     loc = page.locator(f'[data-automation-id="{automation_id}"]').first
     try:
-        return await loc.count() > 0 and await loc.is_visible(timeout=800)
+        return await loc.count() > 0 and await loc.is_visible(timeout=300)
     except Exception:
         return False
 
 
-async def _wait_step(page, automation_id: str, timeout_ms: int = 20000) -> bool:
+async def _wait_step(page, automation_id: str, timeout_ms: int = 12000) -> bool:
+    """Poll for a Workday step container; exit as soon as it mounts."""
     deadline = time.time() + timeout_ms / 1000
     while time.time() < deadline:
         if await _automation_visible(page, automation_id):
@@ -4527,7 +5080,7 @@ async def _wait_step(page, automation_id: str, timeout_ms: int = 20000) -> bool:
         body = await _body_text(page, 2000)
         if _detect_hard_blocker(body, await page.title(), page.url):
             return False
-        await page.wait_for_timeout(800)
+        await page.wait_for_timeout(150)
     return await _automation_visible(page, automation_id)
 
 
@@ -5164,10 +5717,10 @@ async def _phase_c_experience(page, values: dict, report: dict) -> dict:
         "missed": [],
         "advanced": False,
     }
-    present = await _wait_step(page, "myExperiencePage", timeout_ms=18000)
+    present = await _wait_step(page, "myExperiencePage", timeout_ms=8000)
     if not present:
         # Some tenants land on experience without that exact id (Cisco: Add + upload)
-        for _ in range(8):
+        for _ in range(12):
             present = (
                 await _automation_visible(page, "workExperience-1")
                 or await _automation_visible(page, "file-upload-input-ref")
@@ -5187,7 +5740,7 @@ async def _phase_c_experience(page, values: dict, report: dict) -> dict:
                     break
             except Exception:
                 pass
-            await page.wait_for_timeout(700)
+            await page.wait_for_timeout(200)
     phase["present"] = present
     if not present:
         phase["skipped"] = "experience_page_absent"
@@ -5757,7 +6310,11 @@ def _dummy_answer_for_wd_label(label: str, values: dict | None = None) -> list[s
         lab,
     ):
         return ["No", "No, I do not", "I do not require sponsorship"]
-    if re.search(r"how (did|do) you (hear|learn)|where did you hear", lab):
+    if re.search(
+        r"how (did|do) you (hear|learn)|where did you hear|"
+        r"hear about (us|this)|referral source|\bsource--source\b",
+        lab,
+    ):
         return _how_heard_candidates(values)
     # Age gate — dummy is 18+ (DUMMY_PROFILE.standard_screening_answers).
     # ATS3-010: never fall through to "No" when Yes labels miss.
@@ -6534,6 +7091,9 @@ async def _phase_e_self_id(page, values: dict, report: dict) -> dict:
         report["blocker"] = report.get("blocker") or "self_id_incomplete"
         return phase
     phase["stopped_at_review"] = True
+    # Attach early so can_claim_ready / workday_wizard_incomplete see Review.
+    report["phase_e"] = phase
+    report["workday_current_step"] = "review"
     # DOM/vision judge before Ready — fail closed on blanks / AMBIGUOUS.
     try:
         from page_progress import (
@@ -6645,7 +7205,7 @@ async def workday_two_phase_on_page(
     report["final_url"] = page.url
 
     body = await _body_text(page, 4000)
-    early = _detect_hard_blocker(body, report["page_title"] or "", page.url)
+    early = await _hard_blocker_live(page)
     if early:
         report["blocker"] = early
         report["blocker_detail"] = body[:500]
@@ -6659,7 +7219,7 @@ async def workday_two_phase_on_page(
     report["page_title"] = await page.title()
     report["final_url"] = page.url
     body = await _body_text(page)
-    hard = _detect_hard_blocker(body, report["page_title"] or "", page.url)
+    hard = await _hard_blocker_live(page)
     if hard:
         report["blocker"] = hard
         report["blocker_detail"] = body[:500]
@@ -6682,119 +7242,118 @@ async def workday_two_phase_on_page(
         page, values, report
     )
 
-    report["phase_b"] = await _phase_b_contact(page, fill_plan, report)
-    report.pop("_contact_values", None)
-    try:
-        from fill_pause import ensure_fill_pause_ready
+    # Mid-wizard resume: if already past contact (Experience / Questions / …),
+    # do NOT FAIL on contact_absent — jump to the current step and keep advancing.
+    current_step, spa_probe = await _detect_workday_current_step(page)
+    report["workday_current_step"] = current_step
+    report["workday_wizard_progress"] = str(spa_probe.get("progress") or "")[:160]
+    report["workday_spa_probe"] = spa_probe
 
-        await ensure_fill_pause_ready(page, report.get("_step_report") or report)
-    except Exception:
-        pass
-
-    # ATS2-011: recover multipage when SPA left contact but phase_b sticky-stuck
-    # on flat URL fingerprint (can_continue would otherwise skip C–E forever).
-    if (
-        report.get("stuck_on_same_page")
-        and report.get("advanced")
-        and not report.get("validation_after_advance")
+    if current_step in (
+        "experience",
+        "app_questions",
+        "eeo",
+        "self_id",
+        "review",
     ):
-        try:
-            pb = report.get("phase_b") or {}
-            before_dom = pb.get("spa_dom_before") or {}
-            moved = pb.get("spa_dom_moved") or await _wd_spa_step_probe(page)
-            if _wd_spa_moved(before_dom, moved) or (
-                moved.get("experience")
-                or moved.get("appQ")
-                or moved.get("eeo")
-                or moved.get("selfId")
-                or moved.get("review")
-            ):
-                report["stuck_on_same_page"] = False
-                pb["stuck_on_same_page"] = False
-                pb["spa_stuck_cleared"] = True
-                pb["spa_dom_moved"] = moved
-                report["phase_b"] = pb
-                if report.get("verdict") == "FAIL" and report.get(
-                    "verdict_reason"
-                ) in (None, "", "stuck_on_same_page"):
-                    report["verdict"] = "SUCCESS"
-                    report.pop("verdict_reason", None)
-        except Exception:
-            pass
-
-    # Multipage: experience → EEO → self-id when contact ADVANCEd cleanly
-    can_continue = (
-        bool(report.get("advanced"))
-        and not report.get("validation_after_advance")
-        and not report.get("stuck_on_same_page")
-        and report.get("blocker") not in (
-            "captcha",
-            "akamai",
-            "cloudflare",
-            "email_verify",
-            "contact_incomplete",
-            "validation_errors",
+        report["phase_b"] = {
+            "name": "B_contact",
+            "present": False,
+            "skipped": f"already_on_{current_step}",
+            "advanced": current_step != "review",
+            "filled": [],
+            "missed": [],
+            "next_clicks": [],
+        }
+        report["advanced"] = True
+        report["reached_contact"] = True
+        report["contact_page_present"] = False
+        report.pop("_contact_values", None)
+        await _run_workday_phases_from(
+            page, values, report, start=current_step
         )
-    )
-    if can_continue:
-        report["phase_c"] = await _phase_c_experience(page, values, report)
+    else:
+        report["phase_b"] = await _phase_b_contact(page, fill_plan, report)
+        report.pop("_contact_values", None)
         try:
             from fill_pause import ensure_fill_pause_ready
 
             await ensure_fill_pause_ready(page, report.get("_step_report") or report)
         except Exception:
             pass
-        pc = report.get("phase_c") or {}
-        # After a clean experience ADVANCE, drop stale page_incomplete so C2/D/E run
-        if pc.get("advanced") and not (pc.get("validation_after_advance") or report.get("validation_after_advance")):
-            if report.get("blocker") == "page_incomplete":
-                report["blocker"] = None
-            report["advance_blocked_reason"] = None
-        if (
-            pc.get("advanced")
-            and not report.get("validation_after_advance")
-            and report.get("blocker") not in (
-                "captcha", "akamai", "cloudflare", "email_verify", "validation_errors",
-            )
-        ):
-            report["phase_c2"] = await _phase_app_questions(page, values, report)
-            try:
-                from fill_pause import ensure_fill_pause_ready
 
-                await ensure_fill_pause_ready(
-                    page, report.get("_step_report") or report
-                )
+        # ATS2-011: recover multipage when SPA left contact but phase_b sticky-stuck
+        # on flat URL fingerprint (can_continue would otherwise skip C–E forever).
+        if (
+            report.get("stuck_on_same_page")
+            and report.get("advanced")
+            and not report.get("validation_after_advance")
+        ):
+            try:
+                pb = report.get("phase_b") or {}
+                before_dom = pb.get("spa_dom_before") or {}
+                moved = pb.get("spa_dom_moved") or await _wd_spa_step_probe(page)
+                if _wd_spa_moved(before_dom, moved) or (
+                    moved.get("experience")
+                    or moved.get("appQ")
+                    or moved.get("eeo")
+                    or moved.get("selfId")
+                    or moved.get("review")
+                ):
+                    report["stuck_on_same_page"] = False
+                    pb["stuck_on_same_page"] = False
+                    pb["spa_stuck_cleared"] = True
+                    pb["spa_dom_moved"] = moved
+                    report["phase_b"] = pb
+                    if report.get("verdict") == "FAIL" and report.get(
+                        "verdict_reason"
+                    ) in (None, "", "stuck_on_same_page"):
+                        report["verdict"] = "SUCCESS"
+                        report.pop("verdict_reason", None)
             except Exception:
                 pass
-            c2 = report.get("phase_c2") or {}
-            if c2.get("advanced") or c2.get("skipped"):
-                if report.get("blocker") == "page_incomplete" and c2.get("advanced"):
-                    report["blocker"] = None
-                    report["advance_blocked_reason"] = None
-            if (
-                (c2.get("advanced") or c2.get("skipped"))
-                and not report.get("validation_after_advance")
-                and report.get("blocker") not in (
-                    "captcha", "akamai", "cloudflare", "email_verify", "validation_errors",
-                )
-            ):
-                report["phase_d"] = await _phase_d_eeo(page, values, report)
-                try:
-                    from fill_pause import ensure_fill_pause_ready
 
-                    await ensure_fill_pause_ready(
-                        page, report.get("_step_report") or report
-                    )
-                except Exception:
-                    pass
-                if (
-                    (report.get("phase_d") or {}).get("advanced")
-                    and not report.get("validation_after_advance")
-                    and report.get("blocker") not in (
-                        "captcha", "akamai", "cloudflare", "email_verify", "validation_errors",
-                    )
+        # After contact ADVANCE, re-probe — SPA may already show Experience.
+        if report.get("advanced") and not report.get("validation_after_advance"):
+            try:
+                post_step, post_probe = await _detect_workday_current_step(page)
+                report["workday_current_step"] = post_step
+                report["workday_wizard_progress"] = str(
+                    post_probe.get("progress") or report.get("workday_wizard_progress") or ""
+                )[:160]
+                if post_step in (
+                    "experience",
+                    "app_questions",
+                    "eeo",
+                    "self_id",
+                    "review",
                 ):
-                    report["phase_e"] = await _phase_e_self_id(page, values, report)
+                    current_step = post_step
+            except Exception:
+                current_step = "experience"
+
+        # Multipage: experience → EEO → self-id when contact ADVANCEd cleanly
+        can_continue = (
+            bool(report.get("advanced"))
+            and not report.get("validation_after_advance")
+            and not report.get("stuck_on_same_page")
+            and report.get("blocker") not in (
+                "captcha",
+                "akamai",
+                "cloudflare",
+                "email_verify",
+                "contact_incomplete",
+                "validation_errors",
+            )
+        )
+        if can_continue:
+            start = (
+                current_step
+                if current_step
+                in ("experience", "app_questions", "eeo", "self_id", "review")
+                else "experience"
+            )
+            await _run_workday_phases_from(page, values, report, start=start)
 
     report["page_title"] = await page.title()
     report["final_url"] = page.url
@@ -6892,6 +7451,7 @@ async def workday_two_phase_on_page(
         "verdict": verdict,
         "verdict_reason": report.get("verdict_reason"),
         "blocker": report.get("blocker"),
+        "workday_current_step": report.get("workday_current_step"),
     }
     report["submit_clicked"] = False
     report["never_submit"] = True
