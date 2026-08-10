@@ -297,6 +297,63 @@ def test_airwallex_location_already_correct_skip():
     )
 
 
+def test_how_heard_already_correct_stops_alias_thrash():
+    """Once Indeed chip is present, keep — do not try LinkedIn/Other next."""
+    from fill_verify import how_heard_candidates, is_verified_fill_row
+    from verified_select import how_heard_source_committed
+
+    cands = how_heard_candidates({"HOW_HEARD": "Internet job board"})
+    assert "Indeed" in cands and "LinkedIn" in cands and "Other" in cands
+    chip = "1 item selected, Indeed"
+    assert how_heard_source_committed(chip, cands)
+    keep = {
+        "type": "HOW_HEARD",
+        "automation_id": "how_heard",
+        "value": "Indeed",
+        "picked": "Indeed",
+        "readback": chip,
+        "reason": "already_correct_keep",
+        "skipped_already_correct": True,
+        "verified": True,
+        "committed": True,
+        "status": "filled",
+    }
+    assert is_verified_fill_row(keep) is True
+
+
+def test_already_types_skip_refill_honors_keep():
+    from fast_fill import _already_types_skip_refill
+
+    report = {
+        "filled": [
+            {
+                "type": "HOW_HEARD",
+                "reason": "already_correct_keep",
+                "skipped_already_correct": True,
+                "verified": True,
+                "value": "Indeed",
+            },
+            {
+                "type": "LINKEDIN",
+                "reason": "already_correct_skip",
+                "skipped_already_correct": True,
+                "verified": True,
+                "value": "https://linkedin.com/in/dummy",
+            },
+            {
+                "type": "NAME_FIRST",
+                "verified": False,
+                "ok": False,
+                "value": "Nope",
+            },
+        ]
+    }
+    already = _already_types_skip_refill(report)
+    assert "HOW_HEARD" in already
+    assert "LINKEDIN" in already
+    assert "NAME_FIRST" not in already
+
+
 def test_ingest_skips_already_correct_keep_leftovers(tmp_path):
     from field_attempt_log import FieldAttemptLog
 
@@ -424,6 +481,8 @@ def main() -> int:
     test_should_demote_true_when_live_empty()
     test_filter_text_not_committed_select()
     test_airwallex_location_already_correct_skip()
+    test_how_heard_already_correct_stops_alias_thrash()
+    test_already_types_skip_refill_honors_keep()
     test_should_not_demote_when_id_still_empty_but_claimed_valid()
     test_location_probe_committed_skips_demote()
     test_demote_probe_trusts_claimed_when_live_probe_misses()

@@ -39,6 +39,55 @@ def test_how_heard_fill_uses_fiber_mode():
     src = inspect.getsource(wd._fill_how_heard)
     assert "fiber_search_select" in src
     assert 'mode": "fiber_search_select"' in src or "fiber_search_select" in src
+    # Stop alias thrash once chip committed
+    assert "_probe_how_heard_already_committed" in src
+    assert "already_correct_keep" in src
+    assert "settle_open_listbox" in src
+
+
+def test_how_heard_probe_keep_exported():
+    from exp_workday_selectors import (
+        _probe_how_heard_already_committed,
+        _read_how_heard_display,
+    )
+    from verified_select import how_heard_source_committed, settle_open_listbox
+
+    assert callable(_probe_how_heard_already_committed)
+    assert callable(_read_how_heard_display)
+    assert callable(how_heard_source_committed)
+    assert callable(settle_open_listbox)
+    assert how_heard_source_committed(
+        "How Did You Hear About Us?*\n1 item selected, Indeed",
+        ["Indeed", "LinkedIn"],
+    )
+    assert how_heard_source_committed("1 item selected, Other", ["Indeed"])
+    assert not how_heard_source_committed("0 items selected", ["Indeed"])
+    assert not how_heard_source_committed("", ["Indeed"])
+
+
+def test_fiber_settles_menu_after_pick():
+    """After fiber searchSelect success, Escape settle so menu is not left open."""
+    import inspect
+
+    from verified_select import fiber_search_select
+
+    src = inspect.getsource(fiber_search_select)
+    assert "settle_open_listbox" in src
+
+
+def test_picked_option_not_uncommitted_filter():
+    """Indeed chip / picked label must not look like typed filter thrash."""
+    from verified_select import is_uncommitted_filter_text
+
+    assert not is_uncommitted_filter_text(
+        "Indeed", "Indeed", picked="Indeed", from_input=True
+    )
+    assert is_uncommitted_filter_text(
+        "Indeed", "Indeed", picked=None, from_input=True
+    )
+    assert not is_uncommitted_filter_text(
+        "1 item selected, Indeed", "Indeed", picked="Indeed", from_input=True
+    )
 
 
 def test_previous_worker_scopes_include_quantiphi_wording():

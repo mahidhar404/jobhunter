@@ -13,8 +13,10 @@ from ashby_widgets import is_empty_ui_value
 from field_map import HOW_HEARD
 from resume_upload import is_resume_attachment_row
 from verified_select import (
+    how_heard_source_committed,
     is_multiselect_uncommitted,
     is_uncommitted_filter_text,
+    soft_value_match,
     value_matches_readback,
 )
 
@@ -56,10 +58,32 @@ def is_verified_fill_row(row: dict | None) -> bool:
         picked_hh = row.get("picked") or row.get("option_text")
         from verified_select import multiselect_has_chip
 
+        if how_heard_source_committed(rb, [intended_hh, str(picked_hh or "")]):
+            # Chip chrome or concrete committed token — stop alias thrash
+            return True
         if multiselect_has_chip(rb) and (
             row.get("option_clicked") or picked_hh or row.get("verified") is True
         ):
             # Fiber/searchSelect committed a chip — accept even if label chrome wraps it
+            return True
+        # Option clicked + picked soft-matches intended + display confirms pick.
+        # Never accept bare filter fragments ("Internet" for "Internet job board").
+        if (
+            (row.get("option_clicked") or row.get("committed") is True)
+            and intended_hh
+            and picked_hh
+            and soft_value_match(intended_hh, str(picked_hh))
+            and (
+                soft_value_match(str(picked_hh), rb)
+                or soft_value_match(intended_hh, rb)
+            )
+            and not (
+                rb
+                and rb.lower() != intended_hh.lower()
+                and rb.lower() in intended_hh.lower()
+                and len(rb) < len(intended_hh)
+            )
+        ):
             return True
         if (
             is_multiselect_uncommitted(rb)

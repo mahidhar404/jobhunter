@@ -1500,6 +1500,43 @@ def test_how_heard_chip_readback_is_verified():
     assert is_verified_fill_row(row) is True
 
 
+def test_how_heard_picked_label_without_chrome_verified():
+    """Walmart: after click, readback may be just 'Indeed' (no N items chrome)."""
+    from fill_verify import is_verified_fill_row
+
+    row = {
+        "type": "HOW_HEARD",
+        "automation_id": "how_heard",
+        "value": "Indeed",
+        "picked": "Indeed",
+        "option_text": "Indeed",
+        "option_clicked": True,
+        "verified": True,
+        "committed": True,
+        "readback": "Indeed",
+        "status": "filled",
+    }
+    assert is_verified_fill_row(row) is True
+    # Exact candidate token alone is keepable (stop thrash); filter fragments are not
+    exact_keep = {
+        "type": "HOW_HEARD",
+        "value": "Indeed",
+        "readback": "Indeed",
+        "verified": True,
+        "status": "filled",
+    }
+    assert is_verified_fill_row(exact_keep) is True
+    frag = {
+        "type": "HOW_HEARD",
+        "value": "Internet job board",
+        "readback": "Internet",
+        "verified": True,
+        "status": "filled",
+        "option_clicked": True,
+    }
+    assert is_verified_fill_row(frag) is False
+
+
 def test_guard_words_refuse_dangerous_maps():
     """ChamPro: mis-map worse than no map — guard-words refuse ambiguous types."""
     from field_map import (
@@ -1693,6 +1730,7 @@ if __name__ == "__main__":
     test_county_classifies_before_state()
     test_classify_us_residence_not_address_line2()
     test_how_heard_chip_readback_is_verified()
+    test_how_heard_picked_label_without_chrome_verified()
     test_guard_words_refuse_dangerous_maps()
     test_gaps_block_ready()
     test_option_mappings_roundtrip(__import__("pathlib").Path("/tmp/ff_option_map_test"))
