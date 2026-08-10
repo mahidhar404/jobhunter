@@ -220,6 +220,24 @@ def test_filter_locked_types_for_pack_loop() -> None:
     assert sess.thrash_retouches == 0  # filtered, never gated
 
 
+def test_resume_singleton_lock_blocks_other_selectors() -> None:
+    s = FieldLockSession()
+    s.lock(
+        field_type="RESUME_UPLOAD",
+        automation_id="file-upload-input-ref",
+        readback="dummy.pdf",
+        via="ensure_resume",
+    )
+    g = s.gate(
+        field_type="RESUME_UPLOAD",
+        selector="input[type=file]",
+        label="Resume / CV",
+    )
+    assert g["action"] == "lock_skip"
+    assert g.get("singleton_type") == "RESUME_UPLOAD"
+    assert s.thrash_retouches == 1
+
+
 def main() -> None:
     test_identity_prefers_automation_id()
     test_lock_then_gate_skips_and_counts_thrash()
@@ -232,6 +250,7 @@ def main() -> None:
     test_gate_field_action_uses_step_report_parent()
     test_analyze_walmart_style_waste()
     test_filter_locked_types_for_pack_loop()
+    test_resume_singleton_lock_blocks_other_selectors()
     print("test_field_lock: OK")
 
 

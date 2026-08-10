@@ -4367,6 +4367,9 @@ async def _handle_autofill_resume_after_auth(
     try:
         from resume_upload import ensure_resume_uploaded, report_has_verified_resume
 
+        # force=True: try even if SPA has not mounted the file input yet.
+        # Does NOT bypass commit-verify / field-lock / attachment chrome
+        # (see should_skip_resume_reupload — no re-upload thrash).
         ru = await ensure_resume_uploaded(page, values, report, force=True)
         summary["upload"] = {
             k: ru.get(k)
@@ -4380,9 +4383,18 @@ async def _handle_autofill_resume_after_auth(
             report["resume_verified"] = True
             report["resume_field_present"] = True
             try:
-                from resume_upload import sync_resume_verified_from_phase_a
+                from resume_upload import lock_resume_after_verify, sync_resume_verified_from_phase_a
 
+                lock_resume_after_verify(
+                    report,
+                    readback=str(
+                        ((ru.get("result") or {}).get("readback"))
+                        or Path(str(resume_path)).name
+                    ),
+                    via="workday_autofill_resume",
+                )
                 # phase_a_resume not attached yet; sync after caller assigns summary
+                _ = sync_resume_verified_from_phase_a
             except Exception:
                 pass
         else:
@@ -6392,12 +6404,88 @@ async def _phase_c_experience(page, values: dict, report: dict) -> dict:
 
     resume_path = values.get("_resume_pdf") or str(DUMMY_PDF)
     upload_done = False
+
+    # Never re-upload as a stuck-page hammer — if commit-verified / locked /
+    # Workday chrome already shows the PDF, lock and continue to work entries.
+    try:
+        from resume_upload import (
+            ensure_resume_uploaded,
+            lock_resume_after_verify,
+            report_has_verified_resume,
+            resume_upload_locked,
+        )
+
+        parent = report.get("_step_report") if isinstance(report.get("_step_report"), dict) else report
+        if report_has_verified_resume(parent) or resume_upload_locked(parent):
+            upload_done = True
+            phase["resume_skipped"] = "already_verified_or_locked"
+            lock_resume_after_verify(
+                parent,
+                readback=Path(str(resume_path)).name,
+                via="phase_c_experience",
+            )
+            phase["filled"].append(
+                {
+                    "automation_id": "file-upload-input-ref",
+                    "status": "filled",
+                    "mode": "skip_locked",
+                    "type": "RESUME_UPLOAD",
+                    "value": str(resume_path),
+                    "readback": Path(str(resume_path)).name,
+                    "verified": True,
+                    "ok": True,
+                    "reason": "already_verified_or_locked",
+                    "skipped_locked": True,
+                }
+            )
+        else:
+            # force=False: force must not bypass verify; SPA field mount is enough
+            ru = await ensure_resume_uploaded(page, values, parent, force=False)
+            upload_done = bool(ru.get("verified"))
+            phase["resume_upload"] = {
+                k: ru.get(k)
+                for k in ("attempted", "verified", "skipped", "force", "locked")
+                if k in ru
+            }
+            if upload_done:
+                phase["filled"].append(
+                    {
+                        "automation_id": "file-upload-input-ref",
+                        "status": "filled",
+                        "mode": (ru.get("result") or {}).get("mode") or "file",
+                        "type": "RESUME_UPLOAD",
+                        "value": str(resume_path),
+                        "readback": (ru.get("result") or {}).get("readback")
+                        or Path(str(resume_path)).name,
+                        "verified": True,
+                        "ok": True,
+                        "reason": ru.get("skipped")
+                        or (ru.get("result") or {}).get("reason")
+                        or "ensure_resume",
+                    }
+                )
+            elif ru.get("skipped") == "no_resume_field":
+                pass  # fall through to legacy chooser path below
+            else:
+                phase["missed"].append(
+                    {
+                        "automation_id": "file-upload-input-ref",
+                        "status": "missed",
+                        "reason": "resume_unverified",
+                        "verified": False,
+                    }
+                )
+    except Exception as e:
+        phase.setdefault("errors", []).append({"resume_ensure": str(e)[:120]})
+
     upload = page.locator(
         '[data-automation-id="file-upload-input-ref"], '
         'input[type="file"]'
     ).first
     try:
-        if await upload.count() == 0:
+        if upload_done:
+            pass
+        elif await upload.count() == 0:
             # Cisco: "Select files" / Drop files may reveal the input
             for sel_txt in (
                 'button:has-text("Select files")',
@@ -6459,6 +6547,43 @@ async def _phase_c_experience(page, values: dict, report: dict) -> dict:
                         "ok": verified,
                     })
                     upload_done = verified
+                    if verified:
+                        try:
+                            from resume_upload import lock_resume_after_verify
+
+                            parent = (
+                                report.get("_step_report")
+                                if isinstance(report.get("_step_report"), dict)
+                                else report
+                            )
+                            lock_resume_after_verify(
+                                parent,
+                                readback=readback,
+                                via="phase_c_experience",
+                            )
+                            if not any(
+                                isinstance(f, dict)
+                                and f.get("type") == "RESUME_UPLOAD"
+                                and f.get("verified") is True
+                                for f in (parent.get("filled") or [])
+                            ):
+                                parent.setdefault("filled", []).append(
+                                    {
+                                        "via": "phase_c_experience",
+                                        "layer": "0.5",
+                                        "label": "Resume",
+                                        "type": "RESUME_UPLOAD",
+                                        "mode": "file_chooser",
+                                        "value": readback,
+                                        "readback": readback,
+                                        "ok": True,
+                                        "verified": True,
+                                        "automation_id": "file-upload-input-ref",
+                                    }
+                                )
+                            parent["resume_verified"] = True
+                        except Exception:
+                            pass
                     if not verified:
                         phase["missed"].append({
                             "automation_id": "file-upload-select-files",
@@ -6488,6 +6613,19 @@ async def _phase_c_experience(page, values: dict, report: dict) -> dict:
             except Exception:
                 verified = False
             if not verified:
+                # Trust Workday upload chrome when FileList remounts empty
+                try:
+                    from resume_upload import probe_resume_field, accept_resume_after_empty_filelist
+
+                    post = await probe_resume_field(page)
+                    if accept_resume_after_empty_filelist(post, page_hint=True) or post.get(
+                        "workday_uploaded_ui"
+                    ):
+                        verified = True
+                        readback = readback or Path(str(resume_path)).name
+                except Exception:
+                    pass
+            if not verified:
                 # Retry once
                 try:
                     await upload.set_input_files(str(resume_path))
@@ -6515,6 +6653,41 @@ async def _phase_c_experience(page, values: dict, report: dict) -> dict:
                 "ok": verified,
             })
             upload_done = verified
+            if verified:
+                try:
+                    from resume_upload import lock_resume_after_verify
+
+                    parent = (
+                        report.get("_step_report")
+                        if isinstance(report.get("_step_report"), dict)
+                        else report
+                    )
+                    lock_resume_after_verify(
+                        parent, readback=readback, via="phase_c_experience"
+                    )
+                    if not any(
+                        isinstance(f, dict)
+                        and f.get("type") == "RESUME_UPLOAD"
+                        and f.get("verified") is True
+                        for f in (parent.get("filled") or [])
+                    ):
+                        parent.setdefault("filled", []).append(
+                            {
+                                "via": "phase_c_experience",
+                                "layer": "0.5",
+                                "label": "Resume",
+                                "type": "RESUME_UPLOAD",
+                                "mode": "file",
+                                "value": readback,
+                                "readback": readback,
+                                "ok": True,
+                                "verified": True,
+                                "automation_id": "file-upload-input-ref",
+                            }
+                        )
+                    parent["resume_verified"] = True
+                except Exception:
+                    pass
             if not verified:
                 phase["missed"].append({
                     "automation_id": "file-upload-input-ref",

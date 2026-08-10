@@ -8621,6 +8621,8 @@ async def _reclaim_deterministic_leftovers(
         for u in before
     ):
         try:
+            # force=True for SPA remount of empty file input — still skips when
+            # commit-verified / locked / chrome shows attachment.
             await ensure_resume_uploaded(page, values, report, force=True)
         except Exception as e:
             out["resume_error"] = str(e)[:120]
