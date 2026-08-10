@@ -5677,6 +5677,20 @@ async def _gate_then_advance(page, report: dict, phase: dict) -> bool:
     # Successful ADVANCE — clear stale page_incomplete from earlier phases
     if report.get("blocker") == "page_incomplete":
         report["blocker"] = None
+    # antomicblitz #3: wait for next-page fields to mount before the next phase
+    # fills (step chrome can appear before formField nodes).
+    if advanced and not validation and not progress.get("stuck_on_same_page"):
+        try:
+            fields_ready = await wait_for_workday_form_fields(
+                page, min_fields=1, timeout_ms=8000, poll_ms=350
+            )
+            phase["fields_ready_after_advance"] = fields_ready
+            report["fields_ready_after_advance"] = fields_ready
+        except Exception as e:
+            phase["fields_ready_after_advance"] = {
+                "ok": False,
+                "reason": str(e)[:120],
+            }
     if report.get("advance_blocked_reason") in (
         "required_fields_empty",
         "required_dates_empty",
@@ -6882,6 +6896,86 @@ def _finalize_workday_verdict(report: dict) -> str:
     return report["verdict"]
 
 
+def is_workday_select_placeholder(text: str | None) -> bool:
+    """True when a Workday listbox button still shows an empty placeholder.
+
+    Inspired by jobhard's ``hadSelectOne`` / ``placeholder_cleared`` verify:
+    button text often concatenates label + value + Required, so exact equality
+    against ``Select One`` alone is too weak — also treat ``Select …`` prefixes
+    and common empty chrome as uncommitted.
+    """
+    t = re.sub(r"\s+", " ", (text or "").strip().lower())
+    if not t:
+        return True
+    if t in ("select one", "select", "—", "-", "n/a"):
+        return True
+    if t.startswith("select "):
+        return True
+    # "Country Select One Required" / "State* Select One"
+    if re.search(r"\bselect one\b", t):
+        return True
+    return False
+
+
+async def wait_for_workday_form_fields(
+    page,
+    *,
+    min_fields: int = 1,
+    timeout_ms: int = 8000,
+    poll_ms: int = 400,
+) -> dict:
+    """Poll until Workday form fields mount after a step transition.
+
+    antomicblitz/workday-autofill AGENT_LEARNINGS #3: step label can update
+    ~1–2s before questionnaire fields appear; filling immediately skips all
+    answers silently. Prefer FAIL-open (timeout with count=0) over blind fill.
+    """
+    deadline = max(400, int(timeout_ms))
+    interval = max(80, int(poll_ms))
+    elapsed = 0
+    last_count = 0
+    while elapsed <= deadline:
+        try:
+            last_count = int(
+                await page.evaluate(
+                    """() => {
+                      const vis = (el) => {
+                        if (!el) return false;
+                        const r = el.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0
+                          && window.getComputedStyle(el).visibility !== 'hidden';
+                      };
+                      let n = 0;
+                      document.querySelectorAll(
+                        '[data-automation-id^="formField-"],'
+                        + 'input:not([type="hidden"]):not([type="submit"]),'
+                        + 'textarea,select,button[aria-haspopup="listbox"]'
+                      ).forEach((el) => { if (vis(el)) n += 1; });
+                      return n;
+                    }"""
+                )
+                or 0
+            )
+        except Exception:
+            last_count = 0
+        if last_count >= max(1, int(min_fields)):
+            return {
+                "ok": True,
+                "field_count": last_count,
+                "waited_ms": elapsed,
+                "algorithm": "wait_for_workday_form_fields",
+            }
+        await page.wait_for_timeout(interval)
+        elapsed += interval
+    return {
+        "ok": False,
+        "field_count": last_count,
+        "waited_ms": elapsed,
+        "algorithm": "wait_for_workday_form_fields",
+        "reason": "fields_not_ready",
+    }
+
+
 async def _list_empty_select_ones(page) -> list[dict]:
     """Visible required Select One / empty comboboxes with labels (for fillers)."""
     try:
@@ -6903,7 +6997,8 @@ async def _list_empty_select_ones(page) -> list[dict]:
               const pushBtn = (el) => {
                 if (!isVisible(el)) return;
                 const t = (el.innerText || el.getAttribute('aria-label') || '').trim().toLowerCase();
-                const empty = !t || t === 'select one' || t === 'select' || t.startsWith('select ');
+                const empty = !t || t === 'select one' || t === 'select' || t.startsWith('select ')
+                  || /\\bselect one\\b/.test(t);
                 if (!empty) return;
                 const lab = labelOf(el);
                 const req = el.getAttribute('aria-required') === 'true'
@@ -6991,8 +7086,8 @@ async def _fill_select_one_by_label(page, label: str, candidates: list[str]) -> 
                     continue
             except Exception:
                 continue
-            cur = ((await btn.inner_text()) or "").strip().lower()
-            if cur and cur not in ("select one", "select") and not cur.startswith("select "):
+            cur = ((await btn.inner_text()) or "").strip()
+            if cur and not is_workday_select_placeholder(cur):
                 # already filled — do not reopen (same-page thrash)
                 try:
                     from verified_select import settle_open_listbox
@@ -7016,8 +7111,8 @@ async def _fill_select_one_by_label(page, label: str, candidates: list[str]) -> 
             bn = await btns.count()
             for i in range(min(bn, 15)):
                 b = btns.nth(i)
-                cur = ((await b.inner_text()) or "").strip().lower()
-                if cur in ("select one", "select") or cur.startswith("select "):
+                cur = ((await b.inner_text()) or "").strip()
+                if is_workday_select_placeholder(cur):
                     # Check nearby label
                     try:
                         near = await b.evaluate(
@@ -7037,6 +7132,11 @@ async def _fill_select_one_by_label(page, label: str, candidates: list[str]) -> 
         await target_btn.scroll_into_view_if_needed()
         from verified_select import fill_workday_combobox
 
+        try:
+            before_text = ((await target_btn.inner_text()) or "").strip()
+        except Exception:
+            before_text = ""
+        had_placeholder = is_workday_select_placeholder(before_text)
         last_miss = "no_matching_option"
         for cand in candidates:
             wd = await fill_workday_combobox(
@@ -7054,21 +7154,40 @@ async def _fill_select_one_by_label(page, label: str, candidates: list[str]) -> 
                     readback = ((await target_btn.inner_text()) or "").strip()
                 except Exception:
                     readback = ""
-            filled_ok = bool(wd.get("ok")) and readback.lower() not in (
-                "select one",
-                "select",
+            # jobhard: verify via contains_pick OR placeholder_cleared
+            contains_pick = bool(cand) and cand.lower() in (readback or "").lower()
+            picked = str(wd.get("picked") or "")
+            if picked and picked.lower() in (readback or "").lower():
+                contains_pick = True
+            placeholder_cleared = had_placeholder and not is_workday_select_placeholder(
+                readback
+            )
+            filled_ok = (
+                not is_workday_select_placeholder(readback)
+                and (bool(wd.get("ok")) or contains_pick or placeholder_cleared)
             )
             if filled_ok:
+                via = (
+                    "contains_pick"
+                    if contains_pick
+                    else (
+                        "placeholder_cleared"
+                        if placeholder_cleared
+                        else "combobox_ok"
+                    )
+                )
                 detail.update(
                     {
                         "status": "filled",
                         "verified": True,
+                        "committed": True,
                         "value": cand,
                         "readback": readback[:120],
                         "option_text": wd.get("picked"),
                         "option_clicked": bool(wd.get("option_clicked")),
-                        "algorithm": wd.get("algorithm"),
+                        "algorithm": wd.get("algorithm") or "select_one",
                         "steps": wd.get("steps"),
+                        "verify_via": via,
                     }
                 )
                 return detail
