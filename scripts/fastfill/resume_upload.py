@@ -4,10 +4,15 @@ Hard rules:
   - Dummy PDF only (prepare_dummy_run / DUMMY_PDF) — never tailored resumes
   - Verify files on the input (filename / FileList) before claiming success
   - Missing resume when a resume field exists = failure, not success
+  - Prefer ``set_input_files`` on ``<input type=file>`` BEFORE click +
+    ``expect_file_chooser`` (avoids OS dialog events Cloudflare inspects and
+    Workday's long filechooser timeout stall)
 """
 
 from __future__ import annotations
 
+import os
+import random
 import re
 from pathlib import Path
 from typing import Any
@@ -19,6 +24,13 @@ from field_map import (
     assert_real_resume_path,
     is_real_profile_mode,
 )
+
+# Prefer attaching via Playwright set_input_files; file-chooser is fallback only.
+UPLOAD_ATTACH_PREFERENCE = "set_input_files_first"
+# File-chooser fallback timeout (ms). Keep short — long stalls invite bot scoring.
+_FILE_CHOOSER_FALLBACK_MS = 3500
+_FILE_INPUT_POLL_MS = 1200
+_FILE_INPUT_POLL_STEP_MS = 200
 
 try:
     from fill_step_log import note_step
@@ -284,6 +296,44 @@ def accept_resume_after_empty_filelist(
         or p.get("workday_uploaded_ui")
         or page_hint
     )
+
+
+def should_use_file_chooser_fallback(*, file_input_reachable: bool) -> bool:
+    """True only when no ``<input type=file>`` is reachable for set_input_files."""
+    return not bool(file_input_reachable)
+
+
+def file_chooser_fallback_timeout_ms(*, workday: bool = False) -> int:
+    """Short chooser timeout — never the old Workday 8s stall on primary path."""
+    # Optional tiny bump on Workday SPA only; still far below 8s.
+    return _FILE_CHOOSER_FALLBACK_MS + (500 if workday else 0)
+
+
+# Least-human pre-attach delay: ~150–250ms (center 200), hard-capped at 300ms.
+_MICRO_JITTER_DEFAULT_MS = 200
+_MICRO_JITTER_SPREAD_MS = 50
+_MICRO_JITTER_HARD_CAP_MS = 300
+
+
+def micro_jitter_ms() -> int:
+    """Pre-attach timing noise (~150–250ms). On by default; disable with FASTFILL_MICRO_JITTER=0."""
+    raw = (os.environ.get("FASTFILL_MICRO_JITTER") or "1").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return 0
+    try:
+        base = int(
+            (os.environ.get("FASTFILL_MICRO_JITTER_MS") or str(_MICRO_JITTER_DEFAULT_MS)).strip()
+        )
+    except ValueError:
+        base = _MICRO_JITTER_DEFAULT_MS
+    base = max(0, min(_MICRO_JITTER_HARD_CAP_MS, base))
+    if base == 0:
+        return 0
+    lo = max(0, base - _MICRO_JITTER_SPREAD_MS)
+    hi = min(_MICRO_JITTER_HARD_CAP_MS, base + _MICRO_JITTER_SPREAD_MS)
+    if lo >= hi:
+        return lo
+    return random.randint(lo, hi)
 
 
 def is_resume_empty_required(entry: dict | None) -> bool:
@@ -818,15 +868,27 @@ async def upload_resume_to_page(
         )
         return out
 
+    # A: set_input_files FIRST — poll briefly if SPA has not mounted input yet.
+    # Never lead with click+filechooser (Workday 8s stall + bot-visible dialog events).
     target, used_sel = await _pick_resume_file_locator(page)
-    handles = page.locator(used_sel) if used_sel else None
-    if target is not None and used_sel:
-        handles = target
+    if target is None:
+        deadline_ms = _FILE_INPUT_POLL_MS
+        stepped = 0
+        while stepped < deadline_ms and target is None:
+            try:
+                await page.wait_for_timeout(_FILE_INPUT_POLL_STEP_MS)
+            except Exception:
+                break
+            stepped += _FILE_INPUT_POLL_STEP_MS
+            target, used_sel = await _pick_resume_file_locator(page)
 
-    # Hidden / styled drop-zones: label present but no discoverable file input yet
-    if target is None and not used_sel:
+    is_workday = "myworkdayjobs.com" in (getattr(page, "url", "") or "").lower()
+    out["attach_preference"] = UPLOAD_ATTACH_PREFERENCE
+
+    if target is None and should_use_file_chooser_fallback(file_input_reachable=False):
+        # Fallback only: no reachable <input type=file>
         try:
-            fc_timeout = 8000 if "myworkdayjobs.com" in (page.url or "").lower() else 5000
+            fc_timeout = file_chooser_fallback_timeout_ms(workday=is_workday)
             async with page.expect_file_chooser(timeout=fc_timeout) as fc_info:
                 clicked = False
                 for sel_txt in (
@@ -859,7 +921,6 @@ async def upload_resume_to_page(
                     'div:has-text("Drop files here")',
                     'div:has-text("or select a file")',
                     'div:has-text("Attach a file")',
-                    # Greenhouse job-boards styled drop zone (often no input until click)
                     '.resume-upload',
                     '[data-field="resume"]',
                     '#resume',
@@ -879,6 +940,7 @@ async def upload_resume_to_page(
             await chooser.set_files(str(pdf))
             out["mode"] = "file_chooser"
             out["selector"] = used_sel or "file_chooser"
+            out["file_chooser_fallback"] = True
             try:
                 await page.wait_for_timeout(500)
             except Exception:
@@ -889,7 +951,6 @@ async def upload_resume_to_page(
                 out["reason"] = "filename_visible_ui"
                 out["readback"] = pdf.name
                 return out
-            # Re-probe file inputs after chooser (GH often mounts input post-click)
             for sel in _RESUME_FILE_SELECTORS:
                 loc = page.locator(sel)
                 try:
@@ -917,6 +978,7 @@ async def upload_resume_to_page(
         return out
 
     out["selector"] = used_sel
+    out["mode"] = "set_input_files"
     # Personio: hidden CV input may need its label/dropzone clicked first
     if "doc-input-cv" in used_sel or "documents.cv" in used_sel:
         for click_sel in (
@@ -932,14 +994,19 @@ async def upload_resume_to_page(
                     break
             except Exception:
                 continue
+    jitter = micro_jitter_ms()
+    if jitter:
+        try:
+            await page.wait_for_timeout(jitter)
+        except Exception:
+            pass
     try:
         await target.set_input_files(str(pdf))
     except Exception as e:
-        # File-chooser path for hidden inputs
+        # Fallback only after set_input_files failed on a reachable input
         try:
-            host = page
-            async with host.expect_file_chooser(timeout=4000) as fc_info:
-                # Click a nearby upload control if present
+            fc_timeout = file_chooser_fallback_timeout_ms(workday=is_workday)
+            async with page.expect_file_chooser(timeout=fc_timeout) as fc_info:
                 for sel_txt in (
                     '.file-upload:has(#upload-label-resume) button:has-text("Attach")',
                     'label[for="resume"]',
@@ -958,6 +1025,7 @@ async def upload_resume_to_page(
             chooser = await fc_info.value
             await chooser.set_files(str(pdf))
             out["mode"] = "file_chooser"
+            out["file_chooser_fallback"] = True
         except Exception as e2:
             out["reason"] = "upload_error"
             out["error"] = f"{e}; {e2}"[:200]
