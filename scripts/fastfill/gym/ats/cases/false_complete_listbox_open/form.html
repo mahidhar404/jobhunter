@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — False Complete (Open Listbox)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 2rem auto; }
+    label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+    .select__control {
+      border: 1px solid #ccc; border-radius: 4px; padding: 8px 12px;
+      cursor: pointer; background: #fff; min-height: 20px;
+    }
+    .select__menu {
+      position: absolute; background: #fff; border: 1px solid #ccc;
+      border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.12); z-index: 9999;
+      min-width: 240px;
+    }
+    .select__option { padding: 8px 12px; cursor: pointer; }
+    .select__option:hover { background: #deebff; }
+    .select__placeholder { color: #999; }
+    button { margin-top: 1.5rem; padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <h1>Degree Selection — False Complete Trap</h1>
+  <p>Applicant: Test Dummy · randommail6969@gmail.com</p>
+  <p class="hint" style="color:#666;font-size:0.9rem">
+    Listbox stays open with placeholder visible — must NOT count as committed.
+  </p>
+
+  <div class="field">
+    <label for="degree-control">Highest Degree Earned*</label>
+    <div class="select__container" style="position:relative">
+      <div id="degree-control" class="select__control" role="combobox"
+           aria-expanded="true" aria-haspopup="listbox" tabindex="0" data-committed="">
+        <div class="select__placeholder">Select One</div>
+      </div>
+      <div id="degree-menu" class="select__menu" role="listbox" aria-label="Degree options">
+        <div class="select__option" role="option" id="deg-opt-0">Associate's Degree</div>
+        <div class="select__option" role="option" id="deg-opt-1">Bachelor's Degree</div>
+        <div class="select__option" role="option" id="deg-opt-2">Master's Degree</div>
+      </div>
+    </div>
+  </div>
+
+  <button type="button" id="btn-submit">Submit application</button>
+
+  <script>
+    (function () {
+      var OPTIONS = ["Associate's Degree", "Bachelor's Degree", "Master's Degree"];
+      var control = document.getElementById('degree-control');
+      var menu = document.getElementById('degree-menu');
+
+      menu.querySelectorAll('.select__option').forEach(function (opt, i) {
+        opt.addEventListener('click', function () {
+          control.innerHTML = '<div class="select__single-value">' + OPTIONS[i] + '</div>';
+          control.dataset.committed = OPTIONS[i];
+          control.setAttribute('data-committed', OPTIONS[i]);
+          control.setAttribute('aria-expanded', 'false');
+          menu.style.display = 'none';
+        });
+      });
+
+      document.getElementById('btn-submit').addEventListener('click', function (e) {
+        e.preventDefault();
+        alert('Gym fixture — submit blocked.');
+      });
+    })();
+  </script>
+</body>
+</html>

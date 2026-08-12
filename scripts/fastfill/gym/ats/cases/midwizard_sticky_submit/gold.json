@@ -1,0 +1,13 @@
+{
+  "fields": [
+    {
+      "key": "phone",
+      "selector": "#phone",
+      "committed": "(555) 010-0200",
+      "required": true
+    }
+  ],
+  "footer_kind": "ADVANCE",
+  "expect_advance": false,
+  "notes": "Both Next and Submit visible while required phone empty; incomplete wizard should classify footer as ADVANCE."
+}

@@ -1,0 +1,21 @@
+{
+  "fields": [
+    {
+      "key": "accommodations",
+      "selector": "input[name='accommodations'][value='no']",
+      "committed": "no",
+      "required": true,
+      "notes": "ACCOMMODATIONS type — must not fill MARKETING_CONSENT checkbox instead."
+    },
+    {
+      "key": "marketing_consent",
+      "selector": "#marketing-consent",
+      "committed": "yes",
+      "required": true,
+      "notes": "TERMS_CONSENT / marketing — separate from accommodations."
+    }
+  ],
+  "footer_kind": "FINAL",
+  "expect_advance": false,
+  "notes": "classify_field must distinguish ACCOMMODATIONS from MARKETING_CONSENT."
+}

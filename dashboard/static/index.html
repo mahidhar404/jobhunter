@@ -191,6 +191,8 @@
   .mstat.open .n { color: var(--blue); }
   .mstat.skipped .n { color: var(--text-mute); }
   .mstat[data-queue="applied"] .n { color: var(--green); }
+  .mstat.fill-metrics .l[data-ok="1"] { color: #2f9e44; }
+  .mstat.fill-metrics .l[data-ok="0"] { color: #c92a2a; font-weight: 600; }
   .ops-body {
     flex: 1;
     display: grid;
@@ -1930,6 +1932,10 @@
     <div class="mstat progress" data-queue="progress" title="In progress"><span class="n" id="stat-progress">—</span><span class="l">In progress</span></div>
     <div class="mstat open" data-queue="open" title="Open / discovered"><span class="n" id="stat-open">—</span><span class="l">Open</span></div>
     <div class="mstat" data-queue="applied" title="Applied tracking"><span class="n" id="stat-applied">—</span><span class="l">Applied</span></div>
+    <div class="mstat fill-metrics" id="fill-metrics" title="Eval pass-rate ratchet (dummy fills)" data-queue="">
+      <span class="n" id="fill-metrics-rate">—</span>
+      <span class="l" id="fill-metrics-ratchet" data-ok="">Fill</span>
+    </div>
   </div>
   <div class="header-actions" id="header-actions">
     <div class="test-mode-wrap" id="test-mode-wrap">

@@ -13,12 +13,28 @@ prefill **or** grounded Flash/inpage leftovers (dummy resume + DUMMY_PROFILE +
 JD). Agents must **never** ask the human to refill School / Degree / salary /
 resume / commute / essays. The only human Enter pause is **CAPTCHA**.
 
+## Offline-first gate (required before live)
+
+Prefer training against the offline gym (`scripts/fastfill/gym/`) before live ATS:
+
+1. `improvement_cycle.py --phase train_offline` → writes `OFFLINE_GATE_PASS.json`
+2. `improvement_cycle.py --phase gate_live` → writes `LIVE_CANARY_ARMED`
+3. `improvement_cycle.py --phase canary_live --limit 7` → one diversity
+   `eval_suite`, then `LIVE_CANARY_DONE.json` (**hard stop**)
+4. Fix failures offline / in gym; re-arm only after offline still green
+
+`run_headed_cycle_with_monitor.py` and `eval_suite.py` refuse live until armed
+(unless `--force-live`). See `live_gate.py` and `gym/README.md`.
+
 ---
 
 ## Agent 1 — Random variety tester
 
 **Goal:** Prefill then grounded Flash leftovers on the next variety URL. Leave
 zero unanswered fields including “why join us” essays.
+
+**Prefer offline first:** run ATS/FormFactory gym self-tests and
+`improvement_cycle --phase train_offline` before live variety.
 
 **CLI:**
 
@@ -36,6 +52,8 @@ skyvern_runtime/venv/bin/python scripts/fastfill/fast_fill.py URL \
 ```
 You are Agent1 (Tester) for job-hunter fastfill cycle.
 
+0. If LIVE_CANARY_DONE exists or canary not armed, run offline gym /
+   train_offline / gate_live first — do not thrash live ATS.
 1. Pick next URL from the variety queue (Greenhouse → Lever → Ashby → Workday →
    mid-tier → unknown) via cycle_orchestrate or eval_urls.json.
 2. Run fast_fill with --flash-leftovers (headed when reviewing). Dummy identity
@@ -163,10 +181,14 @@ From attribution.json + vision_judge.json + cycle_failures.jsonl:
 
 | Event | Action |
 |-------|--------|
-| CAPTCHA (headed) | Pause — human solves, Enter to continue same attempt (no BLOCKED×3) |
-| CAPTCHA timeout / headless | BLOCKED → next variety URL (no retry burn) |
+| CAPTCHA (headed) | Short attended budget (default **120s**, `FASTFILL_CAPTCHA_TIMEOUT_S`) — human may solve; else **BLOCKED → next URL** (never sit 600s; never solve) |
+| CAPTCHA timeout / job_skip / headless | BLOCKED → next variety URL (no retry burn); writes `FIX_SKIPPED.md` |
+| Sign-in / product login + force_create tried / monitor alert no recovery | Skip after `FASTFILL_LOGIN_WALL_SKIP_S` (default 60s) → next URL |
+| No `fill_steps` progress (true hang) | Mid-fill skip after `FASTFILL_STALE_NO_PROGRESS_S` (default **180s**); zero-activity after start uses `FASTFILL_STALE_ZERO_ACTIVITY_S` (default **120s**) |
+| CAPTCHA wait / `.fill_paused` / recent `hold_snapshot` / Agent4 `RETRY_AFTER_FIX` / `run_end` | **Do not** stale-skip (`no_step_progress`); CAPTCHA budget still applies separately |
 | Vision COMPLETE + never_submit + dummy email + resume verified | SUCCESS → next variety URL; bump streak |
-| FAIL / FAIL_BLANK | attribution → Agent4 → retry same URL (≤2) |
+| FAIL / FAIL_BLANK (fixable) | attribution → Agent4 ≤`FASTFILL_AGENT4_WAIT_S` (default 45s attended) → retry same URL (≤2) |
+| Unfixable signature (CAPTCHA/login_wall) | Agent4 wait **skipped**; `FIX_SKIPPED.md`; next URL |
 | Still FAIL | append `cycle_failures.jsonl`; next variety |
 | N consecutive SUCCESS across ≥K platforms | stop |
 | Human says stop / review | pause hold-open for screenshot review only — never for leftover refill |
@@ -176,14 +198,53 @@ Default: N=3, K=2 (`--success-streak`, `--min-platforms`).
 ## Live how-to
 
 ```bash
-# Smoke (no browser)
+# Smoke (no browser) — also runs the Phase 6 offline regression lane
 skyvern_runtime/venv/bin/python scripts/fastfill/cycle_orchestrate.py --self-test
 skyvern_runtime/venv/bin/python scripts/fastfill/cycle_orchestrate.py --dry-run \
   --fixture skyvern_runtime/real_job_results/fast_fill_ashby.json
+skyvern_runtime/venv/bin/python scripts/fastfill/regression_deepeval.py --self-test
 
 # Live closed loop (dummy, never submit; auto-refill + captcha wait + hold-open)
 skyvern_runtime/venv/bin/python scripts/fastfill/cycle_orchestrate.py \
   --limit 4 --headed --success-streak 2 --min-platforms 2
 # CAPTCHA only: "CAPTCHA detected — solve it in the browser, then press Enter here to continue"
 # Refill: auto-loops (--refill-passes 2); do NOT use --refill-wait-enter unless debugging
+
+# Answer-memory promotion (Phase 3b) — live A/B; leave memory OFF unless promote=true
+skyvern_runtime/venv/bin/python scripts/fastfill/answer_memory_ab.py \
+  --suite <suite.json> --out skyvern_runtime/real_job_results/ab_mem
+# Only then: export FASTFILL_ANSWER_MEMORY=1 FASTFILL_SEMANTIC_MEMORY=1
 ```
+
+Cycle rollups write `regression_lane.json` beside `rollup.json`. Disable with
+`FASTFILL_CYCLE_REGRESSION=0`.
+---
+
+## Exhaustive improvement cycle (control plane)
+
+Entrypoint: `scripts/fastfill/improvement_cycle.py`  
+**Headed + monitor one-shot:** `scripts/fastfill/run_headed_cycle_with_monitor.py`
+
+Proof order: safety → **end-state (not mid-wizard)** → **correct values** → **no thrash** → blanks → vision → streak.
+
+Fail fix priority: `FAIL_MIDWIZARD` → `FAIL_WRONG_VALUE` → `FAIL_THRASH` → `FAIL_BLANK` → `FAIL_STUCK`.
+CAPTCHA → `BLOCKED` (no Fixer). ≥3 in a window → cooldown (sleep, no browser); escalations → `PAUSE_BOT_PRESSURE`.
+Stale jobs: prefer **skip → next URL** (see Orchestrator stop rules); monitor writes `FIX_SKIPPED.md` + taxonomy.
+
+```bash
+skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --self-test
+skyvern_runtime/venv/bin/python scripts/fastfill/test_stale_skip.py
+# Unattended:
+skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --phase all --mode unattended --limit 4 \
+  --working-streak 3 --min-platforms 3 --require-workday \
+  --captcha-burst 3 --captcha-cooldown-s 180
+# Attended headed + live monitor (preferred):
+skyvern_runtime/venv/bin/python scripts/fastfill/run_headed_cycle_with_monitor.py \
+  --limit 4 --working-streak 3 --min-platforms 3 --require-workday
+# Equivalent:
+skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --phase train --mode attended \
+  --with-monitor --limit 4 --working-streak 3 --min-platforms 3 --require-workday
+skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --status
+```
+
+Decisions: `scripts/fastfill/learning_store/improvement_decisions.jsonl`.

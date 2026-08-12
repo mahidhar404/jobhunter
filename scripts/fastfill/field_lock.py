@@ -20,7 +20,7 @@ from typing import Any
 
 # Once any identity for these types is locked, every identity of that type
 # is treated as locked (page-singleton widgets — resume, etc.).
-SINGLETON_LOCK_TYPES = frozenset({"RESUME_UPLOAD"})
+SINGLETON_LOCK_TYPES = frozenset({"RESUME_UPLOAD", "WORKED_HERE_BEFORE", "HOW_HEARD"})
 
 
 def field_identity_key(
@@ -175,6 +175,87 @@ class FieldLockSession:
             {"action": "proceed"|"lock_skip", "key": str, "thrash": bool, ...}
         """
         ft = (field_type or "").strip().upper()
+        # Prior-employer radios: lock is page-singleton — flash must not retouch
+        # under a different label key (Sandoz "employed by a Sandoz Company?").
+        try:
+            from field_map import WORKED_HERE_BEFORE as WHB, is_worked_here_label
+
+            wh_locked = WHB in self.locked_types()
+            if wh_locked and (
+                ft == WHB
+                or is_worked_here_label(label or "")
+                or "candidateispreviousworker" in (selector or "").lower()
+            ):
+                entry = next(
+                    (e for e in self._locks.values() if e.field_type == WHB),
+                    None,
+                )
+                k = (
+                    entry.key
+                    if entry is not None
+                    else field_identity_key(
+                        field_type=WHB,
+                        label=label,
+                        selector=selector,
+                        automation_id=automation_id or "worked_here_before",
+                        field_id=field_id,
+                    )
+                )
+                self.note_retouch(k)
+                return {
+                    "action": "lock_skip",
+                    "key": k,
+                    "thrash": True,
+                    "thrash_retouches": self.thrash_retouches,
+                    "readback": entry.readback if entry else None,
+                    "locked_via": entry.via if entry else None,
+                    "attempt_count": self._attempt_counts.get(k, 0),
+                    "singleton_type": WHB,
+                }
+        except Exception:
+            pass
+        # How-heard: one chip per page — block alias/fiber/Flash revisits on any variant.
+        try:
+            from field_map import HOW_HEARD as HH
+
+            hh_locked = HH in self.locked_types()
+            aid_l = (automation_id or field_id or "").lower()
+            sel_l = (selector or "").lower()
+            lab_l = (label or "").lower()
+            if hh_locked and (
+                ft == HH
+                or aid_l in ("how_heard", "source--source", "source")
+                or "source--source" in sel_l
+                or re.search(r"how\s+did\s+you\s+hear|where\s+did\s+you\s+hear", lab_l)
+            ):
+                entry = next(
+                    (e for e in self._locks.values() if e.field_type == HH),
+                    None,
+                )
+                k = (
+                    entry.key
+                    if entry is not None
+                    else field_identity_key(
+                        field_type=HH,
+                        label=label,
+                        selector=selector,
+                        automation_id=automation_id or "how_heard",
+                        field_id=field_id,
+                    )
+                )
+                self.note_retouch(k)
+                return {
+                    "action": "lock_skip",
+                    "key": k,
+                    "thrash": True,
+                    "thrash_retouches": self.thrash_retouches,
+                    "readback": entry.readback if entry else None,
+                    "locked_via": entry.via if entry else None,
+                    "attempt_count": self._attempt_counts.get(k, 0),
+                    "singleton_type": HH,
+                }
+        except Exception:
+            pass
         # Resume (and other singletons): any prior lock for the type blocks
         # every selector/label variant — same class of thrash as how-heard.
         if ft in SINGLETON_LOCK_TYPES and ft in self.locked_types():

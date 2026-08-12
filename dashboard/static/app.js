@@ -4065,6 +4065,34 @@ async function pollStatus() {
   } catch (e) { /* ignore */ }
 }
 
+async function pollFillMetrics() {
+  try {
+    const res = await fetch("/api/metrics/timeline");
+    if (!res.ok) return;
+    const data = await res.json();
+    const rateEl = document.getElementById("fill-metrics-rate");
+    const ratchetEl = document.getElementById("fill-metrics-ratchet");
+    if (!rateEl || !ratchetEl) return;
+    const latest = data.latest;
+    if (!latest || latest.pass_rate == null) {
+      rateEl.textContent = "—";
+      ratchetEl.textContent = "no evals";
+      ratchetEl.dataset.ok = "";
+      return;
+    }
+    rateEl.textContent = `${Math.round(Number(latest.pass_rate) * 100)}%`;
+    const ok = !!data.ratchet_ok;
+    ratchetEl.textContent = ok ? "ratchet ok" : "ratchet FAIL";
+    ratchetEl.dataset.ok = ok ? "1" : "0";
+    const host = document.getElementById("fill-metrics");
+    if (host && Array.isArray(data.ratchet_violations) && data.ratchet_violations.length) {
+      host.title = data.ratchet_violations.join("; ");
+    } else if (host) {
+      host.title = `Eval pass-rate ratchet · n=${latest.n || 0} · ${latest.label || "eval"}`;
+    }
+  } catch (e) { /* ignore */ }
+}
+
 async function loadActivity() {
   if (!selectedId) return;
   const jobId = selectedId;
@@ -4557,12 +4585,14 @@ bindOpsChrome();
 setTimelineCollapsed(timelineCollapsed);
 poll();
 pollStatus();
+pollFillMetrics();
 loadCron();
 loadPruneSettings();
 renderDiscoverPopover(null);
 syncTestModeToggleUI();
 setInterval(poll, 3000);
 setInterval(pollStatus, 1500);
+setInterval(pollFillMetrics, 15000);
 setInterval(loadCron, 15000);
 
 

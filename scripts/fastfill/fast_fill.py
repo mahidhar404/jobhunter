@@ -75,6 +75,8 @@ from field_map import (  # noqa: E402
     ADDRESS_LINE2,
     ADDRESS_STATE,
     ADDRESS_ZIP,
+    ACCOMMODATIONS,
+    ACCOMMODATIONS_DETAILS,
     COVER_LETTER,
     CURRENT_COMPANY,
     DUMMY_PROFILE,
@@ -82,6 +84,7 @@ from field_map import (  # noqa: E402
     EDUCATION_END_YEAR,
     EDUCATION_START_YEAR,
     EMAIL,
+    EMPLOYEE_REFERRAL,
     GENDER,
     GITHUB,
     HISPANIC,
@@ -101,6 +104,7 @@ from field_map import (  # noqa: E402
     PHONE_EXTENSION,
     PORTFOLIO,
     RACE,
+    REFERRAL_EMAIL,
     RELATIVE_NAME,
     RELOCATION,
     RESUME_UPLOAD,
@@ -407,6 +411,34 @@ def _record_fill_attempt(
         pass
 
 
+def _record_playbook_success(
+    report: dict | None,
+    field_type: str | None,
+    selector: str | None,
+    meta: dict | None,
+) -> None:
+    """Best-effort playbook cache hit after a verified select succeeds."""
+    if not report or not field_type:
+        return
+    try:
+        from playbooks import detect_playbook
+        from record_replay import record_playbook_hit
+
+        m = dict(meta or {})
+        m.setdefault("platform", report.get("platform") or "")
+        pb = detect_playbook(m)
+        record_playbook_hit(
+            str(report.get("url") or ""),
+            str(report.get("platform") or "unknown"),
+            str(field_type),
+            pb,
+            selector=str(selector or ""),
+            ok=True,
+        )
+    except Exception:
+        pass
+
+
 def _field_capped_unfillable(
     report: dict | None,
     *,
@@ -453,7 +485,25 @@ async def _locator_already_correct(
 
     For Places/Location comboboxes, accept committed ``City, State, Country``
     lines matching dummy aliases (Airwallex Springfield thrash fix).
+
+    Select / date / salary types never soft-skip on empty or placeholder
+    commit (commit-verify contract).
     """
+    _COMMIT_STRICT = frozenset(
+        {
+            SALARY_EXPECTED,
+            SALARY_CURRENT,
+            SCHOOL,
+            DEGREE,
+            "HOW_HEARD",
+            "WORK_AUTH",
+            "SPONSORSHIP",
+            "GENDER",
+            "RACE",
+            "VETERAN",
+            "DISABILITY",
+        }
+    )
     try:
         from verified_select import (
             is_location_field,
@@ -510,6 +560,8 @@ async def _locator_already_correct(
                     return True, rb_loc
                 if _value_matches_readback(str(intended), rb_loc):
                     return True, rb_loc
+            if field_type in _COMMIT_STRICT or locish:
+                return False, rb_loc or ""
         # Combobox / react-select input: climb to committed display
         if is_combo:
             try:
@@ -534,6 +586,11 @@ async def _locator_already_correct(
         rb = await _read_locator_value(loc)
     except Exception:
         return False, ""
+    # Blank salary / school / degree — never already_correct
+    if field_type in _COMMIT_STRICT and (
+        not rb or is_empty_ui_value(rb) or not str(rb).strip()
+    ):
+        return False, rb or ""
     if _value_matches_readback(str(intended), rb):
         return True, rb or ""
     return False, rb or ""
@@ -968,6 +1025,36 @@ async def run_inpage_flash_leftovers(
                 "essay": essayish,
             }
         )
+        try:
+            from field_lock import lock_verified_field
+
+            lock_verified_field(
+                report,
+                {
+                    "type": ftype,
+                    "label": label,
+                    "selector": sel,
+                    "ok": True,
+                    "verified": True,
+                    "readback": (readback or "")[:120],
+                    "value": str(val)[:120],
+                    "via": via,
+                },
+                field_type=ftype,
+                label=label,
+                selector=sel,
+                readback=(readback or "")[:120],
+                via=via,
+            )
+        except Exception:
+            pass
+        if "verified_select" in str(via):
+            _record_playbook_success(
+                report,
+                ftype,
+                sel,
+                {"label": label, "type": ftype, "platform": report.get("platform")},
+            )
 
     for row in leftovers:
         try:
@@ -1021,6 +1108,163 @@ async def run_inpage_flash_leftovers(
         if row_type and row_type not in ("TEXT", "TEXTAREA", "SELECT", "SELECT-ONE", "COMBOBOX"):
             ftype = row_type
         sel = row.get("selector") or ""
+        # Sandoz / Owens: prior-employer radios must classify + respect singleton lock.
+        try:
+            from field_map import is_worked_here_label
+
+            if is_worked_here_label(
+                label,
+                name=str(row.get("name") or fake.get("name") or ""),
+                automation_id=str(row.get("automation_id") or ""),
+            ) or "candidateispreviousworker" in sel.lower():
+                ftype = WORKED_HERE_BEFORE
+        except Exception:
+            pass
+        try:
+            from leftover_miss_scan import _verified_worked_here
+
+            if ftype == WORKED_HERE_BEFORE and _verified_worked_here(report):
+                attempted.append(
+                    {
+                        **row,
+                        "ok": True,
+                        "verified": True,
+                        "skipped": True,
+                        "skipped_already_correct": True,
+                        "reason": "worked_here_already_verified",
+                        "readback": "No",
+                    }
+                )
+                try:
+                    note_step(
+                        report,
+                        action="skip_already_correct",
+                        field_type=WORKED_HERE_BEFORE,
+                        label=label[:80],
+                        reason="worked_here_already_verified",
+                        via="inpage_flash",
+                    )
+                except Exception:
+                    pass
+                continue
+        except Exception:
+            pass
+        # Workday prior-worker: use pack radio helper (never flash-native on value=true).
+        if ftype == WORKED_HERE_BEFORE and str(report.get("platform") or "").lower() == "workday":
+            try:
+                from exp_workday_selectors import _fill_radio_yes_no
+
+                wh_val = str(values.get(WORKED_HERE_BEFORE) or "No")
+                rr = await _fill_radio_yes_no(page, "worked_here_before", wh_val)
+                if rr.get("verified"):
+                    _record_ok(
+                        label=label or "worked_here_before",
+                        ftype=WORKED_HERE_BEFORE,
+                        val=wh_val,
+                        sel=str(rr.get("selector") or sel or "worked_here_before"),
+                        readback=str(rr.get("readback") or wh_val),
+                        essayish=False,
+                        via="inpage_flash_workday_radio",
+                        extra={"mode": rr.get("mode")},
+                    )
+                    continue
+            except Exception:
+                pass
+        # HOW_HEARD / source--source: singleton lock + chip probe — never Flash revisit.
+        try:
+            from exp_workday_selectors import _probe_how_heard_already_committed
+            from fill_verify import how_heard_candidates
+
+            is_hh = (
+                ftype == HOW_HEARD
+                or str(row.get("automation_id") or "").lower()
+                in ("how_heard", "source--source", "source")
+                or "source--source" in sel.lower()
+                or re.search(r"how\s+did\s+you\s+hear|where\s+did\s+you\s+hear", label, re.I)
+            )
+            if is_hh:
+                ftype = HOW_HEARD
+                hh_cands = how_heard_candidates(values)
+                keep_hh = await _probe_how_heard_already_committed(page, hh_cands)
+                if keep_hh is not None:
+                    attempted.append(
+                        {
+                            **row,
+                            "ok": True,
+                            "verified": True,
+                            "skipped": True,
+                            "skipped_already_correct": True,
+                            "reason": "how_heard_already_committed",
+                            "readback": keep_hh.get("readback"),
+                        }
+                    )
+                    continue
+        except Exception:
+            pass
+        # Field lock: never reopen a commit-verified select (Capco referral=No thrash)
+        try:
+            from field_lock import gate_field_action, get_field_locks, resolve_lock_report
+
+            g = gate_field_action(
+                report, field_type=ftype, label=label, selector=sel
+            )
+            if g and g.get("action") == "lock_skip":
+                attempted.append(
+                    {
+                        **row,
+                        "ok": True,
+                        "verified": True,
+                        "skipped": True,
+                        "skipped_locked": True,
+                        "skipped_already_correct": True,
+                        "reason": "field_locked_skip",
+                        "readback": g.get("readback"),
+                    }
+                )
+                try:
+                    note_step(
+                        report,
+                        action="lock_skip",
+                        field_type=ftype or "",
+                        label=label[:80],
+                        after=str(g.get("readback") or "")[:120],
+                        via="inpage_flash",
+                        reason="field_locked_skip",
+                        extra={"thrash_retouch": True},
+                    )
+                except Exception:
+                    pass
+                continue
+            # Soft identity: same policy type already locked (referral=No revisit)
+            sess = get_field_locks(resolve_lock_report(report))
+            if (
+                sess is not None
+                and ftype
+                and ftype
+                in (
+                    "EMPLOYEE_REFERRAL",
+                    "WORKED_HERE_BEFORE",
+                    "ACCOMMODATIONS",
+                    "RACE",
+                )
+                and ftype in sess.locked_types()
+            ):
+                sess.note_retouch(
+                    sess.identity_key(field_type=ftype, label=label, selector=sel)
+                )
+                attempted.append(
+                    {
+                        **row,
+                        "ok": True,
+                        "verified": True,
+                        "skipped": True,
+                        "skipped_locked": True,
+                        "reason": "field_locked_skip",
+                    }
+                )
+                continue
+        except Exception:
+            pass
         # Optional short blanks (Phone Extension / middle name): never essay reclaim.
         if (
             ftype in OPTIONAL_LEAVE_BLANK_TYPES
@@ -1405,28 +1649,83 @@ async def run_inpage_flash_leftovers(
                 else:
                     still.append(row)
             elif itype in ("checkbox", "radio"):
-                # radio/checkbox — click matching option label
+                # radio/checkbox — click matching option; verify commit (aria-checked OK)
                 try:
-                    parent = loc.locator(
-                        "xpath=ancestor::fieldset[1]|ancestor::div[1]"
+                    want = str(val).strip().lower()
+                    bool_val = (
+                        "false"
+                        if want in ("no", "false", "n", "0")
+                        else "true"
                     )
-                    opt = parent.get_by_label(
-                        re.compile(re.escape(str(val)[:40]), re.I)
-                    )
-                    if await opt.count() == 0:
-                        opt = page.get_by_label(
+                    clicked = False
+                    if "candidateispreviousworker" in sel.lower() or ftype == WORKED_HERE_BEFORE:
+                        target = page.locator(
+                            f'input[name="candidateIsPreviousWorker"][value="{bool_val}"]'
+                        ).first
+                        if await target.count() > 0:
+                            try:
+                                await target.scroll_into_view_if_needed()
+                            except Exception:
+                                pass
+                            try:
+                                await target.check(timeout=2500, force=True)
+                            except Exception:
+                                await target.click(timeout=2500, force=True)
+                            clicked = True
+                            sel = f'input[name="candidateIsPreviousWorker"][value="{bool_val}"]'
+                    if not clicked:
+                        parent = loc.locator(
+                            "xpath=ancestor::fieldset[1]|ancestor::div[1]"
+                        )
+                        opt = parent.get_by_label(
                             re.compile(re.escape(str(val)[:40]), re.I)
                         )
-                    await opt.first.click(timeout=2500)
-                    _record_ok(
-                        label=label,
-                        ftype=ftype,
-                        val=str(val),
-                        sel=sel,
-                        readback=str(val),
-                        essayish=False,
-                        via=f"{via_base}_native",
+                        if await opt.count() == 0:
+                            opt = page.get_by_label(
+                                re.compile(re.escape(str(val)[:40]), re.I)
+                            )
+                        await opt.first.click(timeout=2500)
+                        clicked = True
+                    verified = await page.evaluate(
+                        """(args) => {
+                          const wantNo = args.wantNo;
+                          const name = args.name;
+                          if (name) {
+                            const radios = [...document.querySelectorAll(
+                              'input[type="radio"][name="' + name + '"]')];
+                            const picked = radios.find(r =>
+                              r.checked || r.getAttribute('aria-checked') === 'true');
+                            if (!picked) return false;
+                            const pv = (picked.value || '').toLowerCase();
+                            if (wantNo) return pv === 'false' || pv === 'no' || pv === '0';
+                            return pv === 'true' || pv === 'yes' || pv === '1';
+                          }
+                          return !!document.querySelector(
+                            'input[type="radio"]:checked, input[type="radio"][aria-checked="true"], '
+                            + '[role="radio"][aria-checked="true"]');
+                        }""",
+                        {
+                            "wantNo": want in ("no", "false", "n", "0"),
+                            "name": "candidateIsPreviousWorker"
+                            if (
+                                "candidateispreviousworker" in sel.lower()
+                                or ftype == WORKED_HERE_BEFORE
+                            )
+                            else "",
+                        },
                     )
+                    if verified:
+                        _record_ok(
+                            label=label,
+                            ftype=ftype,
+                            val=str(val),
+                            sel=sel,
+                            readback=str(val),
+                            essayish=False,
+                            via=f"{via_base}_native",
+                        )
+                    else:
+                        still.append({**row, "reason": "radio_unverified_after_click"})
                 except Exception as e:
                     still.append({**row, "error": str(e)[:100]})
             else:
@@ -1539,6 +1838,9 @@ _GH_SELECT_FIELD_TYPES = frozenset({
     "BACKGROUND_CHECK",
     "MARKETING_CONSENT",
     "TERMS_CONSENT",
+    "ACCOMMODATIONS",
+    "ACCOMMODATIONS_DETAILS",
+    "EMPLOYEE_REFERRAL",
     "TALENT_HUB",
     "SERVICE_MEMBER",
     "AGE_RANGE",
@@ -1665,7 +1967,9 @@ async def _should_use_gh_select(
             return False
 
     if platform in ("ashby", "lever"):
-        # Ashby/Lever use fill_custom_widget / platform widgets — never GH react-select.
+        # Lever card react-selects (Lindblad how-heard) use GH-style controls.
+        if platform == "lever" and ftype == HOW_HEARD and label:
+            return await _label_has_select_control()
         return False
     if platform not in ("greenhouse", "unknown", ""):
         # Other ATS: only when GH react-select DOM is present for this label
@@ -2890,6 +3194,21 @@ GENERIC_REQUIRED_EMPTY_JS = """() => {
       // Committed when single-value text present OR phone-country flag shown
       if ((shown && !isEmptyUi(shown)) || hasFlag) return;
     }
+    // Workday how-heard multiSelect: filter input stays empty while chip chrome
+    // shows "1 item selected, LinkedIn" in the formField wrap (Sandoz thrash fix).
+    const wdSrc = el.closest(
+      '[data-automation-id="formField-source"], [data-automation-id="formField-how_heard"], '
+      + '[data-automation-id="formField-howDidYouHear"], [data-automation-id="formField-candidateSource"]'
+    );
+    if (wdSrc) {
+      const wrapText = (wdSrc.innerText || wdSrc.textContent || '').toLowerCase();
+      if (/[1-9]\\d*\\s+items?\\s+selected/.test(wrapText)) return;
+      if (!wrapText.includes('0 items selected') && (
+        wrapText.includes('linkedin') || wrapText.includes('indeed')
+        || wrapText.includes('builtin') || wrapText.includes('glassdoor')
+        || wrapText.includes('company website') || wrapText.includes('job board')
+      )) return;
+    }
     const v = (el.value || '').trim();
     const ph = (el.placeholder || '').trim();
     // Placeholder-only UI (Ashby "Type here...") counts as empty even if value
@@ -3777,8 +4096,18 @@ async def _demote_filled_against_required_empty(page, report: dict, values: dict
             if not _gh_resume_verified_for_reassert(report):
                 continue
             if f.get("reason") in ("already_correct_skip", "already_correct_keep"):
-                still.append(f)
-                continue
+                # Combobox/salary claims can lie after SPA wipe — still live-verify.
+                mode = str(f.get("mode") or "")
+                ftype_chk = str(f.get("type") or "")
+                if mode not in ("gh_select", "select", "combobox", "typable_dropdown") and ftype_chk not in (
+                    SALARY_EXPECTED,
+                    SALARY_CURRENT,
+                    SCHOOL,
+                    DEGREE,
+                ):
+                    still.append(f)
+                    continue
+                # Fall through to live re-read below for select-like fields.
         if f.get("mode") == "file" or f.get("type") == RESUME_UPLOAD:
             still.append(f)
             continue
@@ -3943,12 +4272,22 @@ async def _demote_filled_against_required_empty(page, report: dict, values: dict
                 ):
                     # Remount: control found but display blank — trust prior verified
                     # Decline/commit (same rule as text fills). Do not false-demote RACE.
-                    if not should_demote_claimed_text_fill(
-                        sel_found=True,
-                        live_rb=live_rb or "",
-                        intended=intended,
-                        claimed_rb=claimed_rb,
-                        field_type=ftype_s,
+                    # Salary/school/degree MUST demote — Tax Relief SPA wipe left
+                    # already_correct_skip claims while the select showed blank.
+                    force_blank_demote = ftype_s in (
+                        SALARY_EXPECTED,
+                        SALARY_CURRENT,
+                        SCHOOL,
+                        DEGREE,
+                    )
+                    if (not force_blank_demote) and (
+                        not should_demote_claimed_text_fill(
+                            sel_found=True,
+                            live_rb=live_rb or "",
+                            intended=intended,
+                            claimed_rb=claimed_rb,
+                            field_type=ftype_s,
+                        )
                     ):
                         kept = dict(f)
                         kept["reason"] = "already_correct_keep"
@@ -4336,6 +4675,35 @@ async def try_advance_if_page_complete(page, report: dict | None = None) -> dict
             )
         return result
 
+    # Never ADVANCE with an open listbox / mid-widget prompt (GH react-select,
+    # portal listbox, Workday searchSelect). Match Workday settle gate.
+    try:
+        from verified_select import settle_before_advance
+
+        settle = await settle_before_advance(page, report)
+        if settle.get("still_open"):
+            result["advance_blocked_reason"] = "listbox_still_open"
+            result["attempted"] = False
+            after = await capture_step_fingerprint(page)
+            result["fingerprint_after"] = after["fingerprint"]
+            if report is not None:
+                report["listbox_open"] = True
+                report["mid_widget_open"] = True
+                report["advance_blocked_reason"] = "listbox_still_open"
+                report["blocker"] = report.get("blocker") or "page_incomplete"
+                if not report.get("verdict") or report.get("verdict") == "SUCCESS":
+                    report["verdict"] = "FAIL"
+                note_advance_result(
+                    report,
+                    fingerprint_before=before["fingerprint"],
+                    fingerprint_after=after["fingerprint"],
+                    next_existed=True,
+                    advance_clicked=False,
+                )
+            return result
+    except Exception as e:
+        result.setdefault("settle_error", str(e)[:80])
+
     target = advance_cands[0]
     result["attempted"] = True
     ok = await gated_click_control(page, target)
@@ -4418,6 +4786,14 @@ async def try_advance_if_page_complete(page, report: dict | None = None) -> dict
     except Exception as e:
         _log.debug("validation banner probe after advance failed: %s", e)
     return result
+
+
+# Heavy client-rendered ATS SPAs where the apply form hydrates async even on a
+# direct deep-link with no entry click — give the long SPA wait before declaring
+# generic_dom_no_fields (SmartRecruiters IE11/unsupported + slow React hydrate).
+_SPA_LONG_WAIT_PLATFORMS = frozenset(
+    {"smartrecruiters", "phenom", "workable", "gem", "dover", "jobvite"}
+)
 
 
 async def entry_prepass(page, *, max_clicks: int = 3, report: dict | None = None) -> dict:
@@ -4582,11 +4958,17 @@ async def entry_prepass(page, *, max_clicks: int = 3, report: dict | None = None
         from iframe_ctx import wait_for_form_spa
 
         clicked_apply = bool(report.get("clicked"))
+        # Known heavy SPAs (SmartRecruiters/Phenom/Workday-hosted) hydrate the
+        # apply form async even on a direct deep-link with no entry click, so
+        # give them the long wait too — otherwise a robust form is mislabeled
+        # generic_dom_no_fields. Honest residual only after this real wait.
+        _spa_platform = str(report.get("platform") or "").lower()
+        long_spa = clicked_apply or _spa_platform in _SPA_LONG_WAIT_PLATFORMS
         spa = await wait_for_form_spa(
             active,
             evidence_selectors=FORM_FIELD_SELECTORS,
             # Phenom / company career SPAs often need longer after Apply→/apply
-            timeout_ms=20000 if clicked_apply else 3500,
+            timeout_ms=20000 if long_spa else 3500,
             poll_ms=900,
             clicked_apply=clicked_apply,
         )
@@ -5032,6 +5414,14 @@ def _already_types_skip_refill(report: dict) -> set[str]:
         pass
     for t in _demoted_refill_types(report):
         already.discard(t)
+    # Leftover types must be re-attempted even if a twin filled row still claims
+    # already_correct_skip (Tax Relief salary ghost leftover).
+    for u in report.get("leftovers") or []:
+        if not isinstance(u, dict):
+            continue
+        t = u.get("type")
+        if t:
+            already.discard(str(t))
     return already
 
 
@@ -6139,12 +6529,16 @@ async def sweep_gh_unfilled_selects(page, values: dict, report: dict | None = No
         # re-filling it would just re-clobber Hispanic).
         if ftype == RACE and (report or {}).get("coupled_ethnicity_heals"):
             continue
-        # Always retry SPONSORSHIP/WORK_AUTH/MARKETING if still showing Select…
+        # Always retry SPONSORSHIP/WORK_AUTH/MARKETING/GENDER if still showing Select…
+        # Capco: two Gender widgets — filling one must not skip the sibling blank.
         if ftype in already_types and ftype not in (
             SPONSORSHIP,
             WORK_AUTH,
             BACKGROUND_CHECK,
             MARKETING_CONSENT,
+            GENDER,
+            EMPLOYEE_REFERRAL,
+            ACCOMMODATIONS,
         ):
             continue
         val = values.get(ftype) if ftype else None
@@ -6153,12 +6547,16 @@ async def sweep_gh_unfilled_selects(page, values: dict, report: dict | None = No
             WORK_AUTH,
             BACKGROUND_CHECK,
             MARKETING_CONSENT,
+            EMPLOYEE_REFERRAL,
+            ACCOMMODATIONS,
         ):
             val = {
                 SPONSORSHIP: "No",
                 WORK_AUTH: "Yes",
                 BACKGROUND_CHECK: "Yes",
                 MARKETING_CONSENT: "No",
+                EMPLOYEE_REFERRAL: "No",
+                ACCOMMODATIONS: "No",
             }.get(ftype, "")
         if not (val or "").strip():
             continue
@@ -6224,6 +6622,19 @@ async def sweep_gh_unfilled_selects(page, values: dict, report: dict | None = No
         if row.get("verified"):
             already_labels.add(lab_key)
             already_types.add(ftype)
+            try:
+                from field_lock import lock_verified_field
+
+                lock_verified_field(
+                    report,
+                    row,
+                    field_type=ftype,
+                    label=label,
+                    readback=shown[:120],
+                    via="gh_select_sweep",
+                )
+            except Exception:
+                pass
 
     rows.sort(
         key=lambda r: (
@@ -6874,6 +7285,17 @@ def _skip_already_filled_type(
     return False
 
 
+def _sponsorship_intent_satisfied(filled_types: set[str]) -> bool:
+    """True when the no-sponsorship intent is already committed by a sibling field.
+
+    Dummy needs no visa/sponsorship, so a verified SPONSORSHIP, VISA_STATUS, or
+    WORK_AUTH answer already expresses that decision. A second SPONSORSHIP field
+    with no real react-select control is a phantom/duplicate — suppress it
+    instead of thrashing Flash on a control that does not exist.
+    """
+    return bool(filled_types & {SPONSORSHIP, VISA_STATUS, WORK_AUTH})
+
+
 def _radio_group_name(field: dict, sel: str) -> str:
     """Resolve the shared radio ``name=`` for a choice group.
 
@@ -7116,6 +7538,21 @@ async def fill_from_extract(
                 if result.get("ok"):
                     if ftype == HOW_HEARD and "other" in (result.get("picked") or "").lower():
                         how_heard_picked_other = True
+                    _record_playbook_success(
+                        report,
+                        ftype,
+                        sel,
+                        {
+                            "label": label,
+                            "tag": field.get("tag"),
+                            "role": field.get("role"),
+                            "type": field.get("type") or field.get("html_type"),
+                            "class": field.get("class") or field.get("className"),
+                            "name": field.get("name"),
+                            "id": field.get("id"),
+                            "platform": platform,
+                        },
+                    )
                     filled.append(
                         {
                             "via": "gh_select",
@@ -7144,11 +7581,35 @@ async def fill_from_extract(
                 # Free-text salary / clearance often misrouted: no select__control →
                 # fall through to text fill instead of leaving blank.
                 err = str(result.get("error") or "")
-                if (
-                    ftype in _GH_SELECT_OPTIONAL_DOM_TYPES
-                    or "no select__control" in err.lower()
+                no_control = (
+                    "no select__control" in err.lower()
                     or "select__control" in err.lower()
-                ) and sel:
+                )
+                # SPONSORSHIP phantom: a second sponsorship-family field with no
+                # react-select control, when sponsorship intent is already
+                # satisfied (SPONSORSHIP / VISA_STATUS / WORK_AUTH filled). Suppress
+                # rather than thrash Flash on a control that does not exist
+                # (Capco cycle: duplicate SPONSORSHIP leftover, "no select__control").
+                if (
+                    no_control
+                    and ftype == SPONSORSHIP
+                    and _sponsorship_intent_satisfied(filled_types)
+                ):
+                    filled.append(
+                        {
+                            "via": "gh_select",
+                            "layer": layer,
+                            "label": label[:60],
+                            "type": ftype,
+                            "ok": True,
+                            "verified": True,
+                            "skipped_already_correct": True,
+                            "reason": "sponsorship_phantom_suppressed",
+                        }
+                    )
+                    filled_types.add(ftype)
+                    continue
+                if (ftype in _GH_SELECT_OPTIONAL_DOM_TYPES or no_control) and sel:
                     pass  # fall through to locator text path below
                 else:
                     leftovers.append(
@@ -7209,6 +7670,29 @@ async def fill_from_extract(
                 "radio_group",
                 "checkbox_group",
             ) or dom_input_type in ("checkbox", "radio")
+
+            # Lever: sponsorship is Yes/No radio — skip textarea misextracts (Lindblad field7)
+            if (
+                platform == "lever"
+                and ftype in (SPONSORSHIP, VISA_STATUS)
+                and not is_choice_widget
+                and tag in ("textarea", "input")
+                and dom_input_type not in ("radio", "checkbox")
+            ):
+                continue
+
+            if not value_ok_for_field_shape(str(val), label=label, ftype=ftype):
+                leftovers.append(
+                    {
+                        "index": idx,
+                        "label": label[:100],
+                        "type": ftype,
+                        "selector": sel,
+                        "reason": "crossfill_shape_rejected",
+                        "flash_candidate": True,
+                    }
+                )
+                continue
 
             if (
                 _is_custom_widget(field)
@@ -7430,24 +7914,38 @@ async def fill_from_extract(
                         osel = opt.get("selector") or ""
                         if not osel and not olab:
                             continue
-                        match = (
-                            cand_l == olab.lower()
-                            or cand_l == oval.lower()
-                            or cand_l in olab.lower()
-                            or olab.lower() in cand_l
-                        )
-                        if not match and ftype in (
-                            "GENDER",
-                            "HISPANIC",
-                            "RACE",
-                            "VETERAN",
-                            "DISABILITY",
-                            "SPONSORSHIP",
-                        ):
-                            # Decline ↔ "Decline to self-identify" / citizenship
-                            from gh_select import _score_option
+                        from gh_select import _score_option
 
+                        _EEO_RADIO_TYPES = frozenset(
+                            {
+                                "GENDER",
+                                "HISPANIC",
+                                "RACE",
+                                "VETERAN",
+                                "DISABILITY",
+                                "LGBTQIA",
+                                "AGE_RANGE",
+                            }
+                        )
+                        if ftype in _EEO_RADIO_TYPES or ftype == "SPONSORSHIP":
                             match = _score_option(olab or oval, cand) >= 55
+                        else:
+                            match = (
+                                cand_l == olab.lower()
+                                or cand_l == oval.lower()
+                                or cand_l in olab.lower()
+                                or olab.lower() in cand_l
+                            )
+                            if not match and ftype in (
+                                "GENDER",
+                                "HISPANIC",
+                                "RACE",
+                                "VETERAN",
+                                "DISABILITY",
+                                "SPONSORSHIP",
+                                "LGBTQIA",
+                            ):
+                                match = _score_option(olab or oval, cand) >= 55
                         if not match:
                             continue
                         try:
@@ -8323,7 +8821,7 @@ async def _resume_fill_after_hold(
             wd_more = await workday_two_phase_on_page(
                 page,
                 values,
-                click_create_account=False,
+                click_create_account=True,
                 do_apply_clicks=False,
                 resume_pdf=getattr(identity, "resume_pdf", None),
                 step_report=report,
@@ -8597,6 +9095,9 @@ async def _reclaim_deterministic_leftovers(
             "resume_missing",
             "resume_upload_failed",
             "unverified_readback",
+            # Skip claims that still appear as leftovers (SPA wipe / soft match lie)
+            "already_correct_skip",
+            "already_correct_keep",
         )
         or (
             # Catalog id leftovers even when flash_candidate was cleared
@@ -10042,6 +10543,79 @@ async def run_fast_fill_async(
                 report["platform_from_fill_url"] = True
                 report["coverage_path"] = coverage_path_for(platform)
 
+            # Auth gate BEFORE selector pack when Sign-in / login wall is up
+            # (Stripe dashboard.stripe.com/login, MyGreenhouse, iCIMS /login).
+            # Dummy runs must click Create account — never fill GH #email on Sign in.
+            skip_app_pack = False
+            auth_gate_ran = False
+            try:
+                from iframe_ctx import (
+                    consume_create_account_sentinel,
+                    run_auth_gate_before_pack,
+                )
+
+                force_ca = consume_create_account_sentinel()
+                auth_pre = await run_auth_gate_before_pack(
+                    page,
+                    values,
+                    fill_target=fill_ctx,
+                    max_rounds=2,
+                    force=force_ca,
+                )
+                report["auth_gate"] = {
+                    k: v
+                    for k, v in auth_pre.items()
+                    if k != "fill_target"
+                }
+                if auth_pre.get("ran"):
+                    auth_gate_ran = True
+                    note_step(
+                        report,
+                        action="auth_gate",
+                        via="run_auth_gate_before_pack",
+                        reason=(
+                            f"wall={auth_pre.get('is_sign_in_wall')} "
+                            f"skip_pack={auth_pre.get('skip_app_pack')} "
+                            f"ca={((auth_pre.get('create_account') or {}).get('clicked') or {})}"
+                        ),
+                    )
+                if auth_pre.get("fill_target") is not None:
+                    fill_ctx = auth_pre["fill_target"]
+                skip_app_pack = bool(auth_pre.get("skip_app_pack"))
+                auth = auth_pre.get("iframe_login") or {}
+                for f in auth.get("filled") or []:
+                    if f.get("ok"):
+                        report["filled"].append(f)
+                report["iframe_login"] = auth if auth else report.get("iframe_login")
+                if auth_pre.get("blocker") and not report.get("blocker"):
+                    report["blocker"] = auth_pre["blocker"]
+                if auth.get("blocker") and not report.get("blocker"):
+                    report["blocker"] = auth["blocker"]
+                for blk in (
+                    auth_pre.get("blocker"),
+                    auth.get("blocker"),
+                ):
+                    if blk in CAPTCHA_BLOCKERS:
+                        outcome = await handle_captcha_blocker(
+                            page,
+                            report,
+                            str(blk),
+                            headed=is_headed,
+                            captcha_wait=do_captcha_wait,
+                            timeout_s=captcha_timeout_s,
+                        )
+                        if outcome == "continued":
+                            if report.get("iframe_login"):
+                                report["iframe_login"]["blocker"] = None
+                                report["iframe_login"]["captcha_human_solved"] = True
+                            if report.get("auth_gate"):
+                                report["auth_gate"]["blocker"] = None
+                        break
+            except Exception as e:
+                report.setdefault("errors", []).append(
+                    {"auth_gate_before_pack": str(e)[:160]}
+                )
+
             # Resume-first: upload/parse the resume BEFORE the deterministic fill
             # layers so a parsing ATS (Ashby, some Greenhouse/Workable) populates
             # fields for us, and so a later parse can't wipe values we already
@@ -10050,11 +10624,19 @@ async def run_fast_fill_async(
             # is present, and the existing post-extract ensure_resume_uploaded call
             # then no-ops or completes it (e.g. when the field lives in an apply
             # iframe that only resolves after the pack).
-            if report.get("blocker") not in (
-                "captcha",
-                "email_verify",
-                "akamai",
-                "cloudflare",
+            # Skip on pure Sign-in walls — pack would thrash #email on Stripe login.
+            pack_filled: list[dict] = []
+            if (
+                not skip_app_pack
+                and report.get("blocker")
+                not in (
+                    "captcha",
+                    "email_verify",
+                    "akamai",
+                    "cloudflare",
+                    "login_wall",
+                    "sign_in_only_no_create",
+                )
             ):
                 try:
                     await ensure_resume_uploaded(fill_ctx, values, report)
@@ -10063,22 +10645,30 @@ async def run_fast_fill_async(
                         {"ensure_resume_first": str(e)[:160]}
                     )
 
-            if fill_ctx is page:
-                pack_filled, fill_ctx = await apply_selector_pack_anywhere(
-                    page, platform, values, report=report
-                )
-            else:
-                pack_filled = await apply_selector_pack(
-                    fill_ctx, platform, values, report=report
-                )
-                if not pack_filled:
-                    # Hybrid hosts: also try top page
-                    more = await apply_selector_pack(
+                if fill_ctx is page:
+                    pack_filled, fill_ctx = await apply_selector_pack_anywhere(
                         page, platform, values, report=report
                     )
-                    pack_filled.extend(more)
-            report["filled"].extend(pack_filled)
-            emit_filled_rows_as_steps(report, phase="selector_pack")
+                else:
+                    pack_filled = await apply_selector_pack(
+                        fill_ctx, platform, values, report=report
+                    )
+                    if not pack_filled:
+                        # Hybrid hosts: also try top page
+                        more = await apply_selector_pack(
+                            page, platform, values, report=report
+                        )
+                        pack_filled.extend(more)
+                report["filled"].extend(pack_filled)
+                emit_filled_rows_as_steps(report, phase="selector_pack")
+            elif skip_app_pack:
+                report["selector_pack_skipped"] = "sign_in_wall"
+                note_step(
+                    report,
+                    action="selector_pack_skipped",
+                    via="auth_gate",
+                    reason="pure_sign_in_wall",
+                )
             # Incremental experience after pack (same-run Flash grounding);
             # selector_stats + demotion happen once at finalize via learn_from_report.
             try:
@@ -10120,7 +10710,11 @@ async def run_fast_fill_async(
                         )
             except Exception as e:
                 report.setdefault("errors", []).append({"pack_learn": str(e)[:80]})
-            if platform in _MIDTIER_COMBO_PLATFORMS and not report.get("blocker"):
+            if (
+                not skip_app_pack
+                and platform in _MIDTIER_COMBO_PLATFORMS
+                and not report.get("blocker")
+            ):
                 try:
                     mt_rows = await sweep_midtier_policy_comboboxes(
                         fill_ctx, values, report=report
@@ -10155,62 +10749,87 @@ async def run_fast_fill_async(
                 for f in pack_filled
                 if f.get("ok") is not False and f.get("type")
             }
+            for f in report.get("filled") or []:
+                if f.get("ok") is not False and f.get("type"):
+                    already.add(f["type"])
 
-            # iCIMS / iframe auth gate: dummy email+password + gated Create/Sign In
-            try:
-                from iframe_ctx import continue_iframe_login
+            # Late iframe auth (only if pre-pack gate did not already handle login)
+            if not auth_gate_ran and not skip_app_pack:
+                try:
+                    from iframe_ctx import continue_iframe_login
 
-                auth = await continue_iframe_login(
-                    page, values, fill_target=fill_ctx, max_rounds=2
-                )
-                report["iframe_login"] = {
-                    k: v
-                    for k, v in auth.items()
-                    if k != "fill_target"
-                }
-                for f in auth.get("filled") or []:
-                    if f.get("ok") and f.get("type") and f.get("type") not in already:
-                        report["filled"].append(f)
-                        already.add(f["type"])
-                    elif f.get("ok") and f.get("type") in already:
-                        # Prefer verified iframe_login row when pack already filled
-                        report["filled"].append(f)
-                if auth.get("blocker") and not report.get("blocker"):
-                    report["blocker"] = auth["blocker"]
-                if auth.get("blocker") in CAPTCHA_BLOCKERS:
-                    outcome = await handle_captcha_blocker(
-                        page,
-                        report,
-                        str(auth["blocker"]),
-                        headed=is_headed,
-                        captcha_wait=do_captcha_wait,
-                        timeout_s=captcha_timeout_s,
+                    auth = await continue_iframe_login(
+                        page, values, fill_target=fill_ctx, max_rounds=2
                     )
-                    if outcome == "continued":
-                        auth["blocker"] = None
-                        if report.get("iframe_login"):
-                            report["iframe_login"]["blocker"] = None
-                            report["iframe_login"]["captcha_human_solved"] = True
-                if auth.get("fill_target") is not None:
-                    fill_ctx = auth["fill_target"]
-                    report["fill_context"]["url"] = (auth.get("final_url") or "")[:200]
-                    report["fill_context"]["post_login"] = True
-                # After auth ADVANCE, re-run pack on new form (profile fields)
-                if auth.get("reached_app_fields") or (
-                    auth.get("ran") and not auth.get("blocker")
-                ):
-                    more_pack = await apply_selector_pack(fill_ctx, platform, values)
-                    for f in more_pack:
-                        if f.get("type") and f.get("type") in already:
-                            continue
-                        if f.get("ok"):
+                    report["iframe_login"] = {
+                        k: v
+                        for k, v in auth.items()
+                        if k != "fill_target"
+                    }
+                    for f in auth.get("filled") or []:
+                        if f.get("ok") and f.get("type") and f.get("type") not in already:
                             report["filled"].append(f)
-                            if f.get("type"):
-                                already.add(f["type"])
-            except Exception as e:
-                report.setdefault("errors", []).append(
-                    {"iframe_login": str(e)[:160]}
-                )
+                            already.add(f["type"])
+                        elif f.get("ok") and f.get("type") in already:
+                            # Prefer verified iframe_login row when pack already filled
+                            report["filled"].append(f)
+                    if auth.get("blocker") and not report.get("blocker"):
+                        report["blocker"] = auth["blocker"]
+                    if auth.get("blocker") in CAPTCHA_BLOCKERS:
+                        outcome = await handle_captcha_blocker(
+                            page,
+                            report,
+                            str(auth["blocker"]),
+                            headed=is_headed,
+                            captcha_wait=do_captcha_wait,
+                            timeout_s=captcha_timeout_s,
+                        )
+                        if outcome == "continued":
+                            auth["blocker"] = None
+                            if report.get("iframe_login"):
+                                report["iframe_login"]["blocker"] = None
+                                report["iframe_login"]["captcha_human_solved"] = True
+                    if auth.get("fill_target") is not None:
+                        fill_ctx = auth["fill_target"]
+                        report["fill_context"]["url"] = (auth.get("final_url") or "")[:200]
+                        report["fill_context"]["post_login"] = True
+                    # After auth ADVANCE, re-run pack on new form (profile fields)
+                    if auth.get("reached_app_fields") or (
+                        auth.get("ran") and not auth.get("blocker")
+                    ):
+                        more_pack = await apply_selector_pack(fill_ctx, platform, values)
+                        for f in more_pack:
+                            if f.get("type") and f.get("type") in already:
+                                continue
+                            if f.get("ok"):
+                                report["filled"].append(f)
+                                if f.get("type"):
+                                    already.add(f["type"])
+                except Exception as e:
+                    report.setdefault("errors", []).append(
+                        {"iframe_login": str(e)[:160]}
+                    )
+            elif auth_gate_ran and not skip_app_pack:
+                # Pre-pack gate reached app fields — pack may still need a pass
+                auth = report.get("iframe_login") or {}
+                if auth.get("reached_app_fields") or (
+                    auth.get("ran") and not auth.get("blocker") and not pack_filled
+                ):
+                    try:
+                        more_pack = await apply_selector_pack(
+                            fill_ctx, platform, values, report=report
+                        )
+                        for f in more_pack:
+                            if f.get("type") and f.get("type") in already:
+                                continue
+                            if f.get("ok"):
+                                report["filled"].append(f)
+                                if f.get("type"):
+                                    already.add(f["type"])
+                    except Exception as e:
+                        report.setdefault("errors", []).append(
+                            {"post_auth_pack": str(e)[:160]}
+                        )
 
             try:
                 from record_replay import apply_replay_map
@@ -10248,7 +10867,14 @@ async def run_fast_fill_async(
                 report.setdefault("errors", []).append({"replay": str(e)[:160]})
 
             # Skip heavy extract when still blocked (after optional captcha wait)
-            if report.get("blocker") in ("captcha", "email_verify", "akamai", "cloudflare"):
+            if report.get("blocker") in (
+                "captcha",
+                "email_verify",
+                "akamai",
+                "cloudflare",
+                "login_wall",
+                "sign_in_only_no_create",
+            ):
                 report["extracted_count"] = report.get("extracted_count") or 0
                 report["leftovers"].append(
                     {
@@ -10256,6 +10882,7 @@ async def run_fast_fill_async(
                         "label": "auth_gate_blocked",
                         "flash_candidate": False,
                         "iframe_login": report.get("iframe_login"),
+                        "auth_gate": report.get("auth_gate"),
                     }
                 )
             else:
@@ -10646,7 +11273,16 @@ async def run_fast_fill_async(
                     }
                 )
 
-            # Generic multipage: ADVANCE only via page-complete gate (never incomplete).
+            # Honesty first: demote claimed fills that are live-empty BEFORE ADVANCE
+            # (commit-verify contract — never advance on soft-skip lies).
+            try:
+                await _demote_filled_against_required_empty(fill_ctx, report, values)
+            except Exception as e:
+                report.setdefault("errors", []).append(
+                    {"demote_required_empty": str(e)[:160]}
+                )
+
+            # Generic multipage: verify → ADVANCE → wait remount → repeat (bounded).
             # Skip when blocked / no fields / no filled progress — FAIL-before-ADVANCE.
             if (
                 not report.get("blocker")
@@ -10654,23 +11290,61 @@ async def run_fast_fill_async(
                 and report.get("extracted_count", 0) > 0
             ):
                 try:
-                    adv = await try_advance_if_page_complete(fill_ctx, report)
-                    report["page_advance"] = {
-                        k: v for k, v in adv.items() if k != "clicks"
-                    }
-                    report["page_advance"]["clicks"] = adv.get("clicks") or []
+                    import os as _os
+
+                    from page_progress import capture_step_fingerprint
+
+                    max_advances = int(_os.environ.get("FASTFILL_MAX_ADVANCES", "4"))
+                    advance_rounds: list[dict] = []
+                    last_clicks: list = []
+                    for _adv_i in range(max(1, max_advances)):
+                        try:
+                            await _demote_filled_against_required_empty(
+                                fill_ctx, report, values
+                            )
+                        except Exception:
+                            pass
+                        before_fp = (
+                            await capture_step_fingerprint(fill_ctx)
+                        ).get("fingerprint")
+                        adv = await try_advance_if_page_complete(fill_ctx, report)
+                        last_clicks = list(adv.get("clicks") or [])
+                        advance_rounds.append(
+                            {k: v for k, v in adv.items() if k != "clicks"}
+                        )
+                        if not adv.get("advanced"):
+                            break
+                        changed = False
+                        for _ in range(20):
+                            await fill_ctx.wait_for_timeout(150)
+                            after_fp = (
+                                await capture_step_fingerprint(fill_ctx)
+                            ).get("fingerprint")
+                            if after_fp and after_fp != before_fp:
+                                changed = True
+                                break
+                        if not changed:
+                            break
+                        report["multipage_steps"] = int(
+                            report.get("multipage_steps") or 0
+                        ) + 1
+                    report["page_advance"] = (
+                        dict(advance_rounds[-1]) if advance_rounds else {}
+                    )
+                    report["page_advance"]["clicks"] = last_clicks
+                    report["page_advance"]["rounds"] = len(advance_rounds)
+                    report["page_advance_rounds"] = advance_rounds
                 except Exception as e:
                     report.setdefault("errors", []).append(
                         {"page_advance": str(e)[:160]}
                     )
 
-            # Honesty: demote claimed fills that page-complete still sees empty
-            # (Ashby zip remount / Type here... placeholder).
+            # Post-advance honesty pass (SPA wipe after Next)
             try:
                 await _demote_filled_against_required_empty(fill_ctx, report, values)
             except Exception as e:
                 report.setdefault("errors", []).append(
-                    {"demote_required_empty": str(e)[:160]}
+                    {"demote_required_empty_post_advance": str(e)[:160]}
                 )
 
             # Late resume retry if field still empty after prefill
@@ -10982,7 +11656,7 @@ async def run_fast_fill_async(
                     wd_more = await workday_two_phase_on_page(
                         page,
                         values,
-                        click_create_account=False,
+                        click_create_account=True,
                         do_apply_clicks=False,
                         resume_pdf=identity.resume_pdf,
                         step_report=report,
@@ -11272,6 +11946,38 @@ def _run_vision_judge_finalize(report: dict) -> None:
         report.setdefault("errors", []).append({"vision_judge": str(e)[:120]})
 
 
+def _norm_field_identity_key(raw: str) -> str:
+    """Collapse Workday automation-id / label / selector name variants to one key."""
+    s = (raw or "").strip().lower()
+    if not s:
+        return ""
+    s = re.sub(r"section", "", s)
+    s = re.sub(r"[^a-z0-9]", "", s)
+    return s
+
+
+def _field_identity_keys(row: dict) -> set[str]:
+    """Normalized identity keys for leftover ↔ verified-fill reconciliation."""
+    keys: set[str] = set()
+    for attr in ("label", "automation_id", "type", "selector"):
+        val = row.get(attr)
+        if isinstance(val, str) and val.strip():
+            nk = _norm_field_identity_key(val)
+            if nk:
+                keys.add(nk)
+    sel = row.get("selector") or ""
+    if isinstance(sel, str):
+        for m in re.finditer(r'name=["\']?([^"\']+)["\']?', sel, re.I):
+            nk = _norm_field_identity_key(m.group(1))
+            if nk:
+                keys.add(nk)
+        for m in re.finditer(r"data-automation-id=['\"]([^'\"]+)['\"]", sel, re.I):
+            nk = _norm_field_identity_key(m.group(1))
+            if nk:
+                keys.add(nk)
+    return keys
+
+
 def _finalize(report: dict, *, close_step_log: bool = False) -> dict:
     # Safety invariants — every report JSON must carry these.
     report["never_submit"] = True
@@ -11359,6 +12065,9 @@ def _finalize(report: dict, *, close_step_log: bool = False) -> dict:
             for f in filled_ok
             if f.get("selector")
         }
+        _verified_identity_keys: set[str] = set()
+        for f in filled_ok:
+            _verified_identity_keys |= _field_identity_keys(f)
 
         def _leftover_is_verified_filled(u: dict) -> bool:
             lab = (u.get("label") or "").strip().lower()[:80]
@@ -11366,6 +12075,9 @@ def _finalize(report: dict, *, close_step_log: bool = False) -> dict:
             if lab and lab in _verified_labels:
                 return True
             if sel and sel in _verified_selectors:
+                return True
+            u_keys = _field_identity_keys(u)
+            if u_keys and u_keys & _verified_identity_keys:
                 return True
             return False
 

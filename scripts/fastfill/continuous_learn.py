@@ -584,20 +584,19 @@ def similar_leftover_answers(
     for lab in want_labels:
         want_tokens.update(t for t in lab.split() if len(t) >= 4)
 
-    # Semantic recall (default ON; disable via FASTFILL_ANSWER_MEMORY=0 /
-    # FASTFILL_SEMANTIC_MEMORY=0 / master FASTFILL_SEMANTIC_MATCH=0). When on, a
-    # past answer also matches if its label is a paraphrase (semantic_sim >=
-    # threshold) of any wanted label, and matches are ranked by that similarity.
-    # Disabled => byte-for-byte the prior lexical behavior (first-come, early
-    # break). The Phase 6 A/B (answer_memory_ab.py) quantifies the live lift.
-    # Default ON. Disabled if the master switch (FASTFILL_SEMANTIC_MATCH) or
-    # either answer-memory flag (FASTFILL_ANSWER_MEMORY / FASTFILL_SEMANTIC_MEMORY,
-    # the alias) is set to "0". Only widens recall to paraphrases; matches are
-    # still sanitized experience values and ranked below exact/type matches.
+    # Semantic recall (default OFF until Phase 6 A/B promotes it). Enable with
+    # FASTFILL_ANSWER_MEMORY=1 or FASTFILL_SEMANTIC_MEMORY=1. Also off when the
+    # master FASTFILL_SEMANTIC_MATCH=0. When on, a past answer also matches if
+    # its label is a paraphrase (semantic_sim >= threshold) of any wanted label.
+    # Disabled => prior lexical behavior (type / exact / token overlap only).
+    # Only widens leftover-prompt recall; never overrides Layer 0/1 fills.
+    # Matches are still sanitized experience values and ranked below type/exact.
     _sem_on = (
         os.environ.get("FASTFILL_SEMANTIC_MATCH", "1") != "0"
-        and os.environ.get("FASTFILL_ANSWER_MEMORY", "1") != "0"
-        and os.environ.get("FASTFILL_SEMANTIC_MEMORY", "1") != "0"
+        and (
+            os.environ.get("FASTFILL_ANSWER_MEMORY", "0") == "1"
+            or os.environ.get("FASTFILL_SEMANTIC_MEMORY", "0") == "1"
+        )
     )
     try:
         _sem_thresh = float(os.environ.get("FASTFILL_SEMANTIC_MEMORY_THRESHOLD", "0.72") or 0.72)
@@ -628,6 +627,31 @@ def similar_leftover_answers(
             continue
         if val.startswith("{{") and val.endswith("}}"):
             continue
+        # Field-kind sanitizers — never inject job-board tokens into phone/country
+        # or Indeed into education, etc.
+        try:
+            from verified_select import (
+                _NON_COUNTRY_SEARCH_RE,
+                is_safe_phone_country_search,
+            )
+
+            if ftype in ("PHONE_COUNTRY_CODE", "ADDRESS_COUNTRY"):
+                if not is_safe_phone_country_search(val) or _NON_COUNTRY_SEARCH_RE.search(
+                    val
+                ):
+                    continue
+            elif ftype and ftype not in ("HOW_HEARD", "SOURCE") and _NON_COUNTRY_SEARCH_RE.search(
+                val
+            ):
+                # Job-board leaf only belongs on how-heard/source
+                if re.search(
+                    r"\b(indeed|linkedin|glassdoor|monster|ziprecruiter)\b",
+                    val,
+                    re.I,
+                ):
+                    continue
+        except Exception:
+            pass
         match = False
         rank = 0.0
         if ftype and ftype in want_types:
@@ -638,6 +662,11 @@ def similar_leftover_answers(
             toks = set(label.split())
             if len(toks & want_tokens) >= 2:
                 match, rank = True, 1.0  # token overlap
+        # Require type agreement when both sides typed — block cross-kind poison
+        if match and ftype and want_types and ftype not in want_types:
+            # Token/label-only hit with mismatched type → reject
+            if rank < 2.0:
+                match = False
         if _sem_sim is not None and label and want_labels_list:
             sem_score = max((_sem_sim(label, wl) for wl in want_labels_list), default=0.0)
             if not match and sem_score >= _sem_thresh:

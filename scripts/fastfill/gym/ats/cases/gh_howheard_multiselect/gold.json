@@ -1,0 +1,13 @@
+{
+  "fields": [
+    {
+      "key": "how_heard",
+      "selector": "#hh-control .select__multi-value__label",
+      "committed": "LinkedIn",
+      "required": true
+    }
+  ],
+  "footer_kind": "FINAL",
+  "expect_advance": false,
+  "notes": "HOW_HEARD react-select: priority LinkedIn→Indeed→… commits first matching leaf via chip. Dummy 'Internet job board' must NOT zero the menu. Empty form fails gold (no chip)."
+}

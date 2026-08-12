@@ -320,9 +320,26 @@ def main() -> int:
         action="store_true",
         help="Exit 1 on safety fails; exit 2 on fill-quality SLO fails (reachable rows).",
     )
+    ap.add_argument(
+        "--force-live",
+        action="store_true",
+        help="Bypass offline→canary live_gate (emergency only).",
+    )
     args = ap.parse_args()
     if args.strict:
         args.strict_safety = True
+
+    # Offline-first: refuse live ATS until canary armed (unless --force-live)
+    try:
+        from live_gate import require_live_allowed
+
+        require_live_allowed(force=bool(args.force_live))
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"[eval_suite] live_gate check error: {e}", flush=True)
+        if not args.force_live:
+            raise SystemExit(f"[eval_suite] live_gate unavailable and not --force-live: {e}")
 
     suite = _load_suite()
     urls = list(suite.get("urls") or [])
@@ -434,9 +451,19 @@ def main() -> int:
     # Phase 5: append one reduced row to the metrics timeline (best-effort;
     # never let observability break the eval run).
     try:
-        from metrics_timeline import append_row
+        from metrics_timeline import append_row, load_timeline, ratchet_check
 
-        append_row(summary_path, label="eval_suite")
+        row = append_row(summary_path, label="eval_suite")
+        if args.strict:
+            hist = load_timeline()
+            # Exclude the row we just appended
+            ok, violations = ratchet_check(row, hist[:-1] if hist else [])
+            if not ok:
+                print(
+                    "STRICT RATCHET FAIL — " + "; ".join(violations),
+                    flush=True,
+                )
+                return 2
     except Exception:
         pass
     print(

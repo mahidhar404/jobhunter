@@ -15,10 +15,62 @@ from resume_upload import is_resume_attachment_row
 from verified_select import (
     how_heard_source_committed,
     is_multiselect_uncommitted,
+    is_placeholder_select_value,
     is_uncommitted_filter_text,
     soft_value_match,
     value_matches_readback,
 )
+
+
+def _how_heard_chip_matches_intent(rb: str, *, intended: str, picked: str | None) -> bool:
+    """True when readback chip names picked/intended leaf — not an unrelated source."""
+    if picked and soft_value_match(str(picked), rb):
+        return True
+    if (
+        intended
+        and not is_how_heard_category_option(intended)
+        and (
+            soft_value_match(intended, rb)
+            or intended.lower() in rb.lower()
+        )
+    ):
+        return True
+    return False
+
+
+def _gh_select_readback_verified(row: dict, rb: str) -> bool:
+    """gh_select rows must show committed display matching aliases — never click-claimed."""
+    display = rb or str(row.get("shown") or row.get("picked") or "").strip()
+    if not display or is_placeholder_select_value(display):
+        return False
+    ftype = str(row.get("type") or "")
+    aliases = row.get("aliases_tried")
+    if isinstance(aliases, list) and aliases:
+        cands = [str(a) for a in aliases if a]
+    elif ftype in (HOW_HEARD, "how_heard"):
+        cands = how_heard_candidates({HOW_HEARD: row.get("value") or ""})
+    else:
+        val = str(row.get("value") or row.get("picked") or "")
+        cands = [val] if val else []
+        picked = str(row.get("picked") or "")
+        if picked and picked not in cands:
+            cands.append(picked)
+    if not cands:
+        return bool(display)
+    try:
+        from gh_select import _score_option
+        from verified_select import select_readback_ok
+
+        return select_readback_ok(
+            display,
+            cands,
+            picked=str(row.get("picked") or ""),
+            score_fn=_score_option,
+            min_score=50,
+        )
+    except Exception:
+        val = str(row.get("value") or row.get("picked") or "")
+        return bool(val and value_matches_readback(val, display, mode="fill"))
 
 
 def is_verified_fill_row(row: dict | None) -> bool:
@@ -56,16 +108,39 @@ def is_verified_fill_row(row: dict | None) -> bool:
         # Multi-select: filter token ("Internet") without committed chip is not a fill.
         intended_hh = str(row.get("value") or row.get("picked") or row.get("option_text") or "")
         picked_hh = row.get("picked") or row.get("option_text")
-        from verified_select import multiselect_has_chip
+        from verified_select import (
+            is_how_heard_category_option,
+            looks_like_phone_country_or_address_chip,
+            multiselect_has_chip,
+        )
 
         if how_heard_source_committed(rb, [intended_hh, str(picked_hh or "")]):
-            # Chip chrome or concrete committed token — stop alias thrash
-            return True
-        if multiselect_has_chip(rb) and (
-            row.get("option_clicked") or picked_hh or row.get("verified") is True
+            # Chip chrome must name intended/picked leaf — unrelated chips are not fills.
+            if _how_heard_chip_matches_intent(
+                rb, intended=intended_hh, picked=str(picked_hh or "") or None
+            ):
+                return True
+        if (
+            multiselect_has_chip(rb)
+            and picked_hh
+            and _how_heard_chip_matches_intent(
+                rb, intended=intended_hh, picked=str(picked_hh)
+            )
         ):
-            # Fiber/searchSelect committed a chip — accept even if label chrome wraps it
             return True
+        # Exact leaf token alone (Indeed == Indeed) is keepable — some tenants
+        # show the leaf without "N items selected" chrome after commit. Never
+        # accept category headers or phone/country dial chips as how-heard.
+        for token in (str(picked_hh or "").strip(), intended_hh.strip()):
+            if (
+                token
+                and rb
+                and rb.strip().lower() == token.lower()
+                and not is_how_heard_category_option(token)
+                and not looks_like_phone_country_or_address_chip(rb)
+                and len(rb.strip()) >= 3
+            ):
+                return True
         # Option clicked + picked soft-matches intended + display confirms pick.
         # Never accept bare filter fragments ("Internet" for "Internet job board").
         if (
@@ -115,7 +190,7 @@ def is_verified_fill_row(row: dict | None) -> bool:
         if mode in ("yesno", "radio", "checkbox"):
             return bool(row.get("picked") or row.get("readback") or rb)
         if via == "gh_select":
-            return True
+            return _gh_select_readback_verified(row, rb)
         if via.startswith("deterministic_reclaim") and (
             row.get("picked") or rb or row.get("shown")
         ):
@@ -159,7 +234,7 @@ def is_verified_fill_row(row: dict | None) -> bool:
     if via == "gh_select" and row.get("ok") is not False and (
         row.get("shown") or row.get("picked")
     ):
-        return True
+        return _gh_select_readback_verified(row, rb)
     # Workday pack rows often use status=filled without ok=True
     if row.get("status") == "filled" and row.get("verified") is not False:
         return bool(rb) and rb.lower() not in ("select one", "select")
@@ -188,15 +263,34 @@ HOW_HEARD_CATEGORY_LABELS = frozenset(
     }
 )
 
-# Concrete source leaves — prefer these over category headers.
-HOW_HEARD_LEAF_LABELS = (
-    "Indeed",
-    "LinkedIn",
-    "Company Website",
-    "Google For Jobs",
-    "CareerBuilder",
-    "Other",
+# Single source of truth: job-board / career-site priority (first match wins).
+# Each entry: (canonical label, match aliases for enumerated options).
+HOW_HEARD_SOURCE_PRIORITY: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("LinkedIn", ("linkedin", "linked in")),
+    ("Indeed", ("indeed",)),
+    ("BuiltIn", ("builtin", "built in", "built-in", "builtin.com")),
+    ("Glassdoor", ("glassdoor",)),
+    ("ZipRecruiter", ("ziprecruiter", "zip recruiter", "zip-recruiter")),
+    ("Monster", ("monster",)),
+    ("CareerBuilder", ("careerbuilder", "career builder")),
+    (
+        "Company Website",
+        (
+            "company website",
+            "company site",
+            "company web site",
+            "career site",
+            "careers site",
+            "employer website",
+            "corporate website",
+        ),
+    ),
+    ("Job Board", ("job board", "internet job board", "online job board")),
+    ("Other", ("other",)),
 )
+
+# Back-compat alias for callers that imported HOW_HEARD_LEAF_LABELS.
+HOW_HEARD_LEAF_LABELS = tuple(label for label, _ in HOW_HEARD_SOURCE_PRIORITY)
 
 
 def is_how_heard_category_option(text: str | None) -> bool:
@@ -214,16 +308,84 @@ def is_how_heard_category_option(text: str | None) -> bool:
     return False
 
 
-def how_heard_leaf_candidates(values: dict[str, Any] | None = None) -> list[str]:
-    """Concrete source leaves only (Indeed / LinkedIn / …) — never category headers."""
-    heard = str((values or {}).get(HOW_HEARD) or "").strip()
+def _norm_how_heard_text(text: str | None) -> str:
+    return " ".join(str(text or "").strip().lower().split())
+
+
+def how_heard_priority_labels(*, include_categories: bool = False) -> list[str]:
+    """Ordered canonical labels from ``HOW_HEARD_SOURCE_PRIORITY``."""
     out: list[str] = []
-    if heard and not is_how_heard_category_option(heard):
-        out.append(heard)
-    for alt in HOW_HEARD_LEAF_LABELS:
-        if alt.lower() not in {c.lower() for c in out}:
-            out.append(alt)
-    return out or ["Indeed"]
+    for canonical, _ in HOW_HEARD_SOURCE_PRIORITY:
+        if not include_categories and is_how_heard_category_option(canonical):
+            if _norm_how_heard_text(canonical) != "job board":
+                continue
+        if canonical.lower() not in {c.lower() for c in out}:
+            out.append(canonical)
+    return out
+
+
+def how_heard_option_matches_priority(priority_label: str, option_text: str) -> bool:
+    """True when *option_text* matches a priority entry (canonical or alias)."""
+    opt = _norm_how_heard_text(option_text)
+    if not opt:
+        return False
+    want = _norm_how_heard_text(priority_label)
+    for canonical, patterns in HOW_HEARD_SOURCE_PRIORITY:
+        if _norm_how_heard_text(canonical) != want:
+            continue
+        canon_norm = _norm_how_heard_text(canonical)
+        if opt == canon_norm:
+            return True
+        for pat in patterns:
+            pn = _norm_how_heard_text(pat)
+            if pn == opt or pn in opt or opt in pn:
+                return True
+        if soft_value_match(canonical, option_text):
+            return True
+        for pat in patterns:
+            if soft_value_match(pat, option_text):
+                return True
+        return False
+    return False
+
+
+def pick_how_heard_from_options(
+    options: list[str],
+    *,
+    include_categories: bool = False,
+) -> str | None:
+    """Walk source priority; return the first dropdown option that matches."""
+    opts = [str(o).strip() for o in (options or []) if str(o).strip()]
+    if not opts:
+        return None
+
+    def _entry_matches(canonical: str, patterns: tuple[str, ...], opt: str) -> bool:
+        if how_heard_option_matches_priority(canonical, opt):
+            return True
+        on = _norm_how_heard_text(opt)
+        for pat in patterns:
+            pn = _norm_how_heard_text(pat)
+            if pn == on or pn in on or on in pn:
+                return True
+        return False
+
+    for canonical, patterns in HOW_HEARD_SOURCE_PRIORITY:
+        for opt in opts:
+            if not include_categories and is_how_heard_category_option(opt):
+                # GH may commit "Job Board" as a chip; Workday categories are nav-only.
+                if _norm_how_heard_text(canonical) not in (
+                    "job board",
+                    "internet job board",
+                ):
+                    continue
+            if _entry_matches(canonical, patterns, opt):
+                return opt
+    return None
+
+
+def how_heard_leaf_candidates(values: dict[str, Any] | None = None) -> list[str]:
+    """Priority-ordered concrete sources — never bare category headers."""
+    return how_heard_priority_labels(include_categories=False) or ["LinkedIn"]
 
 
 def how_heard_category_candidates(values: dict[str, Any] | None = None) -> list[str]:
@@ -239,9 +401,9 @@ def how_heard_category_candidates(values: dict[str, Any] | None = None) -> list[
 
 
 def how_heard_candidates(values: dict[str, Any] | None = None) -> list[str]:
-    """Ordered HOW_HEARD labels — **leaves first**, categories last (navigation only).
+    """Ordered HOW_HEARD labels — **priority leaves first**, categories last.
 
-    Never bare ``Internet`` (filter text). Prefer Indeed/LinkedIn over
+    Never bare ``Internet`` (filter text). Prefer LinkedIn/Indeed over
     ``Internet job board`` / ``Job Board`` so hierarchical tenants (Walmart)
     do not lock onto a category header as if it were a committed chip.
     """
@@ -255,4 +417,4 @@ def how_heard_candidates(values: dict[str, Any] | None = None) -> list[str]:
             continue
         if s.lower() not in {c.lower() for c in out}:
             out.append(s)
-    return out or ["Indeed"]
+    return out or ["LinkedIn"]

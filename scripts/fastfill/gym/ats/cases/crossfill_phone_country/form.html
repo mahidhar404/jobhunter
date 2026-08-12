@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — Phone Country ≠ Job Board</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 560px; margin: 2rem auto; }
+    label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+    .field { margin-bottom: 1.25rem; }
+    .select__control {
+      border: 1px solid #ccc; border-radius: 4px; padding: 8px 12px;
+      cursor: pointer; background: #fff; min-height: 20px;
+    }
+    .select__menu {
+      position: absolute; background: #fff; border: 1px solid #ccc;
+      border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.12); z-index: 9999;
+      min-width: 260px; max-height: 200px; overflow-y: auto;
+    }
+    .select__option { padding: 8px 12px; cursor: pointer; }
+    .select__option:hover { background: #deebff; }
+    .select__placeholder { color: #999; }
+    button { margin-top: 1.5rem; padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <h1>Contact &amp; Source — Cross-fill Guard</h1>
+  <p>Applicant: Test Dummy · randommail6969@gmail.com</p>
+
+  <div class="field" data-automation-id="formField-phoneCountry">
+    <label for="phone-country-control">Phone Country Code*</label>
+    <div class="select__container" style="position:relative">
+      <div id="phone-country-control" class="select__control" role="combobox"
+           aria-expanded="false" tabindex="0" data-field-type="PHONE_COUNTRY">
+        <div class="select__placeholder">Select country code…</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="field" data-automation-id="formField-source">
+    <label for="how-heard-control">How Did You Hear About Us?*</label>
+    <div class="select__container" style="position:relative">
+      <div id="how-heard-control" class="select__control" role="combobox"
+           aria-expanded="false" tabindex="0" data-field-type="HOW_HEARD">
+        <div class="select__placeholder">Select source…</div>
+      </div>
+    </div>
+  </div>
+
+  <button type="button" id="btn-next">Next</button>
+
+  <script>
+    (function () {
+      var PHONE_OPTS = [
+        'United States (+1)',
+        'United Kingdom (+44)',
+        'Canada (+1)',
+        'India (+91)'
+      ];
+      var HEARD_OPTS = ['LinkedIn', 'Indeed', 'Job Board', 'Employee Referral'];
+
+      function wire(controlId, options, committedDefault) {
+        var control = document.getElementById(controlId);
+        var container = control.parentNode;
+        var menu = null;
+        function render(label) {
+          control.innerHTML = '<div class="select__single-value">' + label + '</div>';
+          control.dataset.committed = label;
+          control.setAttribute('data-committed', label);
+        }
+        function close() {
+          if (menu) { menu.remove(); menu = null; }
+          control.setAttribute('aria-expanded', 'false');
+        }
+        function open() {
+          close();
+          menu = document.createElement('div');
+          menu.className = 'select__menu';
+          menu.setAttribute('role', 'listbox');
+          options.forEach(function (o, i) {
+            var d = document.createElement('div');
+            d.className = 'select__option';
+            d.setAttribute('role', 'option');
+            d.textContent = o;
+            d.addEventListener('mousedown', function (e) {
+              e.preventDefault(); render(o); close();
+            });
+            menu.appendChild(d);
+          });
+          container.appendChild(menu);
+          control.setAttribute('aria-expanded', 'true');
+        }
+        control.addEventListener('click', function () { if (menu) close(); else open(); });
+        if (committedDefault) render(committedDefault);
+      }
+
+      wire('phone-country-control', PHONE_OPTS, null);
+      wire('how-heard-control', HEARD_OPTS, null);
+
+      document.getElementById('btn-next').addEventListener('click', function (e) {
+        e.preventDefault();
+        alert('Gym fixture — advance blocked.');
+      });
+    })();
+  </script>
+</body>
+</html>

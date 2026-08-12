@@ -1,0 +1,13 @@
+{
+  "fields": [
+    {
+      "key": "school",
+      "selector": "#school-control",
+      "committed": "University of Cambridge",
+      "required": true
+    }
+  ],
+  "footer_kind": "FINAL",
+  "expect_advance": false,
+  "notes": "React-select combobox: gold expects committed display label after option click, not filter text."
+}

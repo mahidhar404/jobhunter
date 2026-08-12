@@ -33,16 +33,17 @@ def test_typable_dropdown_prefers_fiber_for_how_heard():
     assert "HOW_HEARD" in src
 
 
-def test_how_heard_fill_uses_fiber_mode():
+def test_how_heard_fill_uses_hierarchical_mode():
     import exp_workday_selectors as wd
 
     src = inspect.getsource(wd._fill_how_heard)
-    assert "fiber_search_select" in src
-    assert 'mode": "fiber_search_select"' in src or "fiber_search_select" in src
+    assert "fill_hierarchical_how_heard" in src
+    assert "hierarchical_how_heard" in src
     # Stop alias thrash once chip committed
     assert "_probe_how_heard_already_committed" in src
     assert "already_correct_keep" in src
     assert "settle_open_listbox" in src
+    assert "readback_mismatch_picked" in src
 
 
 def test_how_heard_probe_keep_exported():
@@ -60,7 +61,7 @@ def test_how_heard_probe_keep_exported():
         "How Did You Hear About Us?*\n1 item selected, Indeed",
         ["Indeed", "LinkedIn"],
     )
-    assert how_heard_source_committed("1 item selected, Other", ["Indeed"])
+    assert not how_heard_source_committed("1 item selected, Other", ["Indeed"])
     assert not how_heard_source_committed("0 items selected", ["Indeed"])
     assert not how_heard_source_committed("", ["Indeed"])
 

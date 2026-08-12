@@ -1,0 +1,6 @@
+{
+  "id": "workday_multipage",
+  "platform": "workday",
+  "fail_class": "multipage_advance",
+  "description": "Workday-style multipage wizard; step 1 has required first name and Next (ADVANCE footer)."
+}

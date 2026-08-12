@@ -60,18 +60,36 @@ def test_json_llm_retries_until_valid(monkeypatch):
             return _chat("garbage not json")
         return _chat('{"value": "Master\'s Degree", "confidence": 0.8}')
 
+    monkeypatch.setattr(fl, "call_flash_instructor_llm", lambda *a, **k: None)
     monkeypatch.setattr(fl, "_post_chat_completion", fake_post)
     out = fl.call_flash_json_llm("q", retries=2)
     assert out == {"value": "Master's Degree", "confidence": 0.8}
     assert calls["n"] == 2
 
 
+def test_json_llm_prefers_instructor_when_available(monkeypatch):
+    monkeypatch.setattr(
+        fl,
+        "call_flash_instructor_llm",
+        lambda *a, **k: {"value": "Via Instructor", "confidence": 0.95},
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("urllib path used while Instructor succeeded")
+
+    monkeypatch.setattr(fl, "_post_chat_completion", boom)
+    out = fl.call_flash_json_llm("q", retries=1)
+    assert out == {"value": "Via Instructor", "confidence": 0.95}
+
+
 def test_json_llm_none_when_all_attempts_bad(monkeypatch):
+    monkeypatch.setattr(fl, "call_flash_instructor_llm", lambda *a, **k: None)
     monkeypatch.setattr(fl, "_post_chat_completion", lambda payload, *, timeout=45: _chat("nope"))
     assert fl.call_flash_json_llm("q", retries=1) is None
 
 
 def test_json_llm_none_when_no_endpoint(monkeypatch):
+    monkeypatch.setattr(fl, "call_flash_instructor_llm", lambda *a, **k: None)
     monkeypatch.setattr(fl, "_post_chat_completion", lambda payload, *, timeout=45: None)
     assert fl.call_flash_json_llm("q", retries=2) is None
 

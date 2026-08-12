@@ -91,6 +91,49 @@ def test_build_value_map_matches_catalog():
             assert exp in got or got in exp or got == exp, (key, vals[key], expect)
 
 
+def test_accommodations_never_yes():
+    """Capco GH live bug: accommodations classified as TERMS_CONSENT → Yes."""
+    from field_map import build_value_map, classify_field
+    from field_map import DUMMY_PROFILE
+
+    yes_no_label = "Do you require reasonable accommodations or adjustments?*"
+    details_label = (
+        "If you answered yes to the Reasonable Adjustments question, "
+        "please provide additional details. If not, enter N/A."
+    )
+    ftype, _ = classify_field(
+        {"label": yes_no_label, "name": "", "id": "", "placeholder": ""}
+    )
+    assert ftype == "ACCOMMODATIONS", ftype
+    assert ftype != "TERMS_CONSENT"
+    details_type, _ = classify_field(
+        {"label": details_label, "name": "", "id": "", "placeholder": ""}
+    )
+    assert details_type == "ACCOMMODATIONS_DETAILS", details_type
+
+    vals = build_value_map(DUMMY_PROFILE)
+    assert vals["ACCOMMODATIONS"] == "No"
+    assert vals["ACCOMMODATIONS_DETAILS"] == "N/A"
+    assert answer_for("ACCOMMODATIONS") == "No"
+    assert answer_for("ACCOMMODATIONS_DETAILS") == "N/A"
+
+    # Select aliases must prefer No, never Yes-first for accommodations
+    cands = aliases_for("ACCOMMODATIONS", "No")
+    assert cands[0].lower().startswith("no") or cands[0].lower() == "no"
+    assert not any(c.lower() == "yes" for c in cands[:3])
+
+    # ADA policy acknowledgment still TERMS_CONSENT (Yes), not ACCOMMODATIONS
+    ack, _ = classify_field(
+        {
+            "label": "I acknowledge Capco provides reasonable accommodation under ADA",
+            "name": "",
+            "id": "",
+            "placeholder": "",
+        }
+    )
+    assert ack == "TERMS_CONSENT", ack
+
+
 def test_classify_grvty_labels():
     assert classify_field({"label": "Discipline", "name": "", "id": "", "placeholder": ""})[0] == "DISCIPLINE"
     assert (
@@ -215,6 +258,7 @@ def test_dummy_profile_eeo_policy():
 if __name__ == "__main__":
     test_catalog_covers_required_types()
     test_build_value_map_matches_catalog()
+    test_accommodations_never_yes()
     test_classify_grvty_labels()
     test_disability_prefers_no_over_decline()
     test_veteran_prefers_not_veteran_over_decline()

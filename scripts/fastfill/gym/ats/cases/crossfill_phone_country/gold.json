@@ -1,0 +1,21 @@
+{
+  "fields": [
+    {
+      "key": "phone_country",
+      "selector": "#phone-country-control",
+      "committed": "United States (+1)",
+      "required": true,
+      "notes": "Must NOT pick LinkedIn/Job Board for phone country chip."
+    },
+    {
+      "key": "how_heard",
+      "selector": "#how-heard-control",
+      "committed": "LinkedIn",
+      "required": true,
+      "notes": "Separate HOW_HEARD select — cross-fill must not swap types."
+    }
+  ],
+  "footer_kind": "ADVANCE",
+  "expect_advance": true,
+  "notes": "looks_like_phone_country_or_address_chip guards against job-board values on phone field."
+}

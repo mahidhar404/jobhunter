@@ -1,0 +1,13 @@
+{
+  "fields": [
+    {
+      "key": "first_name",
+      "selector": "#first-name",
+      "committed": "Ada",
+      "required": true
+    }
+  ],
+  "footer_kind": "ADVANCE",
+  "expect_advance": false,
+  "notes": "Workday step 1: required first name on page with Next button; step 2 hidden until advance."
+}

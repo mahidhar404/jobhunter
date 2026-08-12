@@ -10,6 +10,7 @@ answers remain Flash's job when ``--flash-leftovers`` is on.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Live DOM: unanswered choice groups + empty required selects.
@@ -32,6 +33,23 @@ UNANSWERED_CHOICE_JS = """() => {
     if (t === 'choose' || t === '—' || t === '-') return true;
     return false;
   };
+  const sanitizeLabel = (raw) => {
+    let t = String(raw || '').replace(/\\s+/g, ' ').trim();
+    t = t.replace(/\\b(current teammates|please apply via|internal career site|employee referral portal)[\\s\\S]*/i, '').trim();
+    return t.slice(0, 160);
+  };
+  const choiceGroupAnswered = (radios) => {
+    if (!radios || !radios.length) return false;
+    if (radios.some((r) => r.checked || r.getAttribute('aria-checked') === 'true')) return true;
+    const root = radios[0].closest('[data-automation-id*="formField"], fieldset, [role="radiogroup"], [role="group"]')
+      || radios[0].parentElement;
+    if (root) {
+      if (root.querySelector('input[type="radio"]:checked')) return true;
+      if (root.querySelector('[role="radio"][aria-checked="true"]')) return true;
+      if (root.querySelector('input[type="radio"][aria-checked="true"]')) return true;
+    }
+    return false;
+  };
   const labelNear = (el) => {
     const wrap = el.closest(
       '.ashby-application-form-field-entry, [class*="_fieldEntry_"], '
@@ -39,17 +57,34 @@ UNANSWERED_CHOICE_JS = """() => {
       + 'label, .application-question, .question, [class*="question"]'
     );
     let lab = '';
-    if (wrap) {
-      const L = wrap.querySelector(
-        'label.ashby-application-form-question-title, legend, '
-        + 'label[class*="_heading_"], label, [class*="question"]'
+    // Prefer fieldset / formField question text over inner Yes/No labels.
+    const fieldRoot = el.closest('[data-automation-id*="formField"], fieldset, [role="radiogroup"], [role="group"]');
+    if (fieldRoot) {
+      const leg = fieldRoot.querySelector(
+        'legend, label.ashby-application-form-question-title, '
+        + 'label[class*="_heading_"], [data-automation-id*="label"]'
       );
-      lab = ((L && (L.innerText || L.textContent)) || wrap.innerText || '').replace(/\\s+/g, ' ').trim();
+      lab = sanitizeLabel((leg && (leg.innerText || leg.textContent)) || '');
+    }
+    if (!lab && wrap) {
+      const L = wrap.querySelector(
+        'legend, label.ashby-application-form-question-title, '
+        + 'label[class*="_heading_"], [data-automation-id*="label"], label'
+      );
+      lab = sanitizeLabel((L && (L.innerText || L.textContent)) || '');
+      if (!lab || /^(yes|no)$/i.test(lab)) {
+        lab = sanitizeLabel(wrap.innerText || wrap.textContent || '');
+      }
+    }
+    if (!lab || /^(yes|no)$/i.test(lab)) {
+      if (fieldRoot) {
+        lab = sanitizeLabel(fieldRoot.innerText || fieldRoot.textContent || '');
+      }
     }
     if (!lab) {
-      lab = (el.getAttribute('aria-label') || el.name || el.id || '').trim();
+      lab = sanitizeLabel(el.getAttribute('aria-label') || el.name || el.id || '');
     }
-    return lab.slice(0, 160);
+    return lab;
   };
   const requiredish = (el, label) => {
     if (el.required || el.getAttribute('aria-required') === 'true') return true;
@@ -59,8 +94,9 @@ UNANSWERED_CHOICE_JS = """() => {
     return false;
   };
   const push = (row) => {
-    const label = String(row.label || '').replace(/\\s+/g, ' ').trim().slice(0, 160);
+    const label = sanitizeLabel(String(row.label || ''));
     if (!label) return;
+    if (/^(current teammates|please apply via)/i.test(label)) return;
     // Skip honeypot / cookie / pure consent noise that is never Flash-worthy
     const low = label.toLowerCase();
     if (/^yes$|^no$/.test(low) && low.length < 4) return;
@@ -83,7 +119,7 @@ UNANSWERED_CHOICE_JS = """() => {
       document.querySelectorAll('input[type=radio][name="' + CSS.escape(name) + '"]')
     ).filter(isVisible);
     if (!group.length) continue;
-    if (group.some((r) => r.checked)) continue;
+    if (choiceGroupAnswered(group)) continue;
     const el = group[0];
     const label = labelNear(el);
     if (!requiredish(el, label)) continue;
@@ -194,7 +230,7 @@ UNANSWERED_CHOICE_JS = """() => {
     if (selected) return;
     // Native radios inside entry already covered — skip if any radio checked
     const radios = el.querySelectorAll('input[type=radio]');
-    if (radios.length && Array.from(radios).some((r) => r.checked)) return;
+    if (radios.length && choiceGroupAnswered(Array.from(radios))) return;
     push({
       label,
       kind: 'yesno_segmented',
@@ -220,6 +256,36 @@ UNANSWERED_CHOICE_JS = """() => {
 
 def _norm_key(value: Any) -> str:
     return " ".join(str(value or "").lower().split())[:100]
+
+
+def _verified_worked_here(report: dict) -> bool:
+    """True when WORKED_HERE_BEFORE / worked_here_before was verified this run."""
+    for f in report.get("filled") or []:
+        if not isinstance(f, dict):
+            continue
+        if not (f.get("verified") or f.get("ok")):
+            continue
+        blob = " ".join(
+            [
+                str(f.get("type") or ""),
+                str(f.get("automation_id") or ""),
+                str(f.get("readback") or ""),
+            ]
+        ).lower()
+        if "worked_here" in blob or f.get("type") == "WORKED_HERE_BEFORE":
+            return True
+    return False
+
+
+def _miss_is_worked_here_question(miss: dict) -> bool:
+    lab = str(miss.get("label") or "").lower()
+    return bool(
+        re.search(
+            r"previously (been )?employed|employed by .+ previously|"
+            r"have you been employed|previously worked|worked .+ before",
+            lab,
+        )
+    )
 
 
 def leftover_identity_keys(report: dict) -> set[str]:
@@ -312,6 +378,12 @@ async def promote_l01_misses(page, report: dict) -> dict:
     """
     summary: dict[str, Any] = {"scanned": 0, "added": 0, "misses": []}
     misses = await scan_unanswered_choices(page)
+    if _verified_worked_here(report):
+        misses = [
+            m
+            for m in misses
+            if not _miss_is_worked_here_question(m)
+        ]
     summary["scanned"] = len(misses)
     summary["misses"] = [
         {"label": m.get("label"), "kind": m.get("kind"), "reason": m.get("reason")}

@@ -1,0 +1,7 @@
+{
+  "id": "false_complete_listbox_open",
+  "platform": "generic",
+  "fail_class": "false_complete_listbox",
+  "playbook": "react_select_portal",
+  "description": "Open listbox + placeholder visible; page must not claim complete until option committed and menu closed."
+}

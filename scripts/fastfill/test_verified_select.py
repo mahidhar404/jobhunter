@@ -177,7 +177,7 @@ def test_ats3_008_clear_closest_rejects_weak_scores():
 
 
 def test_ats3_013_early_unique_high_and_full_first():
-    """ATS3-013: unique high score early-exits; ATS3-008 weak floors stay."""
+    """ATS3-013: unique high score early-exits; enumerate→score is primary path."""
     import inspect
     from verified_select import (
         _early_unique_high_match,
@@ -199,9 +199,11 @@ def test_ats3_013_early_unique_high_and_full_first():
     assert clear_closest_match(weak, at_last_word=True, intent="Target University") is None
 
     src = inspect.getsource(typable_dropdown_narrow_and_click)
-    assert "full_string_first" in src or "full_first" in src
-    assert "_append_into_filter" in src
-    assert "_early_unique_high_match" in src
+    # Primary path is enumerate→score (Elanco Degree); sanitize-filter is fallback
+    assert "enumerate_then_score" in src or "pick_best_scored_option" in src
+    assert "sanitized_typeahead_token" in src
+    assert "commit_min_score_for" in src
+    assert "_early_unique_high_match" in src or "pick_best_scored_option" in src
 
 
 def test_ats3_006_fiber_js_uses_token_bound():
@@ -470,6 +472,147 @@ def test_ats2_001_placeholder_slots_preserve_locator_index():
     assert clear[0] == 2 and clear[1] == "Illinois"
 
 
+def test_enumerate_stable_options_early_exits_arrowdown():
+    """Stable short menu: one ArrowDown nudge max, not max_scrolls thrash.
+
+    Greenhouse-style fully-loaded listboxes previously re-walked A→B→C→D
+    via ArrowDown each scroll pass until max_scrolls (5–8). Enumerate must
+    stop when the unique option set stops growing, then score→one commit.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from gh_select import _score_option, aliases_for
+    from verified_select import (
+        commit_min_score_for,
+        enumerate_listbox_options,
+        pick_best_scored_option,
+    )
+
+    stable = [
+        "A.A.",
+        "Associate Degree",
+        "Bachelor's Degree",
+        "Master's Degree",
+        "Doctorate (Academic)",
+    ]
+    arrow = {"n": 0}
+
+    page = MagicMock()
+    page.wait_for_timeout = AsyncMock()
+    page.keyboard = MagicMock()
+
+    async def _arrow(key, *a, **k):
+        if key == "ArrowDown":
+            arrow["n"] += 1
+
+    page.keyboard.press = AsyncMock(side_effect=_arrow)
+
+    box = MagicMock()
+    box.count = AsyncMock(return_value=1)
+    box.evaluate = AsyncMock()
+    loc = MagicMock()
+    loc.first = box
+    page.locator = MagicMock(return_value=loc)
+
+    async def fake_wait(*a, **k):
+        return MagicMock(), list(stable)
+
+    async def _run():
+        with patch(
+            "verified_select.wait_for_option_texts", side_effect=fake_wait
+        ):
+            _opts, texts = await enumerate_listbox_options(
+                page, max_scrolls=8, timeout_ms=100
+            )
+        return texts
+
+    texts = asyncio.run(_run())
+    assert "Master's Degree" in texts
+    # Old bug: ArrowDown ≈ max_scrolls (5–8). Stable set → ≤1 nudge.
+    assert arrow["n"] <= 1, f"ArrowDown thrash: {arrow['n']} presses"
+    intended = "Master's Degree"
+    cands = aliases_for("DEGREE", intended)
+    pick = pick_best_scored_option(
+        texts,
+        cands,
+        _score_option,
+        intent=intended,
+        min_score=commit_min_score_for("DEGREE"),
+    )
+    assert pick is not None
+    assert "Master" in pick[1]
+    assert "Associate" not in pick[1]
+
+
+def test_enumerate_grows_via_arrowdown_until_stable():
+    """Virtualized: keep ArrowDown while new option texts appear; stop when flat."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from verified_select import enumerate_listbox_options
+
+    # Windows revealed one-at-a-time via ArrowDown (scrollTop ignored).
+    windows = [
+        ["A.A.", "A.S."],
+        ["A.A.", "A.S.", "Bachelor's Degree"],
+        ["A.S.", "Bachelor's Degree", "Master's Degree"],
+        ["Bachelor's Degree", "Master's Degree", "Doctorate"],
+        ["Bachelor's Degree", "Master's Degree", "Doctorate"],  # stable
+        ["Bachelor's Degree", "Master's Degree", "Doctorate"],
+    ]
+    idx = {"n": 0}
+    arrow = {"n": 0}
+
+    page = MagicMock()
+    page.wait_for_timeout = AsyncMock()
+    page.keyboard = MagicMock()
+
+    async def _arrow(key, *a, **k):
+        if key == "ArrowDown":
+            arrow["n"] += 1
+
+    page.keyboard.press = AsyncMock(side_effect=_arrow)
+
+    # No usable scroll container → ArrowDown path only
+    box = MagicMock()
+    box.count = AsyncMock(return_value=0)
+    loc = MagicMock()
+    loc.first = box
+    page.locator = MagicMock(return_value=loc)
+
+    async def fake_wait(*a, **k):
+        i = min(idx["n"], len(windows) - 1)
+        idx["n"] += 1
+        return MagicMock(), list(windows[i])
+
+    async def _run():
+        with patch(
+            "verified_select.wait_for_option_texts", side_effect=fake_wait
+        ):
+            _opts, texts = await enumerate_listbox_options(
+                page, max_scrolls=10, timeout_ms=100
+            )
+        return texts
+
+    texts = asyncio.run(_run())
+    assert "Master's Degree" in texts
+    assert "Doctorate" in texts
+    # Grew across several ArrowDowns, then stopped — not max_scrolls thrash
+    assert 2 <= arrow["n"] <= 6, f"unexpected ArrowDown count: {arrow['n']}"
+    assert arrow["n"] < 10
+
+
+def test_enumerate_source_documents_stable_early_exit():
+    import inspect
+    from verified_select import enumerate_listbox_options
+
+    src = inspect.getsource(enumerate_listbox_options)
+    assert "Option set stable" in src or "early-exit" in src
+    assert "ArrowDown" in src
+    assert "max_scrolls" in src
+
+
 if __name__ == "__main__":
     test_location_filter_never_committed_from_input()
     test_yes_no_word_split_and_match()
@@ -494,5 +637,8 @@ if __name__ == "__main__":
     test_expand_state_value_local()
     test_ats001_filtered_index_remap()
     test_ats2_001_placeholder_slots_preserve_locator_index()
+    test_enumerate_stable_options_early_exits_arrowdown()
+    test_enumerate_grows_via_arrowdown_until_stable()
+    test_enumerate_source_documents_stable_early_exit()
     test_self_test_runs()
     print("test_verified_select: OK")

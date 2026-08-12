@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — Salary Blank Skip</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 2rem auto; }
+    label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+    .salary-wrap { position: relative; display: inline-block; width: 100%; }
+    #salary-input {
+      width: 100%; box-sizing: border-box; padding: 8px 12px 8px 28px;
+      border: 1px solid #ccc; border-radius: 4px; color: transparent;
+      caret-color: #333; background: #fff;
+    }
+    #salary-input:focus { color: #333; outline: 2px solid #2684ff; }
+    .salary-wrap::before {
+      content: '$'; position: absolute; left: 10px; top: 50%;
+      transform: translateY(-50%); color: #333; pointer-events: none;
+    }
+    /* Ghost overlay makes field look filled when empty */
+    .ghost-value {
+      position: absolute; left: 28px; top: 50%; transform: translateY(-50%);
+      color: #333; pointer-events: none; font-size: 1rem;
+    }
+    .ghost-value.hidden { display: none; }
+    .hint { font-size: 0.85rem; color: #666; margin-top: 0.35rem; }
+    button { margin-top: 1.5rem; padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <h1>Compensation</h1>
+  <p>Applicant: Ada Lovelace · test+gym@example.com</p>
+
+  <div class="field">
+    <label for="salary-input">Expected annual salary (USD)</label>
+    <div class="salary-wrap">
+      <span id="ghost-salary" class="ghost-value" aria-hidden="true">85000</span>
+      <input id="salary-input" name="salary" type="text" inputmode="numeric"
+             value="" placeholder="" autocomplete="off">
+    </div>
+    <p class="hint">Field may appear pre-filled — verify the actual input value.</p>
+  </div>
+
+  <button type="button" id="btn-submit">Submit application</button>
+
+  <script>
+    (function () {
+      var input = document.getElementById('salary-input');
+      var ghost = document.getElementById('ghost-salary');
+
+      function syncGhost() {
+        ghost.classList.toggle('hidden', input.value.length > 0);
+      }
+
+      input.addEventListener('input', syncGhost);
+      input.addEventListener('focus', function () {
+        ghost.classList.add('hidden');
+      });
+      input.addEventListener('blur', syncGhost);
+      syncGhost();
+
+      document.getElementById('btn-submit').addEventListener('click', function (e) {
+        e.preventDefault();
+        alert('Gym fixture — submit blocked.');
+      });
+    })();
+  </script>
+</body>
+</html>

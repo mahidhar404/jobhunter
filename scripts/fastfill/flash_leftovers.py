@@ -743,12 +743,46 @@ def synthesize_grounded_answer(
         if m:
             return f"{m.group(1).strip()}, {m.group(2)}, USA"
         return "Springfield, IL, USA"
-    if re.search(r"worked\s+for\s+this\s+company|relatives?\s+or\s+friends|relative.*working", label_l):
+    if re.search(
+        r"worked\s+for\s+this\s+company|worked\s+with|ever\s+worked\s+with|"
+        r"relatives?\s+or\s+friends|relative.*working|"
+        r"ever\s+been\s+employed|employed\s+by|prior\s+worker|previous\s+worker|"
+        r"previously\s+(been\s+)?employed",
+        label_l,
+    ):
         return shared.get("WORKED_HERE_BEFORE") or "No"
     if re.search(r"daily\s+commute|commit\s+to\s+(a\s+)?daily\s+commute|\bcommute\b", label_l):
         return shared.get("COMMUTE") or "Yes"
     if re.search(r"sms|text\s+message|marketing\s+consent|receive\s+(sms|texts)", label_l):
         return shared.get("MARKETING_CONSENT") or "No"
+    # Capco GH: accommodations Yes/No → No; conditional details → N/A
+    if re.search(
+        r"(if\s+you\s+answered\s+yes|enter\s+n/?a|additional\s+details).{0,80}"
+        r"(accommodation|adjustment|reasonable)|"
+        r"(accommodation|adjustment|reasonable).{0,80}"
+        r"(enter\s+n/?a|additional\s+details|if\s+not)",
+        label_l,
+    ):
+        return shared.get("ACCOMMODATIONS_DETAILS") or "N/A"
+    if re.search(
+        r"(require|need|request).{0,40}(accommodation|adjustment)|"
+        r"reasonable[\s_-]*accommodations?\s+or\s+adjustments",
+        label_l,
+    ):
+        return shared.get("ACCOMMODATIONS") or "No"
+    # Capco referral: Yes/No → No; employee email follow-up → N/A (no parent thrash)
+    if re.search(
+        r"were\s+you\s+referred|referred\s+to\s+this\s+(role|job|position)|"
+        r"referred\s+by\s+(a\s+)?(current\s+)?\w*\s*employee",
+        label_l,
+    ):
+        return shared.get("EMPLOYEE_REFERRAL") or "No"
+    if re.search(
+        r"(employee'?s?|referral|capco).{0,40}(e[\s_-]*mail)|"
+        r"(e[\s_-]*mail).{0,40}(employee|referr|capco)",
+        label_l,
+    ):
+        return shared.get("REFERRAL_EMAIL") or "N/A"
     if re.search(r"salary|compensation|pay|expect", label_l):
         return shared.get("SALARY_EXPECTED") or "Open / negotiable within the posted range"
     if re.search(
@@ -874,6 +908,23 @@ def _resolve_llm_config() -> tuple[str, str, str]:
         return api_key, base, model
 
 
+def _thinking_disabled_body() -> dict:
+    """DeepSeek-V4-Flash defaults to thinking mode, which rejects tool_choice.
+
+    Instructor uses tool/function calling; JSON mode and plain completions are
+    also safer with thinking off for short leftover answers. Opt out via
+    ``FASTFILL_LLM_THINKING=1`` if a gateway needs thinking enabled.
+    """
+    if os.environ.get("FASTFILL_LLM_THINKING", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return {}
+    return {"thinking": {"type": "disabled"}}
+
+
 def _post_chat_completion(payload: dict, *, timeout: int = 45) -> dict | None:
     """POST an OpenAI-compatible chat/completions request; None on any failure."""
     api_key, base, model = _resolve_llm_config()
@@ -888,7 +939,7 @@ def _post_chat_completion(payload: dict, *, timeout: int = 45) -> dict | None:
         raise
     except Exception:
         pass
-    payload = {"model": model, **payload}
+    payload = {"model": model, **_thinking_disabled_body(), **payload}
     try:
         import urllib.request
 
@@ -948,17 +999,105 @@ def call_flash_text_llm(prompt: str, *, max_tokens: int = 600) -> str | None:
     return text[:2000] if text else None
 
 
+def call_flash_instructor_llm(
+    prompt: str, *, max_tokens: int = 600, retries: int | None = None
+) -> dict | None:
+    """Typed leftover via Instructor + OpenAI-compatible client.
+
+    Returns ``{"value", "confidence"}`` or None when Instructor/openai/pydantic
+    are missing, the endpoint fails, or retries exhaust. Never raises into the
+    fill path — callers fall through to urllib JSON mode then plain text then
+    synthesize. Disable with ``FASTFILL_INSTRUCTOR=0`` (urllib path still runs).
+    """
+    if os.environ.get("FASTFILL_INSTRUCTOR", "1") == "0":
+        return None
+    try:
+        import instructor
+        from openai import OpenAI
+        from pydantic import BaseModel, Field
+    except Exception:
+        return None
+
+    api_key, base, model = _resolve_llm_config()
+    if not api_key:
+        return None
+    try:
+        from llm_config import assert_dummy_for_gateway
+
+        assert_dummy_for_gateway(base)
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
+
+    class LeftoverAnswer(BaseModel):
+        value: str = Field(..., min_length=1)
+        confidence: float = Field(..., ge=0.0, le=1.0)
+
+    tries = _LLM_RETRIES if retries is None else max(0, int(retries))
+    sys_prompt = (
+        _LLM_SYSTEM_PROMPT
+        + ' Respond with value (answer string) and confidence (0..1).'
+    )
+    try:
+        client = instructor.from_openai(OpenAI(api_key=api_key, base_url=base))
+    except Exception:
+        return None
+    for _ in range(tries + 1):
+        try:
+            create_kwargs: dict[str, Any] = {
+                "model": model,
+                "response_model": LeftoverAnswer,
+                "messages": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": max_tokens,
+                "temperature": 0.2,
+            }
+            thinking = _thinking_disabled_body()
+            if thinking:
+                create_kwargs["extra_body"] = thinking
+            obj = client.chat.completions.create(**create_kwargs)
+            val = str(getattr(obj, "value", "") or "").strip()
+            if not val:
+                continue
+            conf = float(getattr(obj, "confidence"))
+            try:
+                from tracing import trace_llm
+
+                trace_llm(
+                    "leftover_llm_instructor",
+                    prompt=prompt,
+                    response=val,
+                    model=model,
+                )
+            except Exception:
+                pass
+            return {"value": val[:2000], "confidence": conf}
+        except Exception:
+            continue
+    return None
+
+
 def call_flash_json_llm(
     prompt: str, *, max_tokens: int = 600, retries: int | None = None
 ) -> dict | None:
-    """Typed leftover answer via JSON mode: {"value": str, "confidence": 0..1}.
+    """Typed leftover answer: Instructor first, then urllib JSON mode fallback.
 
-    Bounded retry until a well-formed object parses. Returns None on exhaustion
-    (callers then fall back to the plain text call, then to synthesize) so this
-    is always additive and never blocks a fill. Works through any OpenAI-compatible
-    endpoint (DeepSeek / OmniRoute); if the endpoint rejects response_format the
+    Shape: ``{"value": str, "confidence": 0..1}``. Bounded retry until a
+    well-formed object parses. Returns None on exhaustion (callers then fall
+    back to the plain text call, then to synthesize) so this is always additive
+    and never blocks a fill. Works through any OpenAI-compatible endpoint
+    (DeepSeek / OmniRoute); if the endpoint rejects response_format the urllib
     request simply fails and we return None.
     """
+    typed = call_flash_instructor_llm(
+        prompt, max_tokens=max_tokens, retries=retries
+    )
+    if typed is not None:
+        return typed
+
     tries = _LLM_RETRIES if retries is None else max(0, int(retries))
     sys_prompt = (
         _LLM_SYSTEM_PROMPT
@@ -1080,6 +1219,9 @@ def validate_eeo_against_catalog(
             "prefer not to say",
             "prefer not to answer",
             "i decline to self identify",
+            "i don't wish to answer",
+            "i do not wish to answer",
+            "i don’t wish to answer",
         },
         "VETERAN": {
             "i am not a protected veteran",
@@ -1100,6 +1242,14 @@ def validate_eeo_against_catalog(
             "prefer not to say",
             "decline to self identify",
             "decline",
+        },
+        "LGBTQIA": {
+            "prefer not to disclose",
+            "prefer not to say",
+            "decline to self identify",
+            "decline",
+            "i don't wish to answer",
+            "i do not wish to answer",
         },
     }
     allowed = aliases.get(ftype_u, set())
@@ -1160,15 +1310,27 @@ def answer_leftover_field(
             return ""
 
     _EEO_TYPES = frozenset(
-        {"GENDER", "RACE", "HISPANIC", "VETERAN", "DISABILITY", "AGE_RANGE"}
+        {"GENDER", "RACE", "HISPANIC", "VETERAN", "DISABILITY", "AGE_RANGE", "LGBTQIA"}
     )
     is_eeo = ftype_u in _EEO_TYPES or bool(
-        re.search(r"gender|race|ethnicity|veteran|disabilit|hispanic", label_l)
+        re.search(
+            r"gender|race|ethnicity|veteran|disabilit|hispanic|lgbtq|lgbtqia",
+            label_l,
+        )
     )
     # EEO: SHARED catalog only — validate LLM against catalog; never invent beyond.
     if is_eeo:
         shared = shared_values()
         decline = "Decline to self identify"
+        # Race/ethnicity: never LLM-guess a race — always Decline / wish-not aliases.
+        if ftype_u == "RACE" or bool(
+            re.search(r"\brace\b|ethnicity|racial", label_l)
+        ):
+            return str(shared.get("RACE") or decline)
+        if ftype_u == "LGBTQIA" or bool(
+            re.search(r"lgbtq|lgbtqia|lgbtq\+", label_l)
+        ):
+            return str(shared.get("LGBTQIA") or "Prefer not to disclose")
         if use_llm:
             prompt = (
                 f"{facts}\n\n"
@@ -1258,6 +1420,10 @@ def answer_leftover_field(
         "LATIN_AMERICA",
         "BACKGROUND_CHECK",
         "TERMS_CONSENT",
+        "ACCOMMODATIONS",
+        "ACCOMMODATIONS_DETAILS",
+        "EMPLOYEE_REFERRAL",
+        "REFERRAL_EMAIL",
         "SERVICE_MEMBER",
     }
     if ftype_u in det_types:
@@ -1400,6 +1566,40 @@ def build_leftovers_prompt(
         past_block = format_similar_for_flash(similar)
     except Exception:
         past_block = ""
+    playbook_section = ""
+    try:
+        from playbooks import detect_playbook, playbook_hints
+
+        hints_lines: list[str] = []
+        seen_pb: set[str] = set()
+        for row in leftover_rows or []:
+            if not isinstance(row, dict):
+                continue
+            pb = detect_playbook(
+                {
+                    "tag": row.get("tag") or "",
+                    "role": row.get("role") or "",
+                    "class": row.get("class") or row.get("className") or "",
+                    "label": row.get("label") or "",
+                    "type": row.get("type") or "",
+                    "platform": report.get("platform") or "",
+                }
+            )
+            if pb in seen_pb:
+                continue
+            seen_pb.add(pb)
+            h = playbook_hints(pb)
+            steps = h.get("steps") or h.get("hint") or ""
+            if isinstance(steps, list):
+                steps = "; ".join(str(s) for s in steps)
+            hints_lines.append(f"- {pb}: {steps}")
+        if hints_lines:
+            playbook_section = (
+                "\n\nAllowlisted interaction playbooks (pick id only; no free-form clicks):\n"
+                + "\n".join(hints_lines[:8])
+            )
+    except Exception:
+        playbook_section = ""
     past_section = f"\n\n{past_block}" if past_block else ""
     if is_dummy_run:
         intro = (
@@ -1418,7 +1618,8 @@ def build_leftovers_prompt(
         f"{grounding}\n\n"
         f"{cheat}\n\n"
         f"{chr(10).join(leftover_lines)}"
-        f"{past_section}\n\n"
+        f"{past_section}"
+        f"{playbook_section}\n\n"
         f"{rules}"
     )
 
@@ -1655,7 +1856,7 @@ async def run_flash_leftovers(
     payload["url"] = url or payload.get("url")
     # FILL2-006: Skyvern must not invent EEO — hold for inpage catalog validation.
     _EEO_TYPES = frozenset(
-        {"GENDER", "RACE", "HISPANIC", "VETERAN", "DISABILITY", "AGE_RANGE"}
+        {"GENDER", "RACE", "HISPANIC", "VETERAN", "DISABILITY", "AGE_RANGE", "LGBTQIA"}
     )
     kept: list[dict] = []
     eeo_held: list[dict] = []
@@ -1665,7 +1866,7 @@ async def run_flash_leftovers(
         t = str(row.get("type") or "").strip().upper()
         lab = str(row.get("label") or "")
         if t in _EEO_TYPES or re.search(
-            r"\b(?:gender|sex|race|ethnicity|veteran|disabilit|hispanic|eeo)\b",
+            r"\b(?:gender|sex|race|ethnicity|veteran|disabilit|hispanic|eeo|lgbtq)\b",
             lab,
             re.I,
         ):

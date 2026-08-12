@@ -1,0 +1,12 @@
+{
+  "fields": [],
+  "footer_kind": "NONE",
+  "expect_advance": false,
+  "auth_gate": {
+    "initial_action": "reveal_email",
+    "has_sign_in_with_email": true,
+    "has_email_field": false,
+    "has_create_form": false
+  },
+  "notes": "Auth gate — no application fields; what-next probes workday_auth_gate_action. Full click flow is live-only (Stream B)."
+}

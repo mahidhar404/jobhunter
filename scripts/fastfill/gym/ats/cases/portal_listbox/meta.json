@@ -1,0 +1,6 @@
+{
+  "id": "portal_listbox",
+  "platform": "generic",
+  "fail_class": "portal_listbox",
+  "description": "Combobox opens a listbox portaled to document.body rather than inside the control subtree."
+}

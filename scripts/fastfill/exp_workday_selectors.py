@@ -38,11 +38,16 @@ from field_map import (  # noqa: E402
     CURRENT_TITLE,
     DEGREE,
     DISABILITY,
+    DISCIPLINE,
     DUMMY_PDF,
+    EDUCATION_END_YEAR,
+    EDUCATION_START_YEAR,
     EMAIL,
+    FIELD_OF_STUDY,
     GENDER,
     HISPANIC,
     HOW_HEARD,
+    MAJOR,
     NAME_FIRST,
     NAME_FULL,
     NAME_LAST,
@@ -248,6 +253,59 @@ WD_CONTACT_SELECTORS: dict[str, list[str]] = {
         'div:has-text("Have you been employed"):has(input[type="radio"])',
         'div:has-text("employed by Quantiphi"):has(input[type="radio"])',
     ],
+    # Education — Field of Study is often a typable searchSelect (Elanco), not
+    # a bare Select One button. Prefer formField-* wrappers + nested input.
+    "formField-fieldOfStudy": [
+        '[data-automation-id="formField-fieldOfStudy"]',
+        '[data-automation-id="formField-fieldOfStudy"] input',
+        '[data-automation-id="fieldOfStudy"]',
+        '[data-automation-id="educationSection_fieldOfStudy"]',
+        'input[name*="fieldOfStudy" i]',
+        'label:has-text("Field of Study") ~ * input',
+    ],
+    "fieldOfStudy": [
+        '[data-automation-id="formField-fieldOfStudy"]',
+        '[data-automation-id="fieldOfStudy"]',
+        '[data-automation-id="educationSection_fieldOfStudy"]',
+        '[data-automation-id="formField-fieldOfStudy"] input',
+        'input[data-automation-id="fieldOfStudy"]',
+        'input[name*="fieldOfStudy" i]',
+    ],
+    "educationSection_fieldOfStudy": [
+        '[data-automation-id="educationSection_fieldOfStudy"]',
+        '[data-automation-id="formField-fieldOfStudy"]',
+        '[data-automation-id="fieldOfStudy"]',
+    ],
+    "formField-discipline": [
+        '[data-automation-id="formField-discipline"]',
+        '[data-automation-id="discipline"]',
+        '[data-automation-id="formField-discipline"] input',
+    ],
+    "discipline": [
+        '[data-automation-id="formField-discipline"]',
+        '[data-automation-id="discipline"]',
+    ],
+    "formField-major": [
+        '[data-automation-id="formField-major"]',
+        '[data-automation-id="major"]',
+        '[data-automation-id="formField-major"] input',
+    ],
+    "major": [
+        '[data-automation-id="formField-major"]',
+        '[data-automation-id="major"]',
+    ],
+    "formField-school": [
+        '[data-automation-id="formField-school"]',
+        '[data-automation-id="school"]',
+        '[data-automation-id="educationSection_school"]',
+        '[data-automation-id="formField-school"] input',
+    ],
+    "formField-degree": [
+        '[data-automation-id="formField-degree"]',
+        '[data-automation-id="degree"]',
+        '[data-automation-id="formField-degree"] button',
+        '[data-automation-id="formField-degree"] input',
+    ],
 }
 
 # CSS pack for fast_fill.apply_selector_pack fallback. Live Workday uses
@@ -323,6 +381,45 @@ SIGN_IN_LINK_SELECTORS = [
     '[data-automation-id="signInLink"]',
     "a:has-text('Sign In')",
     "button:has-text('Sign In')",
+]
+
+# Some Workday / SSO auth gates open with social/SSO buttons and hide the
+# email+password form behind a "Sign in with email" / "Continue with email"
+# button. Click it to REVEAL the email form (which then also exposes the
+# in-form "Create Account" link handled below). Never a FINAL control.
+SIGN_IN_WITH_EMAIL_SELECTORS = [
+    '[data-automation-id="signInWithEmail"]',
+    '[data-automation-id="emailSignIn"]',
+    '[data-automation-id="continueWithEmail"]',
+    "button:has-text('Sign in with email')",
+    "button:has-text('Sign In with Email')",
+    "a:has-text('Sign in with email')",
+    "a:has-text('Sign In with Email')",
+    "button:has-text('Continue with email')",
+    "button:has-text('Continue with Email')",
+    "a:has-text('Continue with email')",
+    "text=Sign in with email",
+    "text=Continue with email",
+]
+
+# In-form "Create Account" link/tab shown on a Sign In gate (the reverse of
+# ``signInLink``). Clicking switches the auth form from Sign In to Create
+# Account so a FRESH dummy account can be minted — the intended dummy
+# automation path. Distinct from ``CREATE_ACCOUNT_SELECTORS`` (the create-form
+# SUBMIT button); these are the switch/toggle controls before the create form.
+CREATE_ACCOUNT_LINK_SELECTORS = [
+    '[data-automation-id="createAccountLink"]',
+    "button[data-automation-id='createAccountLink']",
+    "a:has-text('Create Account')",
+    "button:has-text('Create Account')",
+    "a:has-text('Create an Account')",
+    "button:has-text('Create an Account')",
+    "a:has-text('Create account')",
+    "text=Create account",
+    "a:has-text(\"Don't have an account\")",
+    "button:has-text(\"Don't have an account\")",
+    "a:has-text('Sign up')",
+    "button:has-text('Sign up')",
 ]
 
 APPLY_PRIMARY_SELECTORS = [
@@ -1289,14 +1386,17 @@ async def _read_field_value(loc) -> str:
 
 
 async def _read_how_heard_display(page) -> str:
-    """Read How-Heard / source formField chip chrome (not filter input alone)."""
+    """Read How-Heard / source formField chip chrome (not filter input alone).
+
+    Never fall back to bare ``multiSelectContainer`` — that often is Country
+    Phone Code (United States (+1)), which must not count as how-heard.
+    """
     sels = (
         '[data-automation-id="formField-source"]',
         '[data-automation-id*="formField-source"]',
         '[data-automation-id="formField-how_heard"]',
         '[data-automation-id="formField-howDidYouHear"]',
         '[data-automation-id="formField-candidateSource"]',
-        '[data-automation-id="multiSelectContainer"]',
     )
     for sel in sels:
         try:
@@ -1309,8 +1409,16 @@ async def _read_how_heard_display(page) -> str:
             except Exception:
                 pass
             snip = ((await loc.inner_text()) or "").strip()
-            if snip:
-                return snip[:240]
+            if not snip:
+                continue
+            try:
+                from verified_select import looks_like_phone_country_or_address_chip
+
+                if looks_like_phone_country_or_address_chip(snip):
+                    continue
+            except Exception:
+                pass
+            return snip[:240]
         except Exception:
             continue
     return ""
@@ -1319,10 +1427,10 @@ async def _read_how_heard_display(page) -> str:
 async def _probe_how_heard_already_committed(
     page, candidates: list[str]
 ) -> dict | None:
-    """If How-Heard already has a committed chip/token, return keep result.
+    """If How-Heard already has a committed chip matching priority leaves, keep it.
 
-    Stops Indeed → Company Website → LinkedIn → Other alias thrash once any
-    concrete source is selected (prefer matching intended; else keep any chip).
+    Stops alias thrash once a matching leaf is selected. Unrelated chips
+    (wrong source) are never kept.
     """
     from verified_select import (
         how_heard_source_committed,
@@ -1335,18 +1443,27 @@ async def _probe_how_heard_already_committed(
     snip = await _read_how_heard_display(page)
     if not snip or is_multiselect_uncommitted(snip):
         return None
-    if not how_heard_source_committed(snip, candidates):
-        # Still accept any ≥1 chip even if label isn't in our alias list
-        if not multiselect_has_chip(snip):
+    try:
+        from verified_select import looks_like_phone_country_or_address_chip
+
+        if looks_like_phone_country_or_address_chip(snip):
             return None
+    except Exception:
+        pass
+    if not how_heard_source_committed(snip, candidates):
+        return None
     matched = ""
-    for c in candidates:
-        if soft_value_match(c, snip):
+    try:
+        from fill_verify import is_how_heard_category_option
+    except Exception:
+        is_how_heard_category_option = lambda _t: False  # type: ignore[assignment,misc]
+    leaf_cands = [
+        c for c in candidates if c and not is_how_heard_category_option(c)
+    ] or list(candidates)
+    for c in leaf_cands:
+        if soft_value_match(c, snip) or c.lower() in snip.lower():
             matched = c
             break
-    if not matched and multiselect_has_chip(snip):
-        # Concrete chip present — keep it; do not thrash to next alias
-        matched = str(candidates[0] if candidates else "selected")
     if not matched:
         return None
     try:
@@ -1464,15 +1581,63 @@ _NANP_NON_US_TERRITORIES = (
 )
 
 
+# Never type ATS / job-board tokens into Country Phone Code filter (Morningstar
+# live bug: wrong search landed Australia (+61) while phone stayed US dummy).
+_PHONE_CODE_FORBIDDEN_FILTER_TOKENS = frozenset(
+    {
+        "greenhouse",
+        "lever",
+        "ashby",
+        "workday",
+        "indeed",
+        "linkedin",
+        "ziprecruiter",
+        "glassdoor",
+        "monster",
+        "jobboard",
+        "job board",
+        "how heard",
+        "referral",
+    }
+)
+
+
+def _is_wrong_non_us_phone_code(shown: str) -> bool:
+    """True for Australia (+61) and other clearly non-US dial readbacks."""
+    low = (shown or "").strip().lower()
+    if not low:
+        return False
+    if "australia" in low or "(+61)" in low or re.search(r"(^|[^\d])\+?\s*61\b", low):
+        return True
+    if any(t in low for t in _NANP_NON_US_TERRITORIES):
+        return True
+    if "united kingdom" in low or "uk (" in low or "(+44)" in low:
+        return True
+    return False
+
+
+def _is_us_address_country_readback(shown: str) -> bool:
+    """Address Country must name United States — never Australia defaults."""
+    low = (shown or "").strip().lower()
+    if not low or low in ("select one", "select", "—", "-"):
+        return False
+    if "australia" in low:
+        return False
+    return "united states" in low or bool(re.search(r"\busa\b", low))
+
+
 def _is_us_country_phone_readback(shown: str) -> bool:
     """True only when Country Phone Code display is clearly United States (+1).
 
     ATS-008 / ATS2-002: bare ``+1`` / ``Jamaica (+1)`` / other NANP must fail.
+    Also reject Australia (+61) and any non-US dial (Morningstar live).
     """
     s = (shown or "").strip()
     if not s:
         return False
     low = s.lower()
+    if _is_wrong_non_us_phone_code(s):
+        return False
     if any(t in low for t in _NANP_NON_US_TERRITORIES):
         return False
     us_named = "united states" in low or bool(re.search(r"\busa\b", low))
@@ -1651,26 +1816,32 @@ async def _fill_phone_device_type(
 async def _fill_country_phone_code(
     page, values: dict | None = None, *, _recursion_retry: bool = True
 ) -> dict:
-    """Ensure Country Phone Code is United States (+1), not Anguilla/etc."""
+    """Ensure Country Phone Code is United States (+1), never Australia/+61 / ATS tokens."""
     detail: dict = {
         "automation_id": "countryPhoneCode",
         "status": "missed",
         "mode": "combobox",
         "verified": False,
         "type": "PHONE_COUNTRY_CODE",
+        "value": "United States (+1)",
     }
     selectors = [
         '[data-automation-id="formField-countryPhoneCode"] button',
         '[data-automation-id="formField-countryPhoneCode"] [role="combobox"]',
         '[data-automation-id="formField-countryPhoneCode"] [role="button"]',
+        '[data-automation-id="formField-phoneNumber--countryPhoneCode"] button',
+        '[data-automation-id="formField-phoneNumber--countryPhoneCode"] [role="combobox"]',
         '[data-automation-id="formField-phoneCountry"] button',
         '[data-automation-id="formField-phoneCountryCode"] button',
         '[data-automation-id="countryPhoneCode"]',
+        '[data-automation-id="phoneNumber--countryPhoneCode"]',
         '[data-automation-id="phone-country-code"]',
         '[data-automation-id="phoneCountry"]',
         'button[name="countryPhoneCode"]',
+        'button[name="phoneNumber--countryPhoneCode"]',
         'button[id*="countryPhoneCode" i]',
         'button[id*="phoneCountry" i]',
+        'button[id*="phoneNumber--countryPhoneCode" i]',
     ]
     loc = None
     sel = ""
@@ -1704,7 +1875,7 @@ async def _fill_country_phone_code(
         except Exception:
             pass
     if loc is None:
-        # Last resort: any visible button showing Anguilla / wrong +1 territory
+        # Last resort: any visible button showing Anguilla / Australia / wrong dial
         try:
             btns = page.locator('button[aria-haspopup="listbox"]:visible')
             n = min(await btns.count(), 20)
@@ -1714,7 +1885,7 @@ async def _fill_country_phone_code(
                     txt = ((await b.inner_text()) or "").strip().lower()
                 except Exception:
                     continue
-                if "anguilla" in txt or (
+                if _is_wrong_non_us_phone_code(txt) or "anguilla" in txt or (
                     "(+1)" in txt and "united states" not in txt and "america" not in txt
                 ):
                     loc, sel = b, "button:wrong_dial_territory"
@@ -1741,6 +1912,12 @@ async def _fill_country_phone_code(
                 "skipped_already_correct": True,
             }
         )
+        try:
+            from verified_select import settle_open_listbox
+
+            await settle_open_listbox(page)
+        except Exception:
+            pass
         return detail
 
     cands = [
@@ -1751,26 +1928,71 @@ async def _fill_country_phone_code(
         # Bare +1 last — only accepted when readback names United States
         "+1",
     ]
+    # Hard rule: filter text is ONLY a country/dial token — never ATS / job-board names.
+    try:
+        from verified_select import phone_country_code_search_query
+
+        filter_query = phone_country_code_search_query(
+            (values or {}).get("PHONE_COUNTRY_CODE")
+            if isinstance(values, dict)
+            else None
+        )
+    except Exception:
+        filter_query = "United States"
+    detail["search_query"] = filter_query
+    low_q = filter_query.lower()
+    if any(tok in low_q for tok in _PHONE_CODE_FORBIDDEN_FILTER_TOKENS) or not filter_query.strip():
+        filter_query = "United States"
+        detail["search_query"] = filter_query
+        detail["search_sanitized"] = True
     try:
         await loc.scroll_into_view_if_needed()
         await loc.click(timeout=4000)
         await page.wait_for_timeout(300)
+        # Clear wrong chip (Australia (+61), etc.) via Backspace / delete affordance
+        if shown and not _is_us_country_phone_readback(shown):
+            try:
+                await page.keyboard.press("Meta+a")
+                await page.keyboard.press("Backspace")
+                await page.wait_for_timeout(150)
+            except Exception:
+                pass
+            try:
+                clear_btn = page.locator(
+                    '[data-automation-id="formField-countryPhoneCode"] '
+                    '[data-automation-id="delete"], '
+                    '[data-automation-id="formField-phoneNumber--countryPhoneCode"] '
+                    '[data-automation-id="delete"], '
+                    '[data-automation-id="formField-countryPhoneCode"] button[aria-label*="delete" i], '
+                    '[data-automation-id="formField-countryPhoneCode"] button[aria-label*="clear" i]'
+                ).first
+                if await clear_btn.count() and await clear_btn.is_visible(timeout=300):
+                    await clear_btn.click(timeout=1500)
+                    await page.wait_for_timeout(200)
+            except Exception:
+                pass
         # Prefer typing United States into filter if input exists
         filt = page.locator(
             '[data-automation-id="formField-countryPhoneCode"] input:not([type="hidden"]), '
-            'input[data-automation-id="countryPhoneCode"]'
+            '[data-automation-id="formField-phoneNumber--countryPhoneCode"] input:not([type="hidden"]), '
+            '[data-automation-id*="countryPhoneCode" i] input:not([type="hidden"]), '
+            'input[data-automation-id="countryPhoneCode"], '
+            'input[data-automation-id="phoneNumber--countryPhoneCode"], '
+            'input[id*="countryPhoneCode" i]'
         ).first
         if await filt.count() and await filt.is_visible(timeout=400):
             from verified_select import _type_into_filter
 
-            await _type_into_filter(filt, "United States", timeout_ms=3500)
+            await _type_into_filter(filt, filter_query, timeout_ms=3500)
             await page.wait_for_timeout(400)
         for cand in cands:
             ok, txt = await _click_matching_option(page, cand, device_type=False)
             if not ok or not txt:
                 continue
-            # Never treat NANP non-US option labels as a hit (ATS2-002)
-            if any(t in (txt or "").lower() for t in _NANP_NON_US_TERRITORIES):
+            # Never treat NANP non-US / Australia option labels as a hit
+            if _is_wrong_non_us_phone_code(txt or "") or any(
+                t in (txt or "").lower() for t in _NANP_NON_US_TERRITORIES
+            ):
                 continue
             await page.wait_for_timeout(250)
             readback = (await _read_field_value(loc) or txt or "").strip()
@@ -1781,8 +2003,21 @@ async def _fill_country_phone_code(
                 detail["status"] = "filled"
                 detail["verified"] = True
                 detail["value"] = cand
+                try:
+                    from verified_select import settle_open_listbox
+
+                    await settle_open_listbox(page)
+                except Exception:
+                    try:
+                        await _escape_unless_captcha(page)
+                    except Exception:
+                        pass
                 return detail
-        detail["reason"] = "no_matching_option"
+            # Reject Australia / wrong dial even if option click seemed to succeed
+            if _is_wrong_non_us_phone_code(readback):
+                detail["reason"] = "wrong_non_us_dial"
+                continue
+        detail["reason"] = detail.get("reason") or "no_matching_option"
         await _escape_unless_captcha(page)
     except RecursionError as e:
         try:
@@ -2200,11 +2435,32 @@ async def _fill_automation_id(page, automation_id: str, value: str, *, combobox:
         tag = (await loc.evaluate("el => el.tagName")).lower()
         role = (await loc.get_attribute("role")) or ""
         fill_value = value
+        if automation_id == "addressSection_country":
+            # Dummy Workday contact: always United States (never keep AU/tenant default)
+            fill_value = (value or "").strip() or "United States"
+            if "united states" not in fill_value.lower() and "usa" not in fill_value.lower():
+                fill_value = "United States"
         if automation_id == "addressSection_countryRegion":
             fill_value = _expand_state_value(value)[0]
             return await _fill_country_region_state(page, loc, sel, value)
         if automation_id == "phone-device-type":
             return await _fill_phone_device_type(page, loc, sel, value or "Mobile")
+        # Country Phone Code — never generic typeahead (Indeed contamination)
+        if (
+            "countryphonecode" in (automation_id or "").lower()
+            or "phonenumber--countryphonecode" in (automation_id or "").lower()
+            or automation_id
+            in (
+                "countryPhoneCode",
+                "phoneNumber--countryPhoneCode",
+                "phone-country-code",
+                "phoneCountry",
+                "phoneCountryCode",
+            )
+        ):
+            return await _fill_country_phone_code(
+                page, {"PHONE_COUNTRY_CODE": value} if value else None
+            )
 
         # SKIP thrash: already-correct text/combobox — do not clear/retype
         if not (combobox or role == "combobox" or tag == "button"):
@@ -2288,10 +2544,34 @@ async def _fill_automation_id(page, automation_id: str, value: str, *, combobox:
                         }
                 except Exception:
                     pass
+            # Address Country: never already_correct_skip Australia (or non-US) when
+            # dummy intends United States — Morningstar defaulted AU and cascaded +61.
+            if automation_id == "addressSection_country":
+                want_us = "united states" in str(fill_value or "").lower() or not (
+                    fill_value or ""
+                ).strip()
+                if want_us and not _is_us_address_country_readback(existing_cb or ""):
+                    pass  # fall through and overwrite
+                elif want_us and _is_us_address_country_readback(existing_cb or ""):
+                    return {
+                        "automation_id": automation_id,
+                        "status": "filled",
+                        "reason": "already_correct_skip",
+                        "mode": "combobox",
+                        "value": value or "United States",
+                        "readback": (existing_cb or "")[:120],
+                        "selector": sel,
+                        "option_clicked": False,
+                        "option_text": (existing_cb or "")[:80] or None,
+                        "verified": True,
+                        "skipped_already_correct": True,
+                    }
             # Never treat bare filter text as already-correct for how-heard
             if automation_id in ("how_heard", "source--source", "source"):
                 pass  # fall through to hierarchical / combobox fill
-            elif _value_matches_readback(fill_value, existing_cb, mode="combobox"):
+            elif automation_id != "addressSection_country" and _value_matches_readback(
+                fill_value, existing_cb, mode="combobox"
+            ):
                 return {
                     "automation_id": automation_id,
                     "status": "filled",
@@ -2315,11 +2595,56 @@ async def _fill_automation_id(page, automation_id: str, value: str, *, combobox:
             ).first
             filter_loc = typed if await typed.count() else loc
             cands = _expand_state_value(fill_value) or [fill_value]
-            reject_opt = (
-                (lambda t: _looks_like_dial_code_option(t))
-                if automation_id == "phone-device-type"
-                else None
-            )
+            reject_opt = None
+            if automation_id == "phone-device-type":
+                reject_opt = lambda t: _looks_like_dial_code_option(t)
+            elif automation_id == "addressSection_country":
+                # Never commit Australia / other countries when intent is US
+                def reject_opt(t: str, _fv=fill_value) -> bool:  # noqa: E306
+                    try:
+                        from verified_select import reject_confusable_country_option
+
+                        return reject_confusable_country_option(str(_fv or "United States"), t)
+                    except Exception:
+                        return bool(
+                            t
+                            and "united states" not in (t or "").lower()
+                            and "usa" not in (t or "").lower()
+                            and ("australia" in (t or "").lower() or "(+61)" in (t or "").lower())
+                        )
+
+            ftype_for_combo = ""
+            aid_l = (automation_id or "").lower()
+            if automation_id in ("how_heard", "source--source", "source"):
+                ftype_for_combo = HOW_HEARD
+            elif automation_id == "addressSection_country":
+                ftype_for_combo = ADDRESS_COUNTRY
+            elif (
+                "fieldofstudy" in aid_l
+                or aid_l in ("discipline", "major", "formfield-discipline", "formfield-major")
+            ):
+                ftype_for_combo = FIELD_OF_STUDY
+            elif "degree" in aid_l:
+                ftype_for_combo = DEGREE
+            elif "school" in aid_l:
+                ftype_for_combo = SCHOOL
+            # Expand curated aliases so FoS/Degree enumerate→score has Computer
+            # Science / Master's variants (plain fill_value alone is too thin).
+            if ftype_for_combo in (
+                FIELD_OF_STUDY,
+                DISCIPLINE,
+                MAJOR,
+                DEGREE,
+                SCHOOL,
+            ):
+                try:
+                    from gh_select import aliases_for
+
+                    expanded = list(aliases_for(ftype_for_combo, str(fill_value))[:12])
+                    if expanded:
+                        cands = expanded
+                except Exception:
+                    pass
             detail = await fill_workday_combobox(
                 page,
                 loc,
@@ -2333,11 +2658,7 @@ async def _fill_automation_id(page, automation_id: str, value: str, *, combobox:
                 ),
                 timeout_ms=7000 if automation_id in ("how_heard", "source--source") else 5000,
                 label=automation_id,
-                field_type=(
-                    HOW_HEARD
-                    if automation_id in ("how_heard", "source--source", "source")
-                    else ""
-                ),
+                field_type=ftype_for_combo,
                 reject_option=reject_opt,
             )
             ok = bool(detail.get("ok") and detail.get("committed"))
@@ -2360,6 +2681,15 @@ async def _fill_automation_id(page, automation_id: str, value: str, *, combobox:
                 "source",
             ):
                 ok = _value_matches_readback(fill_value, readback, mode="combobox")
+            # Hard reject: Address Country must be US for dummy; Australia is FAIL
+            if automation_id == "addressSection_country":
+                want_us = "united states" in str(fill_value or value or "").lower() or not (
+                    fill_value or value or ""
+                ).strip()
+                if want_us:
+                    ok = _is_us_address_country_readback(readback or "")
+                    if not ok:
+                        detail["error"] = detail.get("error") or "non_us_country_readback"
             if ok:
                 try:
                     await settle_open_listbox(page)
@@ -2482,6 +2812,8 @@ async def _fill_radio_yes_no(page, automation_id: str, value: str) -> dict:
     scopes = WD_CONTACT_SELECTORS.get(automation_id, []) + [
         'div:has-text("previously been employed")',
         'div:has-text("previously worked")',
+        'div:has-text("ever been employed")',
+        'div:has-text("employed by")',
         'div:has-text("worked for Cisco")',
         'div:has-text("Cisco before")',
         'div:has-text("worked at BBH")',
@@ -2499,9 +2831,16 @@ async def _fill_radio_yes_no(page, automation_id: str, value: str) -> dict:
             tag = ""
         if tag == "input":
             try:
-                return bool(await el.is_checked())
+                if await el.is_checked():
+                    return True
             except Exception:
-                return False
+                pass
+            try:
+                if (await el.get_attribute("aria-checked") or "").lower() == "true":
+                    return True
+            except Exception:
+                pass
+            return False
         # Label / text click — find associated radio in ancestor
         try:
             checked = await el.evaluate(
@@ -2510,7 +2849,9 @@ async def _fill_radio_yes_no(page, automation_id: str, value: str) -> dict:
                     || node.parentElement;
                   if (!root) return false;
                   const radios = [...root.querySelectorAll('input[type="radio"]')];
-                  return radios.some(r => r.checked);
+                  if (radios.some(r => r.checked || r.getAttribute('aria-checked') === 'true')) return true;
+                  if (root.querySelector('[role="radio"][aria-checked="true"]')) return true;
+                  return false;
                 }"""
             )
             return bool(checked)
@@ -2684,13 +3025,15 @@ REQUIRED_EMPTY_JS = """() => {
     return r.width > 0 && r.height > 0
       && window.getComputedStyle(el).visibility !== 'hidden';
   };
+  // Only ignore dial-code filter boxes — never swallow FoS/school/how-heard
+  // searchSelect inputs whose id contains "search" / "autocomplete".
   const ignoreId = (id) => {
     const s = String(id || '').toLowerCase();
     return (
       s.includes('countryphonecode')
       || s.includes('phone-country')
-      || s.includes('search')
-      || s.includes('autocomplete')
+      || s.includes('phonenumber--country')
+      || (s.includes('dial') && s.includes('code'))
     );
   };
   const isDatePlaceholder = (s) => {
@@ -2703,9 +3046,19 @@ REQUIRED_EMPTY_JS = """() => {
     try {
       const wrap = el.closest('[data-automation-id*="formField"], fieldset, [role="group"], label')
         || el.parentElement;
-      const raw = (wrap && (wrap.innerText || wrap.textContent) || '').replace(/\\s+/g, ' ').trim();
-      // Drop trailing "Select One" / option noise; keep question text
-      return raw.replace(/\\bSelect One\\b/ig, '').trim().slice(0, 160);
+      if (wrap) {
+        const leg = wrap.querySelector('legend, [data-automation-id*="label"], label');
+        if (leg) {
+          const t = (leg.innerText || leg.textContent || '').replace(/\\s+/g, ' ').trim()
+            .replace(/\\b(current teammates|please apply via|internal career site|employee referral portal)[\\s\\S]*/i, '')
+            .replace(/\\bSelect One\\b/ig, '').trim();
+          if (t) return t.slice(0, 160);
+        }
+      }
+      const raw = (wrap && (wrap.innerText || wrap.textContent) || '').replace(/\\s+/g, ' ').trim()
+        .replace(/\\b(current teammates|please apply via|internal career site|employee referral portal)[\\s\\S]*/i, '')
+        .replace(/\\bSelect One\\b/ig, '').trim();
+      return raw.slice(0, 160);
     } catch (e) {
       return '';
     }
@@ -2913,12 +3266,19 @@ async def _password_only_signin(page) -> bool:
 
 
 async def _create_account_form(page) -> bool:
+    """True only on the create-account form — not the Sign In gate with a switch link.
+
+    ``button:has-text("Create Account")`` on a sign-in gate is the switch control,
+    not the create submit; matching it here caused ``create_account`` to run on a
+    sign-in-only form (verifyPassword absent) or masked ``switch_then_create``.
+    """
     verify = await page.locator('[data-automation-id="verifyPassword"]').count()
-    create_btn = await page.locator(
-        '[data-automation-id="createAccountSubmitButton"], '
-        'button:has-text("Create Account")'
+    if verify > 0:
+        return True
+    submit = await page.locator(
+        '[data-automation-id="createAccountSubmitButton"]'
     ).count()
-    return verify > 0 or create_btn > 0
+    return submit > 0
 
 
 async def _contact_phase_present(page) -> bool:
@@ -3391,6 +3751,208 @@ async def _switch_to_sign_in(page) -> list[dict]:
     return await _click_gated(page, SIGN_IN_LINK_SELECTORS, stop_on_match="sign in")
 
 
+async def _sign_in_with_email_present(page) -> bool:
+    """True when the auth gate hides the email form behind a visible
+    'Sign in with email' / 'Continue with email' button and no email field has
+    painted yet (SSO/social-first gate)."""
+    if await _email_field_present(page):
+        return False
+    for sel in SIGN_IN_WITH_EMAIL_SELECTORS:
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() == 0:
+                continue
+            if await loc.is_visible(timeout=400):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _reveal_email_auth_form(page) -> list[dict]:
+    """Click 'Sign in with email'/'Continue with email' to reveal the email +
+    password form (and its in-form Create Account link). Gated (never FINAL)."""
+    clicks = await _click_gated(
+        page, SIGN_IN_WITH_EMAIL_SELECTORS, stop_after_click=True
+    )
+    if any(c.get("action") == "clicked" for c in clicks):
+        await _poll_spa_settle(
+            page,
+            timeout_ms=3000,
+            poll_ms=250,
+            predicates=[
+                _email_field_present,
+                _create_account_form,
+                _password_only_signin,
+                _contact_phase_present,
+            ],
+        )
+    return clicks
+
+
+async def _create_account_link_present(page) -> bool:
+    """True when a Create Account switch link/tab is visible on a Sign In gate.
+
+    Skips the create-form SUBMIT button so this only fires on the pre-create
+    toggle; ``_switch_to_create_account`` is only called when we are NOT already
+    on a create form (verifyPassword / createAccountSubmitButton absent).
+    """
+    if await _create_account_form(page):
+        return False
+    for sel in CREATE_ACCOUNT_LINK_SELECTORS:
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() == 0:
+                continue
+            if await loc.is_visible(timeout=400):
+                # Never treat the create-form submit as the switch link.
+                aid = (await loc.get_attribute("data-automation-id") or "").strip()
+                if aid == "createAccountSubmitButton":
+                    continue
+                return True
+        except Exception:
+            continue
+    # Fallback: scan visible controls (handles "Don't have an account? Create Account").
+    try:
+        from iframe_ctx import create_account_link_priority
+
+        raw = await page.evaluate(
+            """() => {
+              const sel = 'button, a[href], input[type=button], [role=button], span[role=link]';
+              const out = [];
+              for (const el of document.querySelectorAll(sel)) {
+                const s = window.getComputedStyle(el);
+                if (s.display === 'none' || s.visibility === 'hidden') continue;
+                const r = el.getBoundingClientRect();
+                if (r.width < 2 || r.height < 2) continue;
+                const aid = (el.getAttribute('data-automation-id') || '').toLowerCase();
+                if (aid === 'createaccountsubmitbutton') continue;
+                let label = (el.innerText || el.value || el.getAttribute('aria-label')
+                             || el.getAttribute('title') || '').trim();
+                label = label.replace(/\\s+/g, ' ').slice(0, 160);
+                if (!label) continue;
+                out.push({
+                  text: label,
+                  href: (el.getAttribute('href') || ''),
+                  aid: el.getAttribute('data-automation-id') || '',
+                });
+              }
+              return out;
+            }"""
+        )
+        for c in raw or []:
+            aid = (c.get("aid") or "").strip().lower()
+            if aid == "createaccountsubmitbutton":
+                continue
+            if create_account_link_priority(c.get("text") or "", str(c.get("href") or "")) is not None:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+async def _switch_to_create_account(page) -> list[dict]:
+    """Click the Create Account link/tab to switch a Sign In gate to the create
+    form, then wait for the create form to paint. Gated (never FINAL)."""
+    clicks = await _click_gated(
+        page, CREATE_ACCOUNT_LINK_SELECTORS, stop_after_click=True
+    )
+    if any(c.get("action") == "clicked" for c in clicks):
+        await _poll_spa_settle(
+            page,
+            timeout_ms=3000,
+            poll_ms=250,
+            predicates=[_create_account_form],
+        )
+    return clicks
+
+
+async def _probe_workday_auth_gate(
+    page, *, prefer_stored_signin: bool
+) -> tuple[str, dict[str, bool]]:
+    """Probe DOM signals and decide auth gate action (polls for late create link)."""
+
+    async def _signals() -> dict[str, bool]:
+        return {
+            "has_create_form": await _create_account_form(page),
+            "has_signin_form": await _password_only_signin(page),
+            "has_email_field": await _email_field_present(page),
+            "has_sign_in_with_email": await _sign_in_with_email_present(page),
+            "has_create_account_link": await _create_account_link_present(page),
+        }
+
+    sig = await _signals()
+    action = workday_auth_gate_action(
+        prefer_stored_signin=prefer_stored_signin,
+        **sig,
+    )
+    # Common case: email+password paint before the Create Account link below the
+    # form. Never Sign In with an unregistered dummy while the link may still load.
+    if (
+        action == "sign_in"
+        and not prefer_stored_signin
+        and sig["has_signin_form"]
+        and not sig["has_create_account_link"]
+    ):
+        for _ in range(10):
+            await page.wait_for_timeout(250)
+            sig = await _signals()
+            if sig["has_create_account_link"]:
+                action = workday_auth_gate_action(
+                    prefer_stored_signin=prefer_stored_signin,
+                    **sig,
+                )
+                break
+            if sig["has_create_form"]:
+                action = workday_auth_gate_action(
+                    prefer_stored_signin=prefer_stored_signin,
+                    **sig,
+                )
+                break
+    return action, sig
+
+
+def workday_auth_gate_action(
+    *,
+    has_create_form: bool,
+    has_signin_form: bool,
+    has_email_field: bool,
+    has_sign_in_with_email: bool,
+    has_create_account_link: bool,
+    prefer_stored_signin: bool,
+) -> str:
+    """Decide the next action on a Workday auth gate (pure — unit-testable).
+
+    Returns one of:
+
+    - ``"create_account"`` — a create-account form is present → fill dummy
+      email/password + create.
+    - ``"reveal_email"`` — email form hidden behind a "Sign in with email" /
+      "Continue with email" button → click to reveal it.
+    - ``"switch_then_create"`` — sign-in-only gate exposes a Create Account
+      link/tab and we have no stored creds for this host → click Create Account
+      to switch, then mint a FRESH dummy account.
+    - ``"sign_in"`` — a real sign-in form and either stored creds exist (account
+      already registered) or no create-account path is offered.
+    - ``"none"`` — nothing actionable yet (keep polling).
+
+    Dummy automation always mints a fresh account rather than signing in with an
+    unregistered dummy email. Signing in is chosen only when host creds are
+    stored (``prefer_stored_signin``) or the gate offers no create path.
+    """
+    if has_create_form:
+        return "create_account"
+    if has_sign_in_with_email and not has_email_field:
+        return "reveal_email"
+    if has_signin_form or has_email_field:
+        if not prefer_stored_signin and has_create_account_link:
+            return "switch_then_create"
+        return "sign_in"
+    if has_sign_in_with_email:
+        return "reveal_email"
+    return "none"
+
+
 async def _phase_a_auth(page, values: dict, report: dict) -> dict:
     """Auth wall: create account, or sign in if already registered."""
     phase: dict = {
@@ -3522,49 +4084,114 @@ async def _phase_a_auth(page, values: dict, report: dict) -> dict:
             if phase.get("account_created"):
                 await _upsert_web_keys_after_auth(page, values, report)
 
+    async def _mint_fresh_dummy_email() -> None:
+        """Mint a fresh random dummy +alias so create never reuses an email that
+        may already be registered on this tenant (=> 'email already in use')."""
+        try:
+            from field_map import allocate_random_run_email
+
+            fresh = (allocate_random_run_email() or {}).get("email")
+            if fresh:
+                values[EMAIL] = fresh
+                phase["fresh_email_minted"] = True
+                if values.get(PASSWORD) and not values.get(PASSWORD_CONFIRM):
+                    values[PASSWORD_CONFIRM] = values[PASSWORD]
+        except Exception as e:
+            phase["fresh_email_error"] = str(e)[:120]
+
     # The apply-path click (Apply Manually / Autofill with Resume) may still be
     # resolving into the auth form when we get here. Poll briefly so a create /
     # sign-in form that mounts a beat later is not missed — missing it made
     # _phase_a_auth skip both branches while the generic fill layer typed
     # email/password, leaving the classic filled-but-Create-Account-never-clicked
     # state (the recurring bug the user reported).
+    #
+    # Some tenants open a sign-in-only gate (SSO/social first) that hides the
+    # email form behind "Sign in with email" / "Continue with email". Reveal it
+    # here so a create/sign-in form paints — otherwise both branches below are
+    # skipped and the run dies at account/entry with 0 fills.
+    revealed = False
     for _ in range(16):  # ~6s
-        if await _create_account_form(page) or await _password_only_signin(page):
+        if await _create_account_form(page):
+            break
+        if await _password_only_signin(page):
+            # Common case: email+password paint before Create Account link below.
+            for _ in range(6):
+                if await _create_account_link_present(page) or await _create_account_form(page):
+                    break
+                await page.wait_for_timeout(200)
             break
         if await _contact_phase_present(page):
             break
+        if not revealed and await _sign_in_with_email_present(page):
+            reveal = await _reveal_email_auth_form(page)
+            if any(c.get("action") == "clicked" for c in reveal):
+                revealed = True
+                phase["sign_in_with_email_clicks"] = reveal
+                report["clicks"].extend(
+                    c for c in reveal if c.get("action") == "clicked"
+                )
+                continue
         await page.wait_for_timeout(375)
 
     # Create-first auth. If a Create Account form is present, CREATE a dummy
     # account rather than preferring Sign In. never-submit only guards the FINAL
     # application submit; "Create Account" gates as ADVANCE, so clicking it is
-    # allowed and dummy accounts are explicitly permitted. The old "prefer Sign
-    # In when web_keys has a stored key" path switched forms mid-detection and
-    # frequently left the form filled-but-unclicked. A stored email is already
-    # registered (that's why a key exists), so reusing it on create would trip
-    # "email already in use" — mint a FRESH dummy +alias for a clean new account.
-    # Sign In is only attempted when the page is actually a sign-in form.
-    if await _create_account_form(page):
+    # allowed and dummy accounts are explicitly permitted. On a sign-in-only gate
+    # the intended dummy path is to click the in-form "Create Account" link/tab
+    # (switch_then_create) and mint a FRESH account — never Sign In with an
+    # unregistered dummy email. Sign In is used only when host creds are stored
+    # (account already exists) or the gate offers no create path.
+    action, gate_sig = await _probe_workday_auth_gate(
+        page, prefer_stored_signin=prefer_stored_signin
+    )
+    phase["gate_action"] = action
+    phase["gate_signals"] = gate_sig
+
+    if action == "reveal_email":
+        reveal = await _reveal_email_auth_form(page)
+        phase.setdefault("sign_in_with_email_clicks", []).extend(reveal)
+        report["clicks"].extend(c for c in reveal if c.get("action") == "clicked")
+        action, gate_sig = await _probe_workday_auth_gate(
+            page, prefer_stored_signin=prefer_stored_signin
+        )
+        phase["gate_action_after_reveal"] = action
+        phase["gate_signals_after_reveal"] = gate_sig
+
+    if action == "create_account":
         if prefer_stored_signin:
             phase["stored_key_present"] = True
-            try:
-                from field_map import allocate_random_run_email
-
-                fresh = (allocate_random_run_email() or {}).get("email")
-                if fresh:
-                    values[EMAIL] = fresh
-                    phase["fresh_email_minted"] = True
-                    if values.get(PASSWORD) and not values.get(PASSWORD_CONFIRM):
-                        values[PASSWORD_CONFIRM] = values[PASSWORD]
-            except Exception as e:
-                phase["fresh_email_error"] = str(e)[:120]
+            # A stored email is already registered — mint fresh for a clean create.
+            await _mint_fresh_dummy_email()
         await _create_account_flow()
         if phase.get("stopped"):
             return phase
 
-    elif await _password_only_signin(page) or await _email_field_present(page):
-        # Actual sign-in form (no create-account form present) — use stored /
-        # dummy creds. Overwritten above under prefer_stored_signin.
+    elif action == "switch_then_create":
+        switch_clicks = await _switch_to_create_account(page)
+        phase["create_account_switch_clicks"] = switch_clicks
+        report["clicks"].extend(
+            c for c in switch_clicks if c.get("action") == "clicked"
+        )
+        if await _create_account_form(page):
+            phase["switched_to_create"] = True
+            await _mint_fresh_dummy_email()
+            await _create_account_flow()
+            if phase.get("stopped"):
+                return phase
+        else:
+            # Switch link did not surface a create form — fall back to sign in
+            # so we do not silently no-op the auth gate.
+            phase["switch_to_create_failed"] = True
+            si = await _try_sign_in(page, values, click_submit=True)
+            phase["sign_in"] = si
+            report["sign_in"] = si
+            if si.get("clicks"):
+                report["clicks"].extend(si["clicks"])
+
+    elif action == "sign_in":
+        # Actual sign-in form — use stored / dummy creds. Overwritten above
+        # under prefer_stored_signin.
         si = await _try_sign_in(page, values, click_submit=True)
         phase["sign_in"] = si
         report["sign_in"] = si
@@ -4164,11 +4791,50 @@ async def _fallback_apply_manually_from_autofill(
                 fb["url_error"] = str(e)[:120]
 
     if await _password_only_signin(page) or await _email_field_present(page):
-        si = await _try_sign_in(page, values, click_submit=True)
-        fb["sign_in"] = bool(si.get("clicks"))
-        report.setdefault("sign_in_fallback", si)
-        if si.get("clicks"):
-            report.setdefault("clicks", []).extend(si["clicks"])
+        prefer_stored = False
+        try:
+            from urllib.parse import urlparse as _urlparse
+
+            from web_keys import lookup
+
+            host = (_urlparse(page.url or "").hostname or "").strip().lower() or None
+            stored = lookup(host) if host else None
+            prefer_stored = bool(
+                stored
+                and (stored.get("email") or "").strip()
+                and (stored.get("password") or "").strip()
+            )
+        except Exception:
+            prefer_stored = False
+        action, _sig = await _probe_workday_auth_gate(
+            page, prefer_stored_signin=prefer_stored
+        )
+        fb["auth_gate_action"] = action
+        if action == "switch_then_create":
+            switch = await _switch_to_create_account(page)
+            report.setdefault("clicks", []).extend(
+                c for c in switch if c.get("action") == "clicked"
+            )
+            if await _create_account_form(page):
+                ca = await _try_create_account(page, values, click_submit=True)
+                fb["create_account"] = ca
+                report.setdefault("create_account_fallback", ca)
+                if ca.get("clicks"):
+                    report.setdefault("clicks", []).extend(ca["clicks"])
+        elif action == "create_account":
+            ca = await _try_create_account(page, values, click_submit=True)
+            fb["create_account"] = ca
+            report.setdefault("create_account_fallback", ca)
+            if ca.get("clicks"):
+                report.setdefault("clicks", []).extend(ca["clicks"])
+        elif action == "sign_in" and prefer_stored:
+            si = await _try_sign_in(page, values, click_submit=True)
+            fb["sign_in"] = bool(si.get("clicks"))
+            report.setdefault("sign_in_fallback", si)
+            if si.get("clicks"):
+                report.setdefault("clicks", []).extend(si["clicks"])
+        else:
+            fb["skipped_sign_in"] = "no_stored_creds_use_phase_a"
         await _poll_spa_settle(
             page,
             timeout_ms=2500,
@@ -4211,9 +4877,41 @@ async def _fallback_apply_manually_from_autofill(
                 ],
             )
             if await _password_only_signin(page):
-                si = await _try_sign_in(page, values, click_submit=True)
-                if si.get("clicks"):
-                    report.setdefault("clicks", []).extend(si["clicks"])
+                prefer_stored = False
+                try:
+                    from urllib.parse import urlparse as _urlparse
+
+                    from web_keys import lookup
+
+                    host = (_urlparse(page.url or "").hostname or "").strip().lower() or None
+                    stored = lookup(host) if host else None
+                    prefer_stored = bool(
+                        stored
+                        and (stored.get("email") or "").strip()
+                        and (stored.get("password") or "").strip()
+                    )
+                except Exception:
+                    prefer_stored = False
+                action, _sig = await _probe_workday_auth_gate(
+                    page, prefer_stored_signin=prefer_stored
+                )
+                fb["auth_gate_action"] = action
+                if action == "switch_then_create":
+                    switch = await _switch_to_create_account(page)
+                    if any(c.get("action") == "clicked" for c in switch):
+                        report.setdefault("clicks", []).extend(switch)
+                    if await _create_account_form(page):
+                        ca = await _try_create_account(page, values, click_submit=True)
+                        if ca.get("clicks"):
+                            report.setdefault("clicks", []).extend(ca["clicks"])
+                elif action == "create_account":
+                    ca = await _try_create_account(page, values, click_submit=True)
+                    if ca.get("clicks"):
+                        report.setdefault("clicks", []).extend(ca["clicks"])
+                elif action == "sign_in" and prefer_stored:
+                    si = await _try_sign_in(page, values, click_submit=True)
+                    if si.get("clicks"):
+                        report.setdefault("clicks", []).extend(si["clicks"])
                 await _poll_spa_settle(
                     page,
                     timeout_ms=2500,
@@ -4568,8 +5266,49 @@ NEXT_BUTTON_SELECTORS = [
 ]
 
 
-async def _click_next_advance(page) -> list[dict]:
-    """Click Workday Next/Continue once if button_gate allows ADVANCE. Never FINAL."""
+async def _click_next_advance(page, report: dict | None = None) -> list[dict]:
+    """Click Workday Next/Continue once if button_gate allows ADVANCE. Never FINAL.
+
+    Settles open listboxes first — ADVANCE while a prompt is open strands the
+    page (mid-widget idle / stuck class). Fail-closed if listbox remains open
+    (or settle probe errors while a listbox is still visible).
+    """
+    blocked = [
+        {
+            "action": "blocked",
+            "reason": "listbox_still_open",
+            "never_submit": True,
+        }
+    ]
+    try:
+        from verified_select import listbox_still_open, settle_before_advance
+
+        settle = await settle_before_advance(page, report)
+        if settle.get("still_open"):
+            if report is not None:
+                report["listbox_open"] = True
+                report["mid_widget_open"] = True
+                report["advance_blocked_reason"] = "listbox_still_open"
+            return blocked
+        # Settle error / partial: re-probe; never ADVANCE mid-widget.
+        if settle.get("error") and await listbox_still_open(page):
+            if report is not None:
+                report["listbox_open"] = True
+                report["mid_widget_open"] = True
+                report["advance_blocked_reason"] = "listbox_still_open"
+            return blocked
+    except Exception:
+        try:
+            from verified_select import listbox_still_open
+
+            if await listbox_still_open(page):
+                if report is not None:
+                    report["listbox_open"] = True
+                    report["mid_widget_open"] = True
+                    report["advance_blocked_reason"] = "listbox_still_open"
+                return blocked
+        except Exception:
+            pass
     return await _click_gated(page, NEXT_BUTTON_SELECTORS, stop_after_click=True)
 
 
@@ -4719,20 +5458,38 @@ async def _fill_how_heard(page, values: dict | None = None, report: dict | None 
             how_heard_category_candidates,
             how_heard_leaf_candidates,
         )
-        from verified_select import fill_hierarchical_how_heard
+        from verified_select import (
+            fill_hierarchical_how_heard,
+            is_how_heard_safe_filter_input,
+        )
 
+        # NEVER bare multiSelectContainer — that wraps Country Phone Code too.
         fiber_inps = page.locator(
             'input[name="source--source"], '
             '[data-automation-id="source--source"], '
             '[data-automation-id="formField-source"] input, '
             '[data-automation-id="formField-how_heard"] input, '
+            '[data-automation-id="formField-howDidYouHear"] input, '
+            '[data-automation-id="formField-candidateSource"] input, '
+            '[data-automation-id="formField-source"] '
+            '[data-automation-id="multiSelectContainer"] input, '
+            '[data-automation-id="formField-how_heard"] '
+            '[data-automation-id="multiSelectContainer"] input, '
+            '[data-automation-id="formField-howDidYouHear"] '
+            '[data-automation-id="multiSelectContainer"] input, '
+            '[data-automation-id="formField-candidateSource"] '
             '[data-automation-id="multiSelectContainer"] input'
         )
         n_hier = await fiber_inps.count()
-        for ii in range(min(n_hier, 3)):
+        for ii in range(min(n_hier, 1)):
             inp = fiber_inps.nth(ii)
             try:
                 if not await inp.is_visible(timeout=400):
+                    continue
+            except Exception:
+                continue
+            try:
+                if not await is_how_heard_safe_filter_input(inp):
                     continue
             except Exception:
                 continue
@@ -4743,25 +5500,49 @@ async def _fill_how_heard(page, values: dict | None = None, report: dict | None 
                 category_candidates=how_heard_category_candidates(values),
             )
             if hier.get("ok") and hier.get("committed"):
-                return await _settle_ok(
-                    {
-                        "automation_id": aid,
-                        "status": "filled",
-                        "mode": "hierarchical_how_heard",
-                        "type": HOW_HEARD,
-                        "value": hier.get("value")
-                        or (how_heard_leaf_candidates(values) or ["Indeed"])[0],
-                        "readback": (hier.get("readback") or "")[:120],
-                        "option_text": hier.get("picked"),
-                        "picked": hier.get("picked"),
-                        "option_clicked": bool(hier.get("option_clicked")),
-                        "verified": True,
-                        "committed": True,
-                        "algorithm": "hierarchical_how_heard",
-                        "path": hier.get("path"),
-                        "subsection": hier.get("subsection"),
-                    }
+                picked_leaf = str(hier.get("picked") or hier.get("value") or "")
+                readback = (hier.get("readback") or "")[:120]
+                intended = str(
+                    hier.get("value")
+                    or picked_leaf
+                    or (how_heard_leaf_candidates(values) or ["LinkedIn"])[0]
                 )
+                try:
+                    from fill_verify import _how_heard_chip_matches_intent
+
+                    chip_ok = _how_heard_chip_matches_intent(
+                        readback, intended=intended, picked=picked_leaf or None
+                    )
+                except Exception:
+                    from verified_select import how_heard_source_committed
+
+                    chip_ok = how_heard_source_committed(
+                        readback, [picked_leaf, intended, *how_heard_leaf_candidates(values)]
+                    )
+                if not chip_ok:
+                    hier["ok"] = False
+                    hier["committed"] = False
+                    hier["verified"] = False
+                    hier["reason"] = "readback_mismatch_picked"
+                else:
+                    return await _settle_ok(
+                        {
+                            "automation_id": aid,
+                            "status": "filled",
+                            "mode": "hierarchical_how_heard",
+                            "type": HOW_HEARD,
+                            "value": intended,
+                            "readback": readback,
+                            "option_text": picked_leaf,
+                            "picked": picked_leaf,
+                            "option_clicked": bool(hier.get("option_clicked")),
+                            "verified": True,
+                            "committed": True,
+                            "algorithm": "hierarchical_how_heard",
+                            "path": hier.get("path"),
+                            "subsection": hier.get("subsection"),
+                        }
+                    )
             # If hierarchy opened but no chip, keep probing — do not treat
             # category filter text as success.
             keep_h = await _probe_how_heard_already_committed(page, candidates)
@@ -4788,365 +5569,22 @@ async def _fill_how_heard(page, values: dict | None = None, report: dict | None 
             "type": HOW_HEARD,
         }
 
-    other_tried = False
-    for cand in candidates:
-        # Skip category headers in the flat alias walk — hierarchy above owns them.
-        try:
-            from fill_verify import is_how_heard_category_option
+    # Hierarchical-only: one honest pass — never alias-walk / fiber / label thrash.
+    try:
+        from verified_select import settle_open_listbox
 
-            if is_how_heard_category_option(cand):
-                continue
-        except Exception:
-            pass
-        # Prefer one concrete Other* option once — do not cycle Other variants
-        if re.search(r"^other\b", str(cand), re.I):
-            if other_tried:
-                continue
-            other_tried = True
-        result = await _fill_automation_id(page, aid, cand, combobox=True, report=report)
-        result.setdefault("type", HOW_HEARD)
-        if _is_verified_fill(result):
-            return await _settle_ok(result)
-        # Chip may have committed even when this candidate's readback gate failed
-        keep_mid = await _probe_how_heard_already_committed(page, candidates)
-        if keep_mid is not None:
-            return _learn(keep_mid)
-        if result.get("reason") in ("not_in_dom", "not_visible"):
-            break
-    # Fiber searchSelect on source / how_heard filter inputs (Quantiphi etc.)
-    if not _is_verified_fill(result):
-        try:
-            from verified_select import fiber_search_select
-
-            fiber_inps = page.locator(
-                'input[name="source--source"], '
-                '[data-automation-id="source--source"], '
-                '[data-automation-id="formField-source"] input, '
-                '[data-automation-id="formField-how_heard"] input, '
-                '[data-automation-id="multiSelectContainer"] input'
-            )
-            n_inps = await fiber_inps.count()
-            for ii in range(min(n_inps, 4)):
-                inp = fiber_inps.nth(ii)
-                try:
-                    if not await inp.is_visible(timeout=400):
-                        continue
-                except Exception:
-                    continue
-                # Re-check before each fiber pass — prior alias may have stuck a chip
-                keep_f = await _probe_how_heard_already_committed(page, candidates)
-                if keep_f is not None:
-                    return _learn(keep_f)
-                other_fiber = False
-                for cand in candidates:
-                    try:
-                        from fill_verify import is_how_heard_category_option
-
-                        if is_how_heard_category_option(cand):
-                            continue
-                    except Exception:
-                        pass
-                    if re.search(r"^other\b", str(cand), re.I):
-                        if other_fiber:
-                            continue
-                        other_fiber = True
-                    fiber = await fiber_search_select(
-                        page,
-                        inp,
-                        str(cand),
-                        aliases=candidates,
-                        wait_ms=1600,
-                    )
-                    if not (fiber.get("option_clicked") and fiber.get("picked")):
-                        # Stop alias thrash if a chip appeared mid-loop
-                        keep_f2 = await _probe_how_heard_already_committed(
-                            page, candidates
-                        )
-                        if keep_f2 is not None:
-                            return _learn(keep_f2)
-                        continue
-                    body_snip = ""
-                    try:
-                        wrap = page.locator(
-                            '[data-automation-id="formField-source"], '
-                            '[data-automation-id="formField-how_heard"], '
-                            '[data-automation-id="multiSelectContainer"]'
-                        ).first
-                        body_snip = ((await wrap.inner_text()) or "")[:200]
-                    except Exception:
-                        body_snip = str(fiber.get("picked") or "")
-                    verified = "0 items selected" not in body_snip.lower() and bool(
-                        fiber.get("picked") or body_snip
-                    )
-                    # Reject category-only "commits"
-                    try:
-                        from fill_verify import is_how_heard_category_option
-                        from verified_select import how_heard_source_committed
-
-                        verified = verified and how_heard_source_committed(
-                            body_snip, candidates
-                        )
-                        if is_how_heard_category_option(fiber.get("picked")):
-                            verified = False
-                    except Exception:
-                        pass
-                    result = {
-                        "automation_id": aid,
-                        "status": "filled" if verified else "missed",
-                        "mode": "fiber_search_select",
-                        "type": HOW_HEARD,
-                        "value": cand,
-                        "readback": (body_snip or fiber.get("picked") or "")[:120],
-                        "option_text": fiber.get("picked"),
-                        "picked": fiber.get("picked"),
-                        "option_clicked": True,
-                        "verified": verified,
-                        "committed": verified,
-                        "algorithm": "fiber_search_select",
-                        "fiber_status": fiber.get("status"),
-                        "reason": None if verified else "multiselect_no_chip",
-                    }
-                    if verified:
-                        return await _settle_ok(result)
-                    keep_f3 = await _probe_how_heard_already_committed(
-                        page, candidates
-                    )
-                    if keep_f3 is not None:
-                        return _learn(keep_f3)
-        except Exception as e:
-            result = {
-                "automation_id": aid,
-                "status": "missed",
-                "reason": "fiber_search_error",
-                "error": str(e)[:120],
-                "verified": False,
-                "type": HOW_HEARD,
-            }
-    # BBH/wd5: multi-select source--source shows "0 items selected" until option chip
-    if not _is_verified_fill(result):
-        keep_pre = await _probe_how_heard_already_committed(page, candidates)
-        if keep_pre is not None:
-            return _learn(keep_pre)
-        for cand in candidates:
-            try:
-                from fill_verify import is_how_heard_category_option
-
-                if is_how_heard_category_option(cand):
-                    continue
-            except Exception:
-                pass
-            if re.search(r"^other\b", str(cand), re.I) and other_tried:
-                continue
-            for hear_label in (
-                "How Did You Hear About Us",
-                "Where Did You Hear About Us",
-                "Where did you hear about us",
-                "How did you hear about us",
-                "How Did You Hear",
-            ):
-                sr = await _fill_select_one_by_label(
-                    page,
-                    hear_label,
-                    [cand],
-                )
-                if sr.get("verified") or _is_verified_fill(sr):
-                    return await _settle_ok({
-                        "automation_id": aid,
-                        "status": "filled",
-                        "mode": "select_one",
-                        "type": HOW_HEARD,
-                        "value": cand,
-                        "readback": sr.get("readback"),
-                        "verified": True,
-                        "option_clicked": sr.get("option_clicked"),
-                        "committed": sr.get("committed", True),
-                    })
-            inp = page.locator(
-                'input[name="source--source"], '
-                '[data-automation-id="source--source"], '
-                '[data-automation-id="formField-source"] input'
-            ).first
-            try:
-                if await inp.count() and await inp.is_visible(timeout=400):
-                    await inp.click(timeout=3000)
-                    await page.wait_for_timeout(200)
-                    await inp.fill("")
-                    await page.keyboard.type(str(cand), delay=25)
-                    await page.wait_for_timeout(500)
-                    # Quantiphi/WD prompts often need ArrowDown/icon/Enter before options load
-                    try:
-                        from verified_select import nudge_listbox_after_type
-
-                        await nudge_listbox_after_type(page, inp, allow_enter=True)
-                        await page.wait_for_timeout(450)
-                    except Exception:
-                        pass
-                    ok, opt = await _click_matching_option(page, str(cand))
-                    if ok:
-                        body_snip = ""
-                        try:
-                            wrap = page.locator(
-                                '[data-automation-id="formField-source"]'
-                            ).first
-                            body_snip = ((await wrap.inner_text()) or "")[:200]
-                        except Exception:
-                            body_snip = opt or ""
-                        verified = "0 items selected" not in body_snip.lower() and bool(
-                            opt or body_snip
-                        )
-                        try:
-                            from fill_verify import is_how_heard_category_option
-                            from verified_select import how_heard_source_committed
-
-                            verified = verified and how_heard_source_committed(
-                                body_snip, candidates
-                            )
-                            if is_how_heard_category_option(opt):
-                                verified = False
-                        except Exception:
-                            pass
-                        result = {
-                            "automation_id": aid,
-                            "status": "filled" if verified else "missed",
-                            "mode": "multiselect_source",
-                            "type": HOW_HEARD,
-                            "value": cand,
-                            "readback": (body_snip or opt or "")[:120],
-                            "option_text": opt,
-                            "option_clicked": True,
-                            "verified": verified,
-                            "reason": None if verified else "multiselect_no_chip",
-                        }
-                        if verified:
-                            return await _settle_ok(result)
-                        keep_ms = await _probe_how_heard_already_committed(
-                            page, candidates
-                        )
-                        if keep_ms is not None:
-                            return _learn(keep_ms)
-                    try:
-                        await _escape_unless_captcha(page)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-    if result.get("status") == "missed" and result.get("reason") in (
-        "not_in_dom",
-        "not_visible",
-        "no_matching_option",
-        "not_attempted",
-        "multiselect_no_chip",
-        "fiber_search_error",
-        "hierarchical_miss",
-        "hierarchical_no_chip",
-        "hierarchical_error",
-    ):
-        keep_late = await _probe_how_heard_already_committed(page, candidates)
-        if keep_late is not None:
-            return _learn(keep_late)
-        label_btn = page.locator(
-            'label:has-text("How Did You Hear"), '
-            'label:has-text("Where Did You Hear"), '
-            'label:has-text("Where did you hear"), '
-            'legend:has-text("How Did You Hear"), '
-            'legend:has-text("Where Did You Hear"), '
-            '[data-automation-id="formField-source"]'
-        ).first
-        try:
-            if await label_btn.count():
-                root = label_btn.locator(
-                    "xpath=ancestor-or-self::*[contains(@data-automation-id,'formField') "
-                    "or self::fieldset or self::div][1]"
-                )
-                btn = root.locator(
-                    'button, [role="button"], [role="combobox"], input'
-                ).first
-                if await btn.count() and await btn.is_visible(timeout=500):
-                    from verified_select import fill_workday_combobox
-
-                    for cand in candidates:
-                        try:
-                            from fill_verify import is_how_heard_category_option
-
-                            if is_how_heard_category_option(cand):
-                                continue
-                        except Exception:
-                            pass
-                        if re.search(r"^other\b", str(cand), re.I) and other_tried:
-                            continue
-                        wd = await fill_workday_combobox(
-                            page,
-                            btn,
-                            str(cand),
-                            aliases=[cand, *candidates],
-                            read_committed=lambda: _read_field_value(btn),
-                            timeout_ms=7000,
-                            label="How Did You Hear",
-                            field_type=HOW_HEARD,
-                        )
-                        readback = await _read_field_value(btn)
-                        opt = wd.get("picked") or ""
-                        verified = bool(wd.get("ok")) and (
-                            _value_matches_readback(
-                                str(cand), readback or opt or "", mode="combobox"
-                            )
-                            or (
-                                "0 items selected"
-                                not in ((readback or "") + (opt or "")).lower()
-                                and bool(opt)
-                            )
-                        )
-                        try:
-                            from fill_verify import is_how_heard_category_option
-                            from verified_select import how_heard_source_committed
-
-                            wrap = await _read_how_heard_display(page)
-                            verified = verified and how_heard_source_committed(
-                                wrap or readback or opt, candidates
-                            )
-                            if is_how_heard_category_option(opt):
-                                verified = False
-                        except Exception:
-                            pass
-                        result = {
-                            "automation_id": aid,
-                            "status": "filled" if verified else "missed",
-                            "mode": "combobox_label",
-                            "type": HOW_HEARD,
-                            "value": cand,
-                            "readback": (readback or opt or "")[:120],
-                            "option_text": opt,
-                            "option_clicked": bool(wd.get("option_clicked")),
-                            "verified": verified,
-                            "reason": None if verified else "readback_mismatch",
-                            "algorithm": wd.get("algorithm"),
-                        }
-                        if verified:
-                            return await _settle_ok(result)
-                        keep_cb = await _probe_how_heard_already_committed(
-                            page, candidates
-                        )
-                        if keep_cb is not None:
-                            return _learn(keep_cb)
-                        try:
-                            await _escape_unless_captcha(page)
-                        except Exception:
-                            pass
-        except Exception as e:
-            result = {
-                "automation_id": aid,
-                "status": "missed",
-                "reason": "label_fill_error",
-                "error": str(e)[:120],
-                "verified": False,
-                "type": HOW_HEARD,
-            }
-    # Final keep probe — never leave an open menu spinning after a late chip
+        await settle_open_listbox(page)
+    except Exception:
+        pass
     keep_final = await _probe_how_heard_already_committed(page, candidates)
     if keep_final is not None:
         return _learn(keep_final)
     result.setdefault("type", HOW_HEARD)
-    return _learn(result) if _is_verified_fill(result) else result
+    if result.get("status") != "missed":
+        result["status"] = "missed"
+    result.setdefault("reason", "hierarchical_only_miss")
+    result.setdefault("mode", "hierarchical_how_heard_only")
+    return result
 
 
 def _log_wd_fill_step(report: dict, result: dict) -> None:
@@ -5361,7 +5799,9 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
             )
         except Exception:
             pass
-        cpc = await _fill_country_phone_code(page)
+        cpc = await _fill_country_phone_code(
+            page, report.get("_contact_values") or {}
+        )
         _log_wd_fill_step(report, cpc)
         if _is_verified_fill(cpc):
             cpc["status"] = "filled"
@@ -5609,7 +6049,7 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
         before = await _capture_fp(page)
     except Exception:
         pass
-    next_clicks = await _click_next_advance(page)
+    next_clicks = await _click_next_advance(page, report)
     phase["next_clicks"] = next_clicks
     report.setdefault("clicks", []).extend(next_clicks)
     advanced = any(c.get("action") == "clicked" for c in next_clicks)
@@ -5691,7 +6131,28 @@ async def _phase_b_contact(page, fill_plan: list[tuple[str, str, bool]], report:
         await _shot(page, report)
         return phase
 
-    # Contact page complete without validation warning
+    # Intended ADVANCE but click never landed (listbox / miss / gate) — never
+    # mint SUCCESS while still on contact. Mid-widget open is FAIL-before-ADVANCE.
+    if not advanced:
+        listbox_block = any(
+            c.get("reason") == "listbox_still_open" for c in (next_clicks or [])
+        )
+        reason = (
+            "listbox_still_open"
+            if listbox_block
+            else (report.get("advance_blocked_reason") or "advance_not_clicked")
+        )
+        phase["advance_blocked_reason"] = reason
+        report["advance_blocked_reason"] = reason
+        report["blocker"] = report.get("blocker") or "contact_incomplete"
+        report["verdict"] = "FAIL"
+        report["advanced_incomplete"] = False
+        if listbox_block:
+            report["listbox_open"] = True
+            report["mid_widget_open"] = True
+        return phase
+
+    # Contact page advanced without validation warning
     report["advanced_incomplete"] = False
     if not report.get("stuck_on_same_page"):
         report["verdict"] = "SUCCESS"
@@ -5820,7 +6281,7 @@ async def _gate_then_advance(page, report: dict, phase: dict) -> bool:
         phase["fingerprint_before"] = before["fingerprint"]
         phase["fingerprint_after"] = after["fingerprint"]
         return False
-    next_clicks = await _click_next_advance(page)
+    next_clicks = await _click_next_advance(page, report)
     phase["next_clicks"] = next_clicks
     report.setdefault("clicks", []).extend(next_clicks)
     advanced = any(c.get("action") == "clicked" for c in next_clicks)
@@ -5859,6 +6320,24 @@ async def _gate_then_advance(page, report: dict, phase: dict) -> bool:
     )
     if progress["stuck_on_same_page"]:
         report["verdict"] = "FAIL"
+    if not advanced:
+        listbox_block = any(
+            c.get("reason") == "listbox_still_open" for c in (next_clicks or [])
+        )
+        reason = (
+            "listbox_still_open"
+            if listbox_block
+            else (report.get("advance_blocked_reason") or "advance_not_clicked")
+        )
+        phase["advance_blocked_reason"] = reason
+        report["advance_blocked_reason"] = reason
+        report["blocker"] = report.get("blocker") or "page_incomplete"
+        report["verdict"] = "FAIL"
+        report["advanced_incomplete"] = False
+        if listbox_block:
+            report["listbox_open"] = True
+            report["mid_widget_open"] = True
+        return False
     validation = await _validation_banner_present(page)
     phase["validation_after_advance"] = validation
     report["validation_after_advance"] = validation
@@ -5890,6 +6369,8 @@ async def _gate_then_advance(page, report: dict, phase: dict) -> bool:
         "required_dates_empty",
         "experience_dates_incomplete",
         "currently_work_here_checked",
+        "listbox_still_open",
+        "advance_not_clicked",
     ):
         report["advance_blocked_reason"] = None
     report["advanced_incomplete"] = False
@@ -6001,21 +6482,31 @@ async def _date_input_name(loc) -> str:
             return ""
 
 
-async def _list_date_inputs(page, which: str, *, mode: str) -> list:
+async def _list_date_inputs(page, which: str, *, mode: str, root=None) -> list:
     """Return visible month/year INPUT locators filtered by From/To name.
 
     ``which``: "month" | "year"
     ``mode``: "from" | "to" | "any"
+    ``root``: optional Playwright locator / page — scopes to education or work
+    experience section so edu dates never overwrite WE spins (and vice versa).
     Cisco: label text "Month — From*" vs plain "Month" for To (often no aria-label).
     """
     aid = (
         "dateSectionMonth-input" if which == "month" else "dateSectionYear-input"
     )
-    locs = page.locator(f'[data-automation-id="{aid}"]:visible')
+    base = root if root is not None else page
+    try:
+        # page itself is fine; locators need .locator()
+        locs = base.locator(f'[data-automation-id="{aid}"]:visible')
+    except Exception:
+        locs = page.locator(f'[data-automation-id="{aid}"]:visible')
     try:
         n = await locs.count()
     except Exception:
         return []
+    # Empty scoped pool → fall back page-wide (portal / remount edge cases)
+    if n == 0 and root is not None and root is not page:
+        return await _list_date_inputs(page, which, mode=mode, root=None)
     named: list[tuple] = []
     for i in range(n):
         loc = locs.nth(i)
@@ -6069,7 +6560,12 @@ async def _paired_display_for_input(inp):
 
 
 async def _read_date_spin_pair(
-    page, nth: int, *, from_only: bool = False, to_only: bool = False
+    page,
+    nth: int,
+    *,
+    from_only: bool = False,
+    to_only: bool = False,
+    root=None,
 ) -> dict:
     """Read month/year from the nth From- or To-filtered INPUT (+ display)."""
     mode = "from" if from_only else ("to" if to_only else "any")
@@ -6081,8 +6577,8 @@ async def _read_date_spin_pair(
         "mode": mode,
         "nth": nth,
     }
-    mons = await _list_date_inputs(page, "month", mode=mode)
-    yrs = await _list_date_inputs(page, "year", mode=mode)
+    mons = await _list_date_inputs(page, "month", mode=mode, root=root)
+    yrs = await _list_date_inputs(page, "year", mode=mode, root=root)
     if nth < len(mons):
         try:
             out["month_input"] = ((await mons[nth].input_value()) or "").strip()
@@ -6116,10 +6612,11 @@ async def _date_spin_verify(
     nth: int,
     from_only: bool = False,
     to_only: bool = False,
+    root=None,
 ) -> tuple[bool, dict]:
     """Require committed digits on the filtered input (display when present)."""
     rb = await _read_date_spin_pair(
-        page, nth, from_only=from_only, to_only=to_only
+        page, nth, from_only=from_only, to_only=to_only, root=root
     )
     mon_ok = True
     if month:
@@ -6138,6 +6635,28 @@ async def _date_spin_verify(
     return mon_ok and yr_ok, rb
 
 
+def _date_digits_already_correct(got: str, want: str) -> bool:
+    """True only when committed digits equal intended (never partial endswith).
+
+    Live Elanco bug: ``want.endswith(dig0)`` treated leftover ``\"2\"`` as
+    already-correct for year ``2022``, then a failed clear + retype appended
+    digits → display ``2202`` and \"Must end after start date\".
+    """
+    dig0 = re.sub(r"\D", "", str(got or ""))
+    want_d = re.sub(r"\D", "", str(want or ""))
+    if not dig0 or not want_d:
+        return False
+    if dig0 == want_d:
+        return True
+    # Month: allow 1 vs 01
+    if len(want_d) <= 2 and dig0.isdigit() and want_d.isdigit():
+        try:
+            return int(dig0) == int(want_d)
+        except ValueError:
+            return False
+    return False
+
+
 async def _type_digits_into(page, loc, digits: str) -> str:
     """Click/focus → clear → type digits → Tab (never Enter). No JS .value.
 
@@ -6147,7 +6666,7 @@ async def _type_digits_into(page, loc, digits: str) -> str:
         await loc.scroll_into_view_if_needed(timeout=2000)
     except Exception:
         pass
-    # SKIP thrash: already-correct date spin
+    # SKIP thrash: already-correct date spin (exact digits only)
     try:
         raw0 = (await loc.input_value()) or ""
     except Exception:
@@ -6155,15 +6674,21 @@ async def _type_digits_into(page, loc, digits: str) -> str:
             raw0 = (await loc.inner_text()) or ""
         except Exception:
             raw0 = ""
-    dig0 = re.sub(r"\D", "", raw0)
     want = re.sub(r"\D", "", str(digits))
-    if dig0 and want and (dig0 == want or dig0.endswith(want) or want.endswith(dig0)):
+    if _date_digits_already_correct(raw0, want):
         return "already_correct_skip"
     await loc.click(timeout=2500, force=True)
     await page.wait_for_timeout(60)
     cleared = False
     try:
-        await loc.evaluate("el => { el.focus(); el.select(); }")
+        await loc.evaluate(
+            """(el) => {
+              el.focus();
+              if (typeof el.select === 'function') el.select();
+              try { el.value = ''; } catch (e) {}
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            }"""
+        )
         cleared = True
     except Exception:
         pass
@@ -6176,17 +6701,42 @@ async def _type_digits_into(page, loc, digits: str) -> str:
                 cleared = True
             except Exception:
                 continue
+    # Workday year spins often keep a leftover digit after select-all fails;
+    # hammer Backspace/Delete so \"2\"+\"2022\" cannot become \"2202\".
+    for _ in range(6):
+        try:
+            await page.keyboard.press("Backspace")
+        except Exception:
+            break
     try:
-        await page.keyboard.press("Backspace")
+        await page.keyboard.press("Delete")
     except Exception:
         pass
     await page.wait_for_timeout(40)
+    # Re-check residual digits; if still dirty, one more select+clear
+    try:
+        residual = re.sub(r"\D", "", (await loc.input_value()) or "")
+    except Exception:
+        residual = "x"
+    if residual:
+        try:
+            await loc.evaluate(
+                """(el) => {
+                  el.focus();
+                  if (typeof el.select === 'function') el.select();
+                  try { el.value = ''; } catch (e) {}
+                }"""
+            )
+            for _ in range(4):
+                await page.keyboard.press("Backspace")
+        except Exception:
+            pass
     technique = "press_sequentially"
     try:
-        await loc.press_sequentially(str(digits), delay=40)
+        await loc.press_sequentially(want or str(digits), delay=40)
     except Exception:
         technique = "keyboard_type"
-        await page.keyboard.type(str(digits), delay=40)
+        await page.keyboard.type(want or str(digits), delay=40)
     try:
         await page.keyboard.press("Tab")
     except Exception:
@@ -6195,6 +6745,28 @@ async def _type_digits_into(page, loc, digits: str) -> str:
         except Exception:
             pass
     await page.wait_for_timeout(150)
+    # If readback drifted (e.g. 2202), one arrow/retype recovery pass
+    try:
+        raw1 = (await loc.input_value()) or ""
+    except Exception:
+        raw1 = ""
+    if want and not _date_digits_already_correct(raw1, want):
+        try:
+            await loc.click(timeout=1500, force=True)
+            await loc.evaluate(
+                """(el) => {
+                  el.focus();
+                  if (typeof el.select === 'function') el.select();
+                  try { el.value = ''; } catch (e) {}
+                }"""
+            )
+            for _ in range(6):
+                await page.keyboard.press("Backspace")
+            await loc.press_sequentially(want, delay=50)
+            await page.keyboard.press("Tab")
+            technique = "retype_after_mismatch"
+        except Exception:
+            pass
     return technique
 
 
@@ -6238,6 +6810,8 @@ async def _fill_date_spin(
 
     Target ``dateSectionMonth-input`` / ``Year-input`` by aria-label
     (\"Month — From*\" vs \"Month\"). Optionally click paired ``*-display``.
+    ``scope`` limits the spin pool to education/WE section — never page-global
+    nth when multiple date sections share the page.
     Never Enter; never JS .value alone.
     """
     detail: dict = {
@@ -6248,6 +6822,7 @@ async def _fill_date_spin(
         "nth": nth,
         "from_only": from_only,
         "to_only": to_only,
+        "scoped": scope is not None and scope is not page,
     }
     if not month and not year:
         detail["reason"] = "no_date"
@@ -6258,11 +6833,12 @@ async def _fill_date_spin(
     detail["month"] = month_n
     detail["year"] = year_n
     mode = "from" if from_only else ("to" if to_only else "any")
+    root = scope if scope is not None else page
 
     try:
         await page.wait_for_timeout(250)
-        mons = await _list_date_inputs(page, "month", mode=mode)
-        yrs = await _list_date_inputs(page, "year", mode=mode)
+        mons = await _list_date_inputs(page, "month", mode=mode, root=root)
+        yrs = await _list_date_inputs(page, "year", mode=mode, root=root)
         detail["pool_month"] = len(mons)
         detail["pool_year"] = len(yrs)
 
@@ -6303,7 +6879,13 @@ async def _fill_date_spin(
                 )
             await page.wait_for_timeout(200)
             ok, rb = await _date_spin_verify(
-                page, month_n, year_n, nth=nth, from_only=from_only, to_only=to_only
+                page,
+                month_n,
+                year_n,
+                nth=nth,
+                from_only=from_only,
+                to_only=to_only,
+                root=root,
             )
             detail["readback"] = rb
             detail["techniques"] = list(techniques)
@@ -6322,7 +6904,13 @@ async def _fill_date_spin(
                 )
             await page.wait_for_timeout(200)
             ok, rb = await _date_spin_verify(
-                page, month_n, year_n, nth=nth, from_only=from_only, to_only=to_only
+                page,
+                month_n,
+                year_n,
+                nth=nth,
+                from_only=from_only,
+                to_only=to_only,
+                root=root,
             )
             detail["readback"] = rb
             detail["techniques"] = list(techniques)
@@ -6344,7 +6932,13 @@ async def _fill_date_spin(
                 )
             await page.wait_for_timeout(200)
             ok, rb = await _date_spin_verify(
-                page, month_n, year_n, nth=nth, from_only=from_only, to_only=to_only
+                page,
+                month_n,
+                year_n,
+                nth=nth,
+                from_only=from_only,
+                to_only=to_only,
+                root=root,
             )
             detail["readback"] = rb
             if techniques:
@@ -7120,10 +7714,43 @@ def _dummy_answer_for_wd_label(label: str, values: dict | None = None) -> list[s
     # Work authorization → Yes (dummy is US-authorized)
     if re.search(r"authorized to work|work authorization|legally authorized", lab):
         return ["Yes", "I am authorized", "Authorized"]
-    # Sponsorship / conviction / prior worker conflicts → No
+    # Visa *status* (not sponsorship) — status aliases, never bare "No"
     if re.search(
-        r"sponsor|visa|conviction|felony|criminal|export control|non-compet|"
-        r"conflict of interest|relative.*(work|employ)|previously (employed|worked)",
+        r"visa[\s_-]*(requirement[\s_-]*)?status|current[\s_-]*visa|"
+        r"what[\s_-]*visa|immigration[\s_-]*status",
+        lab,
+    ) and not re.search(r"sponsor", lab):
+        return [
+            "No visa required",
+            "I do not require a visa",
+            "Not applicable",
+            "N/A",
+            "None",
+        ]
+    # Accommodations / reasonable adjustments Yes/No → No; details → N/A
+    if re.search(
+        r"(require|need|request).{0,40}(accommodation|adjustment)|"
+        r"reasonable[\s_-]*(accommodations?|adjustments?)",
+        lab,
+    ):
+        if re.search(
+            r"if\s+you\s+answered\s+yes|enter\s+n/?a|additional\s+details|"
+            r"if\s+not|provide\s+(more\s+)?details",
+            lab,
+        ):
+            return ["N/A", "NA", "Not applicable", "None"]
+        if not re.search(
+            r"(provide|offers?|policy|understand|acknowledge|ada).{0,40}"
+            r"reasonable",
+            lab,
+        ):
+            return ["No", "No, I do not", "I do not require", "I do not need"]
+    # Sponsorship / conviction / prior worker conflicts → No
+    # Require "sponsor" phrasing for visa — bare "visa" alone is status above.
+    if re.search(
+        r"sponsor|require.{0,24}visa|visa.{0,16}sponsor|conviction|felony|criminal|"
+        r"export control|non-compet|conflict of interest|"
+        r"relative.*(work|employ)|previously (employed|worked)",
         lab,
     ):
         return ["No", "No, I do not", "I do not require sponsorship"]
@@ -7133,31 +7760,72 @@ def _dummy_answer_for_wd_label(label: str, values: dict | None = None) -> list[s
         lab,
     ):
         return _how_heard_candidates(values)
+    # Country Phone Code BEFORE generic country — never how-heard / job boards.
+    if re.search(
+        r"country[\s_-]*phone[\s_-]*code|phone[\s_-]*country|"
+        r"calling[\s_-]*code|dial[\s_-]*code|countryphonecode",
+        lab,
+    ):
+        try:
+            from verified_select import phone_country_code_candidates
+
+            return phone_country_code_candidates(values)
+        except Exception:
+            return [
+                "United States of America (+1)",
+                "United States (+1)",
+                "United States",
+                "+1",
+            ]
     # Age gate — dummy is 18+ (DUMMY_PROFILE.standard_screening_answers).
     # ATS3-010: never fall through to "No" when Yes labels miss.
     if re.search(r"over\s*18|18\s*years|at least 18|age of majority", lab):
         return ["Yes", "I am 18 or older", "18 or older", "Yes, I am"]
-    if re.search(r"school|universit|college|institution", lab):
-        school = (values.get(SCHOOL) or "University of Alabama, Tuscaloosa").strip()
-        return [school, "University of Alabama, Tuscaloosa"]
+    # FoS BEFORE school: polluted wrap labels often include a School value like
+    # "University of …" which would otherwise steal FoS answers (Elanco blank FoS).
+    if re.search(r"field of study|discipline|\bmajor\b|area of study", lab):
+        fos = (
+            values.get(FIELD_OF_STUDY)
+            or values.get(DISCIPLINE)
+            or values.get(MAJOR)
+            or "Computer Science"
+        )
+        try:
+            from gh_select import aliases_for
+
+            return aliases_for("FIELD_OF_STUDY", str(fos))[:10] or [
+                str(fos),
+                "Computer Science",
+                "Computer science",
+            ]
+        except Exception:
+            return [str(fos), "Computer Science", "Computer science"]
     if re.search(
         r"degree|qualification|education level|level of education|"
         r"highest.*(education|degree)|education completed",
         lab,
     ):
         deg = (values.get(DEGREE) or "Master's Degree").strip()
-        # Workday often wants level, not "M.S., Example Studies"
-        return [
-            "Master's Degree",
-            "Masters",
-            "Master's",
-            "Bachelor's Degree",
-            deg,
-            "Master of Science",
-        ]
+        try:
+            from gh_select import aliases_for
+
+            # Polarity-filtered aliases — never list Bachelor/Associate for Master's
+            return aliases_for("DEGREE", deg)[:10] or [deg, "Master's Degree", "Masters"]
+        except Exception:
+            return [
+                deg,
+                "Master's Degree",
+                "Masters",
+                "Master's",
+                "Master of Science",
+                "M.S.",
+            ]
+    if re.search(r"school|universit|college|institution", lab):
+        school = (values.get(SCHOOL) or "University of Alabama, Tuscaloosa").strip()
+        return [school, "University of Alabama, Tuscaloosa"]
     if re.search(r"phone.*type|device type", lab):
         return ["Mobile", "Home", "Cell"]
-    if re.search(r"country", lab) and "region" not in lab:
+    if re.search(r"country", lab) and "region" not in lab and "phone" not in lab:
         return [str(values.get(ADDRESS_COUNTRY) or "United States"), "United States"]
     if re.search(r"state|province|region", lab):
         st = str(values.get(ADDRESS_STATE) or "Illinois")
@@ -7443,21 +8111,37 @@ async def _fill_select_one_by_label(page, label: str, candidates: list[str]) -> 
                 continue
             cur = ((await btn.inner_text()) or "").strip()
             if cur and not is_workday_select_placeholder(cur):
-                # already filled — do not reopen (same-page thrash)
+                # already filled — only keep when readback soft-matches intended
+                # (live Elanco: A.A. left in Degree must not already_correct_keep)
+                keep = False
                 try:
-                    from verified_select import settle_open_listbox
+                    from gh_select import _score_option
+                    from verified_select import soft_value_match
 
-                    await settle_open_listbox(page)
+                    keep = any(
+                        soft_value_match(str(c), cur)
+                        or int(_score_option(cur, str(c)) or 0) >= 70
+                        for c in candidates
+                        if c
+                    )
                 except Exception:
-                    pass
-                detail["status"] = "filled"
-                detail["verified"] = True
-                detail["committed"] = True
-                detail["readback"] = cur[:120]
-                detail["already_set"] = True
-                detail["reason"] = "already_correct_keep"
-                detail["skipped_already_correct"] = True
-                return detail
+                    keep = False
+                if keep:
+                    try:
+                        from verified_select import settle_open_listbox
+
+                        await settle_open_listbox(page)
+                    except Exception:
+                        pass
+                    detail["status"] = "filled"
+                    detail["verified"] = True
+                    detail["committed"] = True
+                    detail["readback"] = cur[:120]
+                    detail["already_set"] = True
+                    detail["reason"] = "already_correct_keep"
+                    detail["skipped_already_correct"] = True
+                    return detail
+                # Wrong committed value — reopen and overwrite below
             target_btn = btn
             break
         if target_btn is None:
@@ -7491,7 +8175,51 @@ async def _fill_select_one_by_label(page, label: str, candidates: list[str]) -> 
             before_text = ((await target_btn.inner_text()) or "").strip()
         except Exception:
             before_text = ""
-        had_placeholder = is_workday_select_placeholder(before_text)
+        # Infer field type for enumerate-first scoring (Degree vs School vs …)
+        # FoS before school so "University…" wrap text does not mis-tag FoS.
+        # Country Phone Code before generic country / how-heard.
+        ftype = ""
+        if re.search(
+            r"country[\s_-]*phone|phone[\s_-]*country|calling[\s_-]*code|dial[\s_-]*code",
+            lab_l,
+        ):
+            ftype = "PHONE_COUNTRY_CODE"
+            # Dedicated US dial path — never type how-heard candidates here
+            try:
+                from verified_select import phone_country_code_candidates
+
+                candidates = phone_country_code_candidates(
+                    {"PHONE_COUNTRY_CODE": candidates[0] if candidates else None}
+                )
+            except Exception:
+                candidates = [
+                    "United States (+1)",
+                    "United States",
+                    "+1",
+                ]
+        elif re.search(r"field of study|discipline|\bmajor\b", lab_l):
+            ftype = "FIELD_OF_STUDY"
+        elif re.search(r"\bdegree\b|qualification", lab_l):
+            ftype = "DEGREE"
+        elif re.search(r"\bschool\b|universit|college", lab_l):
+            ftype = "SCHOOL"
+        elif re.search(
+            r"how (did|do) you (hear|learn)|where did you hear|hear about",
+            lab_l,
+        ):
+            ftype = "HOW_HEARD"
+        # Typable searchSelect (Elanco FoS): nest input is the filter, not the button.
+        filter_inp = None
+        try:
+            parent = target_btn.locator(
+                'xpath=ancestor::*[@data-automation-id and contains(@data-automation-id, "formField")][1]'
+            )
+            scope = parent if await parent.count() else target_btn
+            nested = scope.locator('input:not([type="hidden"])').first
+            if await nested.count() and await nested.is_visible(timeout=300):
+                filter_inp = nested
+        except Exception:
+            filter_inp = None
         last_miss = "no_matching_option"
         for cand in candidates:
             wd = await fill_workday_combobox(
@@ -7499,9 +8227,11 @@ async def _fill_select_one_by_label(page, label: str, candidates: list[str]) -> 
                 target_btn,
                 str(cand),
                 aliases=[cand, *[c for c in candidates if c != cand]],
+                filter_input=filter_inp if filter_inp is not None else target_btn,
                 read_committed=lambda: target_btn.inner_text(),
                 timeout_ms=5000,
                 label=needle,
+                field_type=ftype,
             )
             readback = str(wd.get("readback") or wd.get("picked") or "")
             if not readback:
@@ -7509,27 +8239,36 @@ async def _fill_select_one_by_label(page, label: str, candidates: list[str]) -> 
                     readback = ((await target_btn.inner_text()) or "").strip()
                 except Exception:
                     readback = ""
-            # jobhard: verify via contains_pick OR placeholder_cleared
+            # jobhard: verify via contains_pick OR soft degree match — never
+            # accept a wrong option just because placeholder cleared (A.A.).
             contains_pick = bool(cand) and cand.lower() in (readback or "").lower()
             picked = str(wd.get("picked") or "")
             if picked and picked.lower() in (readback or "").lower():
                 contains_pick = True
-            placeholder_cleared = had_placeholder and not is_workday_select_placeholder(
-                readback
-            )
+            soft_ok = False
+            try:
+                from gh_select import _score_option
+                from verified_select import soft_value_match
+
+                soft_ok = any(
+                    soft_value_match(str(c), readback)
+                    or soft_value_match(str(c), picked)
+                    or int(_score_option(readback or picked, str(c)) or 0) >= 70
+                    for c in candidates
+                    if c
+                )
+            except Exception:
+                soft_ok = contains_pick
             filled_ok = (
                 not is_workday_select_placeholder(readback)
-                and (bool(wd.get("ok")) or contains_pick or placeholder_cleared)
+                and (bool(wd.get("ok")) or contains_pick or soft_ok)
+                and soft_ok
             )
             if filled_ok:
                 via = (
                     "contains_pick"
                     if contains_pick
-                    else (
-                        "placeholder_cleared"
-                        if placeholder_cleared
-                        else "combobox_ok"
-                    )
+                    else ("soft_match" if soft_ok else "combobox_ok")
                 )
                 detail.update(
                     {
@@ -7602,6 +8341,269 @@ async def _fill_required_select_ones(page, values: dict, phase: dict) -> list[di
     return results
 
 
+def _fos_candidates(values: dict) -> list[str]:
+    """Dummy Field of Study aliases (Computer Science first)."""
+    fos = (
+        (values or {}).get(FIELD_OF_STUDY)
+        or (values or {}).get(DISCIPLINE)
+        or (values or {}).get(MAJOR)
+        or "Computer Science"
+    )
+    cands = _dummy_answer_for_wd_label("Field of Study", values or {}) or [str(fos)]
+    try:
+        from gh_select import aliases_for
+
+        for a in aliases_for("FIELD_OF_STUDY", str(fos))[:12]:
+            if a and a not in cands:
+                cands.append(a)
+    except Exception:
+        pass
+    return [c for c in cands if c]
+
+
+async def _fill_typable_edu_prompt(
+    page,
+    label: str,
+    value: str,
+    candidates: list[str],
+    *,
+    field_type: str = FIELD_OF_STUDY,
+) -> dict:
+    """Fill a Workday education typable searchSelect by formField label.
+
+    Elanco Field of Study is an input + prompt list (not Select One). Type into
+    the nested input, then enumerate→score / fiber commit — never bare .fill().
+    """
+    detail: dict = {
+        "automation_id": f"edu_prompt:{(label or '')[:40]}",
+        "status": "missed",
+        "label": (label or "")[:160],
+        "verified": False,
+        "mode": "typable_edu_prompt",
+        "type": field_type,
+        "value": value,
+    }
+    needle = re.sub(r"[*:\s]+$", "", (label or "").strip())[:48]
+    if not needle or not value:
+        detail["reason"] = "empty_label_or_value"
+        return detail
+    try:
+        from verified_select import (
+            fiber_search_select,
+            fill_workday_combobox,
+            settle_open_listbox,
+            soft_value_match,
+        )
+
+        fields = page.locator('[data-automation-id*="formField"]')
+        n = await fields.count()
+        target_field = None
+        for i in range(min(n, 50)):
+            field = fields.nth(i)
+            try:
+                txt = ((await field.inner_text()) or "").lower()
+            except Exception:
+                continue
+            if needle.lower()[:24] not in txt and not any(
+                w in txt for w in needle.lower().split()[:3] if len(w) > 3
+            ):
+                continue
+            # Prefer fields whose automation-id hints FoS/major/discipline
+            try:
+                aid = (
+                    await field.get_attribute("data-automation-id") or ""
+                ).lower()
+            except Exception:
+                aid = ""
+            # Prefer FoS/major/discipline aids — never steal school/degree widgets
+            fos_aid = any(
+                k in aid for k in ("fieldofstudy", "discipline", "major")
+            )
+            school_or_degree = any(k in aid for k in ("school", "degree")) and not fos_aid
+            if school_or_degree and field_type in (
+                FIELD_OF_STUDY,
+                DISCIPLINE,
+                MAJOR,
+                "FIELD_OF_STUDY",
+                "DISCIPLINE",
+                "MAJOR",
+            ):
+                continue
+            if fos_aid or needle.lower()[:12] in txt:
+                target_field = field
+                if fos_aid:
+                    break
+        if target_field is None:
+            detail["reason"] = "formfield_not_found"
+            return detail
+
+        inp = target_field.locator('input:not([type="hidden"])').first
+        btn = target_field.locator(
+            'button[aria-haspopup="listbox"], [role="combobox"], button'
+        ).first
+        has_inp = await inp.count() > 0
+        has_btn = await btn.count() > 0
+        if not has_inp and not has_btn:
+            detail["reason"] = "no_input_or_button"
+            return detail
+        control = btn if has_btn else inp
+        filter_loc = inp if has_inp else control
+
+        async def _readback() -> str:
+            try:
+                wrap = ((await target_field.inner_text()) or "").strip()
+            except Exception:
+                wrap = ""
+            try:
+                typed = await filter_loc.input_value() if has_inp else ""
+            except Exception:
+                typed = ""
+            return (wrap or typed or "")[:200]
+
+        def _readback_matches(rb: str) -> bool:
+            """Require soft_value_match — never raw substring / picked-alone."""
+            for c in candidates:
+                if c and soft_value_match(str(c), rb or ""):
+                    return True
+            return False
+
+        # Path A: fiber searchSelect on real input (ChamPro Tab commit)
+        if has_inp:
+            for cand in candidates[:6]:
+                try:
+                    fr = await fiber_search_select(
+                        page,
+                        filter_loc,
+                        str(cand),
+                        aliases=[cand, *[c for c in candidates if c != cand]],
+                    )
+                except Exception as e:
+                    detail["fiber_error"] = str(e)[:80]
+                    fr = {}
+                if fr.get("ok") or fr.get("option_clicked"):
+                    rb = await _readback()
+                    picked = str(fr.get("picked") or "")
+                    ok = _readback_matches(rb) or (
+                        picked and soft_value_match(str(cand), picked)
+                    )
+                    if ok:
+                        try:
+                            await settle_open_listbox(page)
+                        except Exception:
+                            pass
+                        detail.update(
+                            {
+                                "status": "filled",
+                                "verified": True,
+                                "committed": True,
+                                "readback": (rb or picked or "")[:120],
+                                "option_text": picked[:80] or None,
+                                "algorithm": fr.get("algorithm") or "fiber_search_select",
+                                "mode": "fiber_search_select",
+                            }
+                        )
+                        return detail
+
+        # Path B: workday combobox enumerate→score with nested filter input
+        for cand in candidates[:8]:
+            wd = await fill_workday_combobox(
+                page,
+                control,
+                str(cand),
+                aliases=[cand, *[c for c in candidates if c != cand]],
+                filter_input=filter_loc,
+                read_committed=_readback,
+                timeout_ms=5500,
+                label=needle,
+                field_type=field_type,
+            )
+            rb = str(wd.get("readback") or wd.get("picked") or (await _readback()) or "")
+            soft_ok = _readback_matches(rb)
+            if (wd.get("ok") and wd.get("committed") and soft_ok) or soft_ok:
+                try:
+                    await settle_open_listbox(page)
+                except Exception:
+                    pass
+                detail.update(
+                    {
+                        "status": "filled",
+                        "verified": True,
+                        "committed": True,
+                        "readback": rb[:120],
+                        "option_text": (wd.get("picked") or "")[:80] or None,
+                        "algorithm": wd.get("algorithm") or "typable_edu_prompt",
+                        "option_clicked": bool(wd.get("option_clicked")),
+                    }
+                )
+                return detail
+            detail["reason"] = wd.get("error") or detail.get("reason") or "no_matching_option"
+        try:
+            await _escape_unless_captcha(page)
+        except Exception:
+            pass
+    except Exception as e:
+        detail["error"] = str(e)[:160]
+        detail["reason"] = "typable_edu_error"
+    return detail
+
+
+async def _fill_education_field_of_study(page, values: dict, phase: dict) -> None:
+    """Commit dummy Field of Study on Workday education (typable or Select One)."""
+    fos = (
+        values.get(FIELD_OF_STUDY)
+        or values.get(DISCIPLINE)
+        or values.get(MAJOR)
+        or "Computer Science"
+    ).strip()
+    if not fos:
+        return
+    cands = _fos_candidates(values)
+    last_miss: dict | None = None
+
+    for aid in (
+        "formField-fieldOfStudy",
+        "fieldOfStudy",
+        "educationSection_fieldOfStudy",
+        "formField-discipline",
+        "discipline",
+        "formField-major",
+        "major",
+    ):
+        r = await _fill_automation_id(page, aid, fos, combobox=True)
+        if _is_verified_fill(r):
+            r["automation_id"] = f"education/{aid}"
+            r["type"] = FIELD_OF_STUDY
+            phase.setdefault("filled", []).append(r)
+            return
+        if r.get("reason") not in ("not_in_dom", "not_visible"):
+            last_miss = r
+
+    for lab in ("Field of Study", "Discipline", "Major"):
+        sr = await _fill_select_one_by_label(page, lab, cands)
+        if sr.get("verified"):
+            sr["type"] = FIELD_OF_STUDY
+            phase.setdefault("filled", []).append(sr)
+            return
+        tr = await _fill_typable_edu_prompt(
+            page, lab, fos, cands, field_type=FIELD_OF_STUDY
+        )
+        if tr.get("verified"):
+            tr["automation_id"] = f"education/{lab}"
+            phase.setdefault("filled", []).append(tr)
+            return
+        last_miss = tr if tr.get("reason") else sr
+
+    miss = last_miss or {
+        "automation_id": "education/fieldOfStudy",
+        "status": "missed",
+        "reason": "fos_not_committed",
+        "verified": False,
+        "type": FIELD_OF_STUDY,
+        "value": fos,
+    }
+    phase.setdefault("missed", []).append(miss)
+
+
 async def _fill_education_section(page, values: dict, phase: dict) -> None:
     """Add + fill first education row (school/degree) when educationSection present."""
     present = (
@@ -7654,7 +8656,11 @@ async def _fill_education_section(page, values: dict, phase: dict) -> None:
                 continue
     school = (values.get(SCHOOL) or "University of Alabama, Tuscaloosa").strip()
     degree = (values.get(DEGREE) or "Master's Degree").strip()
-    # School combobox / input
+    edu_end = str(values.get(EDUCATION_END_YEAR) or "2019").strip()
+    edu_start = str(values.get(EDUCATION_START_YEAR) or "").strip()
+    if not edu_start and edu_end.isdigit():
+        edu_start = str(int(edu_end) - 2)
+    # School / degree combobox — enumerate→score via verified_select
     for aid, val, combobox in (
         ("school", school, True),
         ("degree", degree, True),
@@ -7662,13 +8668,11 @@ async def _fill_education_section(page, values: dict, phase: dict) -> None:
         ("formField-school", school, True),
         ("formField-degree", degree, True),
     ):
-        # Prefer Select One path by label when automation id fill misses
         r = await _fill_automation_id(page, aid, val, combobox=combobox)
         if _is_verified_fill(r):
             r["automation_id"] = f"education/{aid}"
             phase.setdefault("filled", []).append(r)
             continue
-        # Label-based Select One
         lab = "School" if "school" in aid.lower() else "Degree"
         sr = await _fill_select_one_by_label(
             page,
@@ -7679,6 +8683,48 @@ async def _fill_education_section(page, values: dict, phase: dict) -> None:
             phase.setdefault("filled", []).append(sr)
         elif r.get("reason") not in ("not_in_dom", "not_visible"):
             phase.setdefault("missed", []).append(r)
+    # Field of Study / Discipline — typable searchSelect (Elanco) or Select One
+    await _fill_education_field_of_study(page, values, phase)
+    # Education From/To years (dummy graduation span)
+    if edu_start or edu_end:
+        try:
+            # Prefer education section date spins (often after work experience)
+            edu_scope = page.locator(
+                '[data-automation-id="educationSection"], '
+                '[data-automation-id="educationPanel"], '
+                '[data-automation-id*="education" i]'
+            ).first
+            scope = edu_scope if await edu_scope.count() else page
+            # From = start year; To = graduation year
+            if edu_start:
+                dr = await _fill_date_spin(
+                    page, scope, "08", edu_start, nth=0, from_only=True
+                )
+                dr["automation_id"] = "education/startDate"
+                (phase["filled"] if dr.get("verified") else phase["missed"]).append(dr)
+            if edu_end:
+                # nth relative to SCOPED pool — never page-wide last index
+                to_pool = await _list_date_inputs(
+                    page, "year", mode="to", root=scope
+                )
+                to_nth = 0 if to_pool else 0
+                dr2 = await _fill_date_spin(
+                    page, scope, "05", edu_end, nth=to_nth, to_only=True
+                )
+                dr2["automation_id"] = "education/endDate"
+                (phase["filled"] if dr2.get("verified") else phase["missed"]).append(
+                    dr2
+                )
+        except Exception as e:
+            phase.setdefault("missed", []).append(
+                {
+                    "automation_id": "education/dates",
+                    "status": "missed",
+                    "reason": f"edu_date_error:{e}"[:120],
+                    "verified": False,
+                }
+            )
+
 
 async def _phase_app_questions(page, values: dict, report: dict) -> dict:
     """Optional applicationQuestions step (Cisco: between experience and EEO).
@@ -8015,7 +9061,7 @@ async def _phase_e_self_id(page, values: dict, report: dict) -> dict:
         return phase
 
     # Click next once to reach review if possible; button_gate refuses Submit
-    next_clicks = await _click_next_advance(page)
+    next_clicks = await _click_next_advance(page, report)
     phase["next_clicks"] = next_clicks
     report.setdefault("clicks", []).extend(next_clicks)
     phase["advanced"] = any(c.get("action") == "clicked" for c in next_clicks)

@@ -66,6 +66,10 @@ Measured on CfT 149: `--disable-infobars` reclaims the full 56px banner; **`--te
 
 **PID files** (all under `logs/`, gitignored): `dashboard_server.pid`, `dashboard_launcher.pid`, `dashboard_chrome.pid`. KeepAlive LaunchAgent (`com.jobhunter.dashboard-server`) stays unloaded / `KeepAlive=false`.
 
+**Latest-code guarantee (click icon → this tree).** The applet baked-in ROOT is `/Users/job/.openclaw/workspace/job-hunter` (`osadecompile ~/Desktop/'Job Hunter Dashboard.app'/Contents/Resources/Scripts/main.scpt`), `launch_dashboard.sh` resolves ROOT script-relative, and `server.py` uses `ROOT=__file__.parent.parent` — so a click always runs *this* workspace. Fills spawn a **fresh subprocess** `ROOT/.venv` or `skyvern_runtime/venv` python running `ROOT/scripts/fastfill/fast_fill.py` with `cwd=ROOT`, so **uncommitted `scripts/fastfill/` edits are picked up on the very next fill** (no rebuild/restart needed). Only `dashboard/server.py` + `dashboard/static/` changes need a server restart — the long-lived server does not hot-reload, and clicking the icon while it's already running only **focuses** the UI (`on reopen` → `--focus-ui`). To load new server/static code use the header **Refresh (↻)** (`/api/restart`) or fully Quit then reopen the icon. Launched via Finder the applet inherits your login PATH (Homebrew `python3` 3.14); the server is stdlib-only so the restricted-PATH `/usr/bin/python3` (3.9) also works — either way fills use the absolute venv paths.
+
+**Stale-lock recovery.** If a launcher is killed uncleanly (e.g. reaped mid-launch) it can leave `logs/dashboard_launcher.lockdir`; the next click then thinks another instance is live and just focuses/exits without starting. Fix: `rm -rf logs/dashboard_launcher.lockdir` then click again. Also note Cursor/VS Code may auto-forward `:8787` on IPv6 `[::1]` — harmless (the server binds IPv4 `127.0.0.1:8787` and the UI opens the IPv4 URL).
+
 **Process inventory (quit kills these):**
 
 | Process | How identified |
@@ -166,8 +170,10 @@ skyvern_runtime/venv/bin/python scripts/fastfill/fast_fill.py URL --headless --f
 # Interactive review: keep browser open after fill (Ctrl+C / ~3600s); dummy only, never submit:
 skyvern_runtime/venv/bin/python scripts/fastfill/fast_fill.py URL --headed --flash-leftovers --hold-open
 # Or: --hold-seconds N (headed default hold is 60s; headless default 0)
-# CAPTCHA (headed default ON): pause — solve in browser, then Enter / touch sentinel / wait until gone
-#   Message: CAPTCHA detected — solve it in the browser, then press Enter here to continue
+# CAPTCHA (headed default ON): pause — solve in browser, then Continue (overlay)
+#   / Enter / touch attempt-dir `.captcha_continue` (FASTFILL_CAPTCHA_CONTINUE_FILE)
+#   / wait until challenge gone. Checkbox-only widgets are NOT "challenge still
+#   visible". 1st Continue while challenge true → warn; 2nd Continue → force-resume.
 #   No-TTY: CAPTCHA_WAITING.md + touch sentinel; --no-captcha-wait disables; headless → BLOCKED
 # Same-session leftover refill (auto by default — no Enter babysitting):
 skyvern_runtime/venv/bin/python scripts/fastfill/fast_fill.py URL --headed --hold-open \
@@ -187,17 +193,60 @@ skyvern_runtime/venv/bin/python scripts/fastfill/cycle_orchestrate.py --help
 skyvern_runtime/venv/bin/python scripts/fastfill/cycle_orchestrate.py --self-test
 skyvern_runtime/venv/bin/python scripts/fastfill/cycle_orchestrate.py --dry-run \
   --fixture skyvern_runtime/real_job_results/fast_fill_ashby.json
+# Offline regression lane (also auto-runs at end of every cycle unless FASTFILL_CYCLE_REGRESSION=0):
+skyvern_runtime/venv/bin/python scripts/fastfill/regression_deepeval.py --self-test
+# Answer-memory A/B (evidence gate; memory stays OFF until promote):
+skyvern_runtime/venv/bin/python scripts/fastfill/answer_memory_ab.py --self-test
+# Optional OmniRoute cost gateway (compose profile; DeepSeek direct is default fallback):
+#   docker compose --profile gateway up -d omniroute
+#   OPENAI_COMPATIBLE_API_BASE=http://127.0.0.1:20128/v1  # dummy-mode only
+# Fastfill LLM/ML deps (skyvern_runtime/venv 3.12 — never the main 3.14 .venv):
+#   skyvern_runtime/venv/bin/python -m pip install -r skyvern_runtime/requirements-fastfill.txt
+# Rollback flags: FASTFILL_STRUCTURED_LLM=0 · FASTFILL_SEMANTIC_MATCH=0 ·
+#   FASTFILL_ANSWER_MEMORY=0 (default) · unset OPENAI_COMPATIBLE_API_BASE · FASTFILL_TRACE=0
 # Live variety loop (headed; never Submit; hold-open + captcha wait + auto-refill):
 skyvern_runtime/venv/bin/python scripts/fastfill/cycle_orchestrate.py \
   --limit 4 --headed --success-streak 2 --min-platforms 2
-# CAPTCHA: solve in browser, then Enter (TTY) or touch sentinel / wait until gone
-#   (no-TTY: see CAPTCHA_WAITING.md; does not burn BLOCKED×3)
+# CAPTCHA: solve in browser, then overlay Continue (or Enter / touch attempt
+#   `.captcha_continue`). Challenge-gone resumes; 2nd Continue force-resumes
+#   if detector sticky (never auto-solves). no-TTY: CAPTCHA_WAITING.md
 # Refill: same-page leftover passes auto-loop (--refill-passes 2); NO Enter by default
 #   (School/Degree/salary/essays filled by prefill or Flash — never ask human to refill)
 # Attribution / vision helpers:
 skyvern_runtime/venv/bin/python scripts/fastfill/fill_attribution.py --self-test
 skyvern_runtime/venv/bin/python scripts/fastfill/vision_judge.py --self-test
 # Agent role prompts: scripts/fastfill/CYCLE_AGENTS.md
+
+# Offline gym → gated live canary (preferred before endless live train)
+# Gyms: scripts/fastfill/gym/ (ATS fixtures + FormFactory). Docs: gym/README.md
+skyvern_runtime/venv/bin/python scripts/fastfill/gym/ats/runner.py --self-test
+skyvern_runtime/venv/bin/python scripts/fastfill/gym/formfactory_runner.py --self-test
+skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --phase train_offline
+skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --phase gate_live
+skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --phase canary_live --limit 7
+# One shot: offline green → arm → eval_suite --limit 7 → LIVE_CANARY_DONE hard stop
+skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --phase offline_then_canary
+skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --status
+# Live train / headed / eval_suite refuse until ARMED and not DONE (override: --force-live)
+
+# Live fill monitor (DOM + step-log watchdog — alongside headed cycle)
+# Detects Sign-in-vs-Create-account, midwizard advance, salary blanks.
+# --correct writes .force_create_account / .fill_paused (never CAPTCHA / never submit)
+# Stale skip: CAPTCHA budget / login wall / no progress → FIX_SKIPPED + next job
+skyvern_runtime/venv/bin/python scripts/fastfill/live_fill_monitor.py --self-test
+skyvern_runtime/venv/bin/python scripts/fastfill/test_stale_skip.py
+# One command (headed train + monitor + skip policy):
+skyvern_runtime/venv/bin/python scripts/fastfill/run_headed_cycle_with_monitor.py \
+  --limit 4 --working-streak 3 --min-platforms 3 --require-workday
+# Or: improvement_cycle.py --phase train --mode attended --with-monitor …
+# Skip budgets (env): FASTFILL_CAPTCHA_TIMEOUT_S=120 FASTFILL_STALE_NO_PROGRESS_S=180
+#   FASTFILL_STALE_ZERO_ACTIVITY_S=120 FASTFILL_HOLD_SUPPRESS_GRACE_S=120
+#   FASTFILL_LOGIN_WALL_SKIP_S=60 FASTFILL_AGENT4_WAIT_S=45 FASTFILL_FILL_PAUSE=0
+# Stale-skip does NOT fire during CAPTCHA wait / hold / Agent4 FIX wait / recent steps;
+# CAPTCHA attended budget still skips Stripe-forever walls separately.
+# Separate terminals (legacy):
+#   T1: improvement_cycle.py --phase train --mode attended --limit 4 …
+#   T2: live_fill_monitor.py --watch-latest --correct
 
 # Record/replay cache (selector→type only; no PII values)
 skyvern_runtime/venv/bin/python scripts/fastfill/record_replay.py --list

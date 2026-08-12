@@ -129,7 +129,7 @@ def test_overlay_continue_resumes_when_challenge_gone():
 
 
 def test_overlay_continue_keeps_waiting_while_challenge_visible():
-    """FILL-008: overlay Continue while CAPTCHA visible must not clear as solved."""
+    """First Continue while CAPTCHA visible must not clear as solved (warn + wait)."""
 
     class _FakePage:
         url = "https://example.com/captcha"
@@ -140,13 +140,14 @@ def test_overlay_continue_keeps_waiting_while_challenge_visible():
     try:
 
         async def _run():
-            state = {"paused": True, "captcha_gated": True}
+            state = {"paused": True, "captcha_gated": True, "continueCount": 0}
 
             async def _read(page, assume_paused_on_error=None):
                 return {
                     "paused": state["paused"],
                     "captcha_gated": state["captcha_gated"],
                     "installed": True,
+                    "continueCount": state["continueCount"],
                 }
 
             async def _gate(page, active):
@@ -161,7 +162,8 @@ def test_overlay_continue_keeps_waiting_while_challenge_visible():
 
             async def _click_early():
                 await asyncio.sleep(0.2)
-                state["paused"] = False  # premature Continue
+                state["paused"] = False  # premature Continue (once)
+                state["continueCount"] += 1
 
             with patch(
                 "captcha_pause._stdin_is_interactive", return_value=False
@@ -199,11 +201,170 @@ def test_overlay_continue_keeps_waiting_while_challenge_visible():
         assert result["waited"] is True
         assert result["continued"] is False
         assert result.get("timed_out") is True
+        assert result.get("force_resume") is not True
         # Re-armed Continue after premature click
         assert state["paused"] is True or state["captcha_gated"] is False
     finally:
         clear_captcha_waiting_marker()
         os.environ.pop("FASTFILL_CAPTCHA_NO_FOCUS", None)
+
+
+def test_second_continue_force_resumes_while_challenge_visible():
+    """2nd Continue while sticky detector still True → force-resume (user intent)."""
+
+    class _FakePage:
+        url = "https://example.com/captcha"
+        frames = []
+        main_frame = None
+
+    os.environ["FASTFILL_CAPTCHA_NO_FOCUS"] = "1"
+    try:
+
+        async def _run():
+            state = {"paused": True, "captcha_gated": True, "continueCount": 0}
+
+            async def _read(page, assume_paused_on_error=None):
+                return {
+                    "paused": state["paused"],
+                    "captcha_gated": state["captcha_gated"],
+                    "installed": True,
+                    "continueCount": state["continueCount"],
+                }
+
+            async def _gate(page, active):
+                state["captcha_gated"] = bool(active)
+                if active:
+                    state["paused"] = True
+                return {
+                    "captcha_gated": bool(active),
+                    "paused": state["paused"],
+                }
+
+            async def _set_paused(page, paused, hold_mode=False):
+                state["paused"] = bool(paused)
+                return {"paused": state["paused"]}
+
+            async def _double_click():
+                await asyncio.sleep(0.25)
+                state["paused"] = False
+                state["continueCount"] += 1
+                await asyncio.sleep(0.9)
+                state["paused"] = False
+                state["continueCount"] += 1
+
+            with patch(
+                "captcha_pause._stdin_is_interactive", return_value=False
+            ), patch(
+                "captcha_pause.page_shows_interactive_captcha",
+                new_callable=AsyncMock,
+                return_value=True,  # sticky forever
+            ), patch(
+                "fill_pause.set_fill_pause_captcha_gate",
+                new_callable=AsyncMock,
+                side_effect=_gate,
+            ), patch(
+                "fill_pause.read_fill_pause_state",
+                new_callable=AsyncMock,
+                side_effect=_read,
+            ), patch(
+                "fill_pause.set_fill_paused",
+                new_callable=AsyncMock,
+                side_effect=_set_paused,
+            ), patch(
+                "fill_pause.consume_fill_continue_sentinel",
+                return_value=False,
+            ):
+                task = asyncio.create_task(_double_click())
+                result = await wait_for_human_captcha(
+                    _FakePage(),
+                    headed=True,
+                    captcha_wait=True,
+                    timeout_s=15,
+                )
+                await task
+            return result
+
+        result = asyncio.run(_run())
+        assert result["waited"] is True
+        assert result["continued"] is True
+        assert result.get("force_resume") is True
+        assert result.get("solved_gone") is True
+        assert "force" in str(result.get("via") or "")
+        assert result.get("timed_out") is not True
+    finally:
+        clear_captcha_waiting_marker()
+        os.environ.pop("FASTFILL_CAPTCHA_NO_FOCUS", None)
+
+
+def test_sentinel_second_touch_force_resumes():
+    """Second .captcha_continue while sticky → force-resume."""
+
+    class _FakePage:
+        url = "https://example.com/captcha"
+        frames = []
+        main_frame = None
+
+    with tempfile.TemporaryDirectory() as td:
+        sentinel = Path(td) / ".captcha_continue"
+        prev = os.environ.get("FASTFILL_CAPTCHA_CONTINUE_FILE")
+        os.environ["FASTFILL_CAPTCHA_CONTINUE_FILE"] = str(sentinel)
+        os.environ["FASTFILL_CAPTCHA_NO_FOCUS"] = "1"
+        try:
+
+            async def _run():
+                async def _touch_twice():
+                    await asyncio.sleep(0.25)
+                    sentinel.write_text("1")
+                    await asyncio.sleep(1.0)
+                    sentinel.write_text("2")
+
+                with patch(
+                    "captcha_pause._stdin_is_interactive", return_value=False
+                ), patch(
+                    "captcha_pause.page_shows_interactive_captcha",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ):
+                    task = asyncio.create_task(_touch_twice())
+                    result = await wait_for_human_captcha(
+                        _FakePage(),
+                        headed=True,
+                        captcha_wait=True,
+                        timeout_s=15,
+                    )
+                    await task
+                return result
+
+            result = asyncio.run(_run())
+            assert result["continued"] is True
+            assert result.get("force_resume") is True
+            assert "force" in str(result.get("via") or "")
+        finally:
+            clear_captcha_waiting_marker()
+            os.environ.pop("FASTFILL_CAPTCHA_NO_FOCUS", None)
+            if prev is None:
+                os.environ.pop("FASTFILL_CAPTCHA_CONTINUE_FILE", None)
+            else:
+                os.environ["FASTFILL_CAPTCHA_CONTINUE_FILE"] = prev
+
+
+def test_visible_captcha_challenge_ignores_checkbox_widget():
+    """Detector must not treat dormant hCaptcha/reCAPTCHA checkbox as challenge."""
+    import inspect
+
+    from iframe_ctx import visible_captcha_challenge
+
+    src = inspect.getsource(visible_captcha_challenge)
+    # Evaluate body must require challenge/bframe — not bare checkbox widgets.
+    assert "bframe" in src
+    assert "getComputedStyle" in src or "visibleBox" in src
+    # Catch-all checkbox selectors must not appear in the evaluate payload.
+    eval_start = src.find('"""() =>')
+    eval_body = src[eval_start:] if eval_start >= 0 else src
+    assert ".h-captcha iframe" not in eval_body
+    assert ".g-recaptcha iframe" not in eval_body
+    assert "[data-hcaptcha-widget-id]" not in eval_body
+    assert "challenge" in eval_body.lower()
 
 
 def test_escape_safe_while_captcha():
@@ -705,6 +866,61 @@ def test_cycle_success_rejects_heuristic_and_missing_source():
     assert any(r.startswith("demoted_false_verified") for r in d3["reasons"])
 
 
+def test_cycle_success_ignores_optional_demographic_empties():
+    """Live DOM may list optional race blank; must not block SUCCESS."""
+    decision = evaluate_cycle_success(
+        {
+            "never_submit": True,
+            "submit_clicked": False,
+            "identity_email": "randommail6969+abc123def456@gmail.com",
+            "resume_field_present": False,
+            "leftovers": [],
+        },
+        {
+            "complete": True,
+            "empty_fields": [
+                {
+                    "label": "Please identify your race",
+                    "optional_demographic": True,
+                    "required": False,
+                }
+            ],
+            "confidence": "high",
+            "source": "dom",
+        },
+    )
+    assert decision["success"] is True
+
+
+def test_cycle_success_rejects_leftovers_despite_dom_complete():
+    """Navigate-away false COMPLETE must not SUCCESS when leftovers remain."""
+    decision = evaluate_cycle_success(
+        {
+            "never_submit": True,
+            "submit_clicked": False,
+            "identity_email": "randommail6969+abc123def456@gmail.com",
+            "resume_field_present": False,
+            "leftovers": [
+                {
+                    "label": "email",
+                    "reason": "live_required_empty:empty_required_input",
+                }
+            ],
+            "unfillable_after_2": True,
+            "unfillable_count": 1,
+        },
+        {
+            "complete": True,
+            "empty_fields": [],
+            "confidence": "high",
+            "source": "dom",
+        },
+    )
+    assert decision["success"] is False
+    assert any(r.startswith("leftovers_remain") for r in decision["reasons"])
+    assert "unfillable_after_2" in decision["reasons"]
+
+
 def test_hold_open_is_indefinite():
     from fast_fill import (
         HOLD_INDEFINITE,
@@ -890,6 +1106,9 @@ if __name__ == "__main__":
     test_sentinel_keeps_waiting_while_challenge_visible()
     test_overlay_continue_resumes_when_challenge_gone()
     test_overlay_continue_keeps_waiting_while_challenge_visible()
+    test_second_continue_force_resumes_while_challenge_visible()
+    test_sentinel_second_touch_force_resumes()
+    test_visible_captcha_challenge_ignores_checkbox_widget()
     test_handle_blocker_clears_on_continue()
     test_resume_gate_fails_success_when_missing()
     test_resume_gate_ok_when_verified_row()

@@ -1,0 +1,13 @@
+{
+  "fields": [
+    {
+      "key": "salary",
+      "selector": "#salary-input",
+      "committed": "95000",
+      "required": true
+    }
+  ],
+  "footer_kind": "FINAL",
+  "expect_advance": false,
+  "notes": "Salary input looks filled via ghost overlay but value is empty; fill must set real committed value."
+}

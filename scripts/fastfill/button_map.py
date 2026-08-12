@@ -146,6 +146,15 @@ ENTRY_PATTERNS = [
     r"^apply\s+without\s+(an?\s+)?account\b",
     r"^start\s+applying\b",
     r"^submit\s+interest\b",
+    # Workday / SSO auth gates hide the email+password form behind these buttons
+    # (social/SSO shown first). Clicking only REVEALS the email form — it never
+    # submits an application — so classify as ENTRY (safe navigation) instead of
+    # failing closed on UNKNOWN and stalling at the account gate.
+    r"^sign\s*-?\s*in\s+with\s+(your\s+)?email\b",
+    r"^continue\s+with\s+(your\s+)?email\b",
+    r"^log\s*-?\s*in\s+with\s+(your\s+)?email\b",
+    r"^use\s+email\b",
+    r"^use\s+email\s+(address\s+)?instead\b",
     # Taleo / SuccessFactors / Dayforce / UKG-UltiPro
     r"^apply\s+for\s+job\b",
     r"^apply\s+here\b",

@@ -2533,6 +2533,55 @@ def run_scout_scrape_then_dedup() -> None:
         raise
 
 
+def _metrics_timeline_payload() -> dict:
+    """Ops fill-quality trend + ratchet floors (counts only; no PII).
+
+    Reads ``scripts/fastfill/learning_store/metrics_timeline.jsonl``. Missing
+    file → empty rows with ratchet ok. Import failures never break the dashboard.
+    """
+    try:
+        sys.path.insert(0, str(ROOT / "scripts" / "fastfill"))
+        from metrics_timeline import load_timeline, ratchet_check  # type: ignore
+
+        rows = load_timeline()
+        latest = rows[-1] if rows else None
+        ok, violations = (True, [])
+        if latest is not None:
+            ok, violations = ratchet_check(latest, rows[:-1])
+        # Slim rows for the chart (last 30).
+        slim = [
+            {
+                "iso": r.get("iso"),
+                "label": r.get("label"),
+                "pass_rate": r.get("pass_rate"),
+                "n": r.get("n"),
+                "passed": r.get("passed"),
+                "safety_fail_n": r.get("safety_fail_n"),
+                "never_submit_all": r.get("never_submit_all", True),
+                "by_platform": r.get("by_platform") or {},
+            }
+            for r in rows[-30:]
+        ]
+        return {
+            "ok": True,
+            "n": len(rows),
+            "latest": slim[-1] if slim else None,
+            "ratchet_ok": ok,
+            "ratchet_violations": violations,
+            "rows": slim,
+        }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": f"{type(e).__name__}: {e}",
+            "n": 0,
+            "latest": None,
+            "ratchet_ok": True,
+            "ratchet_violations": [],
+            "rows": [],
+        }
+
+
 def runtime_status() -> dict:
     """Dashboard status bar payload: discovery phase + what's actively
     running. Deliberately excludes profile/PII — ids, company, title,
@@ -5955,6 +6004,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(_cron_job_public(job))
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)
+            return
+        if parts == ["api", "metrics", "timeline"]:
+            self._send_json(_metrics_timeline_payload())
             return
         self._send_json({"error": "not found"}, 404)
 

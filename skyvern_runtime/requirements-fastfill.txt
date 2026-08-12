@@ -1,0 +1,25 @@
+# Fastfill / LLM-ecosystem deps for skyvern_runtime/venv (CPython 3.12).
+# Install into THAT venv only — do not merge into the main repo requirements.txt
+# (CPython 3.14 .venv has no torch wheel and must keep the lexical fallback).
+#
+#   skyvern_runtime/venv/bin/python -m pip install -r skyvern_runtime/requirements-fastfill.txt
+#
+# Runtime fallbacks (a missing package never breaks a fill):
+#   instructor  -> urllib JSON mode -> synthesize_grounded_answer
+#   sentence-transformers / torch -> lexical_sim
+#   langfuse / deepeval / dspy -> optional; tracing/regression/optimize degrade
+
+# Phase 2 — typed leftover output
+instructor>=1.7.0
+openai>=1.40.0
+pydantic>=2.7.0
+
+# Phase 3 — semantic match (embeddings; lexical always available)
+sentence-transformers>=3.0.0
+
+# Phase 5 / 6 — optional observability + regression report
+# langfuse>=2.0.0
+# deepeval>=1.0.0
+
+# Phase 7 — optional DSPy prompt optimization (FASTFILL_DSPY=1)
+# dspy-ai>=2.5.0

@@ -19,6 +19,22 @@ retry the same guess repeatedly.
    fill `email`/`password`/`verifyPassword`, tick
    `input[data-automation-id="createAccountCheckbox"]`, submit via
    `button[data-automation-id="createAccountSubmitButton"]`.
+   - **Common case (direct sign-in form):** many apply flows land with email+password
+     visible and a **Create Account** link/button directly below the Sign In form
+     (no SSO reveal step). Dummy runs must **always** click Create Account and register
+     a fresh dummy — **never** fill Sign In with an unregistered email. Decision:
+     `switch_then_create` when `has_signin_form && has_create_account_link &&
+     !prefer_stored_signin` (see `workday_auth_gate_action` / `_probe_workday_auth_gate`).
+   - **Sign-in-only gate (SSO/social first):** some tenants open with social/SSO
+     buttons and a "Sign in with email" / "Continue with email" button and NO
+     visible Create Account. Correct path: click **Sign in with email** to reveal
+     `email`/`password`, then click the in-form **Create Account** link/tab to
+     switch to the create form, then create a FRESH dummy account. Never Sign In
+     with an unregistered dummy email. Decision lives in
+     `workday_auth_gate_action` (reveal_email → switch_then_create → create_account);
+     Sign In is chosen only when `web_keys` has stored creds for the host.
+     Reveal controls gate as ENTRY in `button_map` (`SIGN_IN_WITH_EMAIL_SELECTORS`
+     / `CREATE_ACCOUNT_LINK_SELECTORS` in `exp_workday_selectors`).
 4. After login: `a[data-automation-id="adventureButton"]` (sometimes needs
    clicking through an intro screen twice), then
    `a[data-automation-id="applyManually"]` to start a manual application
@@ -101,6 +117,16 @@ CC-305 - `name` (full legal name as e-signature), a date-of-today picker
 via `div[data-automation-id="dateIcon"]` then
 `button[data-automation-id="datePickerSelectedToday"]`, then a disability
 Yes/No/Decline question.
+
+## Known blockers (honest FAIL, not fill regression)
+
+**Accenture (`accenture.wd103.myworkdayjobs.com`)** — Phase A often stops at
+email/password with no create-account path after **Sign in with email** reveal.
+If `gate_action` stays `sign_in` with no stored creds and no
+`createAccountLink`, treat as **auth/SSO tenant blocker** (coverage ~0, never
+submit). Hardened path: reveal email → `switch_then_create` when link present;
+otherwise report `blocker: auth_gate` and skip fill-quality SLOs. Do not solve
+CAPTCHA or SSO.
 
 ## Source
 Selector/structure knowledge verified against real, working automation

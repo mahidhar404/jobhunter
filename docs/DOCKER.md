@@ -31,7 +31,26 @@ the data volume).
 |---|---|---|
 | `app` | The dashboard (`dashboard/server.py`) on `0.0.0.0:8787`, published to `127.0.0.1:8787`. Built on `mcr.microsoft.com/playwright/python:v1.61.0-jammy` (Chromium preinstalled, matches `playwright==1.61.0`) + Tectonic for resume→PDF. | ✅ starts by default |
 | `db` | `postgres:16-alpine` with a healthcheck + named volume. Backs the Skyvern learning path (`scripts/fastfill/learning.py`) and the optional `skyvern` service. | ✅ starts by default |
+| `omniroute` | **Optional LLM gateway.** Behind the `gateway` compose profile. OpenAI-compatible proxy on `127.0.0.1:20128` (compose DNS `http://omniroute:20128/v1`). DeepSeek stays the default direct base; point `OPENAI_COMPATIBLE_API_BASE` at OmniRoute only when you want free-tier fallback + compression. Dummy-mode only (`llm_config.assert_dummy_for_gateway`). | ❌ only with `--profile gateway` |
 | `skyvern` | **Optional, heavy.** Behind the `skyvern` compose profile. A documented placeholder wired to `db` (see [Skyvern](#skyvern-optional-heavy)). | ❌ only with `--profile skyvern` |
+
+## OmniRoute gateway (optional)
+
+Isolated cost/routing sidecar — **not** baked into the app image. If the
+gateway is down or unset, fills still hit DeepSeek direct via
+`OPENAI_COMPATIBLE_API_BASE` default.
+
+```bash
+docker compose --profile gateway up -d omniroute
+# Open http://127.0.0.1:20128 — add DeepSeek + optional free-tier providers,
+# generate a Bearer token, then in .env (dummy / TEST_MODE only):
+#   OPENAI_COMPATIBLE_API_BASE=http://127.0.0.1:20128/v1   # or http://omniroute:20128/v1 in-compose
+#   OPENAI_COMPATIBLE_API_KEY=<token>
+# Rollback: unset OPENAI_COMPATIBLE_API_BASE (reverts to https://api.deepseek.com/v1).
+```
+
+Free-tier pools and gateway analytics must never see real PII — the loop-entry
+assert refuses non-DeepSeek bases whenever `field_map.is_real_profile_mode()`.
 
 ## Images / versions
 

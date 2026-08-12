@@ -3,31 +3,31 @@
     "ashby": {
       "selectors": {
         ".ashby-application-form-field-entry:has(label:has-text('GitHub')) input[type=text], .ashby-application-form-field-entry:has(label:has-text('GitHub')) input:not([type=hidden]):not([": {
-          "attempts": 2,
+          "attempts": 9,
           "fail": 0,
           "host": "jobs.ashbyhq.com",
-          "success": 2,
+          "success": 9,
           "success_rate": 1.0,
           "type": "GITHUB",
-          "updated_at": "2026-08-06T06:00:33Z"
+          "updated_at": "2026-08-10T12:13:04Z"
         },
         ".ashby-application-form-field-entry:has(label:has-text('GitHub, Portfolio URL, or Other Website')) input, textarea": {
-          "attempts": 2,
-          "fail": 0,
-          "host": "jobs.ashbyhq.com",
-          "success": 2,
-          "success_rate": 1.0,
-          "type": "PORTFOLIO",
-          "updated_at": "2026-08-06T04:08:46Z"
-        },
-        ".ashby-application-form-field-entry:has(label:has-text('LinkedIn')) input[type=text], .ashby-application-form-field-entry:has(label:has-text('LinkedIn')) input[type=url], .ashby-ap": {
           "attempts": 5,
           "fail": 0,
           "host": "jobs.ashbyhq.com",
           "success": 5,
           "success_rate": 1.0,
+          "type": "PORTFOLIO",
+          "updated_at": "2026-08-10T11:24:13Z"
+        },
+        ".ashby-application-form-field-entry:has(label:has-text('LinkedIn')) input[type=text], .ashby-application-form-field-entry:has(label:has-text('LinkedIn')) input[type=url], .ashby-ap": {
+          "attempts": 15,
+          "fail": 0,
+          "host": "jobs.ashbyhq.com",
+          "success": 15,
+          "success_rate": 1.0,
           "type": "LINKEDIN",
-          "updated_at": "2026-08-06T06:03:09Z"
+          "updated_at": "2026-08-11T09:19:33Z"
         },
         ".ashby-application-form-field-entry:has(label:has-text('Portfolio')) input, textarea": {
           "attempts": 1,
@@ -38,14 +38,23 @@
           "type": "PORTFOLIO",
           "updated_at": "2026-08-06T06:00:33Z"
         },
-        ".ashby-application-form-field-entry:has(label:has-text('What are your base salary expectations f')) input, textarea": {
-          "attempts": 1,
+        ".ashby-application-form-field-entry:has(label:has-text('Portfolio')) input[type=text], .ashby-application-form-field-entry:has(label:has-text('Website')) input:not([type=hidden]):n": {
+          "attempts": 4,
           "fail": 0,
           "host": "jobs.ashbyhq.com",
-          "success": 1,
+          "success": 4,
+          "success_rate": 1.0,
+          "type": "PORTFOLIO",
+          "updated_at": "2026-08-10T12:13:04Z"
+        },
+        ".ashby-application-form-field-entry:has(label:has-text('What are your base salary expectations f')) input, textarea": {
+          "attempts": 4,
+          "fail": 0,
+          "host": "jobs.ashbyhq.com",
+          "success": 4,
           "success_rate": 1.0,
           "type": "SALARY_EXPECTED",
-          "updated_at": "2026-08-06T04:16:06Z"
+          "updated_at": "2026-08-10T11:24:13Z"
         },
         ".ashby-application-form-field-entry:has(label:has-text('What are your compensation expectations?')) input, textarea": {
           "attempts": 2,
@@ -57,13 +66,13 @@
           "updated_at": "2026-08-06T04:08:46Z"
         },
         ".ashby-application-form-field-entry:has(label:has-text('Why are you interested in this job at So')) input, textarea": {
-          "attempts": 3,
+          "attempts": 6,
           "fail": 0,
           "host": "jobs.ashbyhq.com",
-          "success": 3,
+          "success": 6,
           "success_rate": 1.0,
           "type": "INTEREST",
-          "updated_at": "2026-08-06T04:16:06Z"
+          "updated_at": "2026-08-10T11:24:13Z"
         },
         "ashby_zip_input": {
           "attempts": 1,
@@ -73,6 +82,35 @@
           "success_rate": 1.0,
           "type": "ADDRESS_ZIP",
           "updated_at": "2026-08-06T03:03:11Z"
+        },
+        "input[id='_systemfield_resume']": {
+          "attempts": 10,
+          "fail": 0,
+          "host": "jobs.ashbyhq.com",
+          "success": 10,
+          "success_rate": 1.0,
+          "type": "RESUME_UPLOAD",
+          "updated_at": "2026-08-11T09:19:33Z"
+        },
+        "input[name=\"2266f6f8-0c8a-49f4-95a3-702b96ca494a\"]:visible": {
+          "attempts": 3,
+          "demoted": true,
+          "demoted_at": "2026-08-10T11:23:25Z",
+          "fail": 2,
+          "host": "jobs.ashbyhq.com",
+          "success": 1,
+          "success_rate": 0.333,
+          "type": "",
+          "updated_at": "2026-08-10T11:17:34Z"
+        },
+        "input[name=\"4c533263-9ce1-48d2-b0a4-4e8e5fd410ed\"]:visible": {
+          "attempts": 3,
+          "fail": 0,
+          "host": "jobs.ashbyhq.com",
+          "success": 3,
+          "success_rate": 1.0,
+          "type": "VISA_STATUS",
+          "updated_at": "2026-08-11T09:19:33Z"
         },
         "input[name=\"564f5ebb-59e7-403e-8cdf-7d96e4daa3ef\"]:visible": {
           "attempts": 2,
@@ -134,13 +172,13 @@
           "updated_at": "2026-08-04T13:56:19Z"
         },
         "input[name=\"_systemfield_name\"]:visible": {
-          "attempts": 5,
+          "attempts": 15,
           "fail": 0,
           "host": "jobs.ashbyhq.com",
-          "success": 5,
+          "success": 15,
           "success_rate": 1.0,
           "type": "NAME_LAST",
-          "updated_at": "2026-08-06T06:03:09Z"
+          "updated_at": "2026-08-11T09:19:33Z"
         },
         "input[name=\"communicationConsent\"][value=\"given\"]": {
           "attempts": 2,
@@ -161,22 +199,31 @@
           "updated_at": "2026-08-06T06:00:33Z"
         },
         "input[name='_systemfield_name'], input[name='name'], input[autocomplete='name']": {
-          "attempts": 5,
+          "attempts": 15,
           "fail": 0,
           "host": "jobs.ashbyhq.com",
-          "success": 5,
+          "success": 15,
           "success_rate": 1.0,
           "type": "NAME_FULL",
-          "updated_at": "2026-08-06T06:03:09Z"
+          "updated_at": "2026-08-11T09:19:33Z"
         },
-        "input[type=email], input[name='email'], input[name='_systemfield_email'], input[autocomplete='email']": {
-          "attempts": 5,
+        "input[type=\"file\"]": {
+          "attempts": 3,
           "fail": 0,
           "host": "jobs.ashbyhq.com",
-          "success": 5,
+          "success": 3,
+          "success_rate": 1.0,
+          "type": "RESUME_UPLOAD",
+          "updated_at": "2026-08-10T09:48:15Z"
+        },
+        "input[type=email], input[name='email'], input[name='_systemfield_email'], input[autocomplete='email']": {
+          "attempts": 15,
+          "fail": 0,
+          "host": "jobs.ashbyhq.com",
+          "success": 15,
           "success_rate": 1.0,
           "type": "EMAIL",
-          "updated_at": "2026-08-06T06:03:09Z"
+          "updated_at": "2026-08-11T09:19:33Z"
         },
         "input[type=file], input[id='_systemfield_resume']": {
           "attempts": 5,
@@ -197,13 +244,13 @@
           "updated_at": "2026-08-06T06:03:09Z"
         },
         "label.ashby-application-form-question-title:has-text('Location') ~ div [role=combobox], .ashby-application-form-field-entry:has(label:has-text('Location')) [role=combobox], input[placeholder='Start typing...'][role=combobox]": {
-          "attempts": 3,
+          "attempts": 9,
           "fail": 0,
           "host": "jobs.ashbyhq.com",
-          "success": 3,
+          "success": 9,
           "success_rate": 1.0,
           "type": "ADDRESS_CITY",
-          "updated_at": "2026-08-06T06:00:33Z"
+          "updated_at": "2026-08-11T09:19:33Z"
         },
         "label:has-text('Degree') input:visible": {
           "attempts": 1,
@@ -253,9 +300,18 @@
           "success": 0,
           "success_rate": 0.0,
           "type": ""
+        },
+        "textarea[name=\"dd03a3b6-8049-40c6-8536-6d4ae5034764\"]:visible": {
+          "attempts": 3,
+          "fail": 0,
+          "host": "jobs.ashbyhq.com",
+          "success": 3,
+          "success_rate": 1.0,
+          "type": "COVER_LETTER",
+          "updated_at": "2026-08-10T11:24:13Z"
         }
       },
-      "updated_at": "2026-08-06T06:03:09Z"
+      "updated_at": "2026-08-11T09:19:33Z"
     },
     "bamboohr": {
       "selectors": {},
@@ -264,49 +320,49 @@
     "greenhouse": {
       "selectors": {
         "#email": {
-          "attempts": 18,
+          "attempts": 25,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 18,
+          "success": 25,
           "success_rate": 1.0,
           "type": "EMAIL",
-          "updated_at": "2026-08-06T06:08:31Z"
+          "updated_at": "2026-08-11T09:11:30Z"
         },
         "#first_name": {
-          "attempts": 19,
+          "attempts": 26,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 19,
+          "success": 26,
           "success_rate": 1.0,
           "type": "NAME_FIRST",
-          "updated_at": "2026-08-06T06:08:31Z"
+          "updated_at": "2026-08-11T09:11:30Z"
         },
         "#last_name": {
-          "attempts": 17,
+          "attempts": 24,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 17,
+          "success": 24,
           "success_rate": 1.0,
           "type": "NAME_LAST",
-          "updated_at": "2026-08-06T06:08:31Z"
+          "updated_at": "2026-08-11T09:11:30Z"
         },
         "#phone": {
-          "attempts": 17,
+          "attempts": 24,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 17,
+          "success": 24,
           "success_rate": 1.0,
           "type": "PHONE",
-          "updated_at": "2026-08-06T06:08:31Z"
+          "updated_at": "2026-08-11T09:11:30Z"
         },
         "#question_12931561008:visible": {
-          "attempts": 6,
+          "attempts": 20,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 6,
+          "success": 20,
           "success_rate": 1.0,
           "type": "INTEREST",
-          "updated_at": "2026-08-06T04:05:29Z"
+          "updated_at": "2026-08-10T10:02:39Z"
         },
         "#question_17191504008:visible": {
           "attempts": 1,
@@ -336,22 +392,22 @@
           "updated_at": "2026-08-03T09:15:34Z"
         },
         "#question_18093477008:visible": {
-          "attempts": 2,
+          "attempts": 6,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 2,
+          "success": 6,
           "success_rate": 1.0,
           "type": "BACKGROUND_CHECK",
-          "updated_at": "2026-08-06T04:05:29Z"
+          "updated_at": "2026-08-10T10:02:39Z"
         },
         "#question_18093478008:visible": {
-          "attempts": 1,
+          "attempts": 5,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 1,
+          "success": 5,
           "success_rate": 1.0,
           "type": "MARKETING_CONSENT",
-          "updated_at": "2026-08-06T04:05:29Z"
+          "updated_at": "2026-08-10T10:02:39Z"
         },
         "#question_6539879009:visible": {
           "attempts": 3,
@@ -364,14 +420,78 @@
           "type": "US_CITIZEN",
           "updated_at": "2026-08-02T09:50:49Z"
         },
-        "Preferred First Name": {
-          "attempts": 17,
+        "#question_67436183:visible": {
+          "attempts": 1,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 17,
+          "success": 1,
+          "success_rate": 1.0,
+          "type": "VISA_STATUS",
+          "updated_at": "2026-08-11T09:11:30Z"
+        },
+        "#question_67436184:visible": {
+          "attempts": 3,
+          "fail": 0,
+          "host": "job-boards.greenhouse.io",
+          "success": 3,
+          "success_rate": 1.0,
+          "type": "",
+          "updated_at": "2026-08-11T09:11:30Z"
+        },
+        "#question_67436185:visible": {
+          "attempts": 1,
+          "fail": 0,
+          "host": "job-boards.greenhouse.io",
+          "success": 1,
+          "success_rate": 1.0,
+          "type": "",
+          "updated_at": "2026-08-11T09:11:30Z"
+        },
+        "#question_67436189:visible": {
+          "attempts": 1,
+          "fail": 0,
+          "host": "job-boards.greenhouse.io",
+          "success": 1,
+          "success_rate": 1.0,
+          "type": "ACCOMMODATIONS_DETAILS",
+          "updated_at": "2026-08-11T09:11:30Z"
+        },
+        "#question_67436190:visible": {
+          "attempts": 6,
+          "fail": 0,
+          "host": "job-boards.greenhouse.io",
+          "success": 6,
+          "success_rate": 1.0,
+          "type": "WORK_AUTH",
+          "updated_at": "2026-08-11T09:11:30Z"
+        },
+        "#question_67436191:visible": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-11T09:09:45Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
+        },
+        ".select__container:has(label.select__label:text-matches('Country', 'i')) .select__control, .select__container:has(label:has-text('Country')) .select__control, .select-shell:has(label:has-text('Country')) .select__control, .field:has(label:has-text('Country')) .select__control": {
+          "attempts": 7,
+          "fail": 0,
+          "host": "job-boards.greenhouse.io",
+          "success": 7,
+          "success_rate": 1.0,
+          "type": "ADDRESS_COUNTRY",
+          "updated_at": "2026-08-11T09:11:30Z"
+        },
+        "Preferred First Name": {
+          "attempts": 23,
+          "fail": 0,
+          "host": "job-boards.greenhouse.io",
+          "success": 23,
           "success_rate": 1.0,
           "type": "NAME_FIRST",
-          "updated_at": "2026-08-06T06:08:31Z"
+          "updated_at": "2026-08-10T10:44:25Z"
         },
         "input#email": {
           "attempts": 1,
@@ -383,40 +503,67 @@
           "updated_at": "2026-08-06T06:06:06Z"
         },
         "input[name=\"email\"]:visible": {
-          "attempts": 1,
+          "attempts": 2,
           "fail": 0,
           "host": "boards.greenhouse.io",
-          "success": 1,
+          "success": 2,
           "success_rate": 1.0,
           "type": "EMAIL",
-          "updated_at": "2026-08-06T06:06:59Z"
+          "updated_at": "2026-08-10T09:59:19Z"
         },
         "input[name=\"firstName\"]:visible": {
-          "attempts": 4,
+          "attempts": 19,
           "fail": 0,
           "host": "boards.greenhouse.io",
-          "success": 4,
+          "success": 19,
           "success_rate": 1.0,
           "type": "NAME_FIRST",
-          "updated_at": "2026-08-06T06:06:59Z"
+          "updated_at": "2026-08-10T11:12:27Z"
         },
         "input[name=\"lastName\"]:visible": {
-          "attempts": 1,
+          "attempts": 5,
           "fail": 0,
           "host": "boards.greenhouse.io",
-          "success": 1,
+          "success": 5,
           "success_rate": 1.0,
           "type": "NAME_LAST",
-          "updated_at": "2026-08-06T06:06:59Z"
+          "updated_at": "2026-08-10T11:12:27Z"
+        },
+        "input[name=\"name\"]:visible": {
+          "attempts": 4,
+          "fail": 0,
+          "host": "job-boards.greenhouse.io",
+          "success": 4,
+          "success_rate": 1.0,
+          "type": "NAME_FULL",
+          "updated_at": "2026-08-11T06:08:03Z"
         },
         "input[name=\"password\"]:visible": {
-          "attempts": 1,
+          "attempts": 12,
           "fail": 0,
-          "host": "boards.greenhouse.io",
-          "success": 1,
+          "host": "job-boards.greenhouse.io",
+          "success": 12,
           "success_rate": 1.0,
           "type": "PASSWORD",
-          "updated_at": "2026-08-06T06:06:59Z"
+          "updated_at": "2026-08-11T06:08:03Z"
+        },
+        "input[type=email]": {
+          "attempts": 7,
+          "fail": 0,
+          "host": "job-boards.greenhouse.io",
+          "success": 7,
+          "success_rate": 1.0,
+          "type": "EMAIL",
+          "updated_at": "2026-08-11T06:08:03Z"
+        },
+        "input[type=file][id*='resume' i]": {
+          "attempts": 7,
+          "fail": 0,
+          "host": "job-boards.greenhouse.io",
+          "success": 7,
+          "success_rate": 1.0,
+          "type": "RESUME_UPLOAD",
+          "updated_at": "2026-08-11T09:11:30Z"
         },
         "input[type=file][id*='resume' i], input[type=file][name*='resume' i], input[type=file][accept*='pdf' i], input[type=file]": {
           "attempts": 17,
@@ -428,13 +575,13 @@
           "updated_at": "2026-08-06T06:08:31Z"
         },
         "js:linkedin_label_input": {
-          "attempts": 14,
+          "attempts": 21,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 14,
+          "success": 21,
           "success_rate": 1.0,
           "type": "LINKEDIN",
-          "updated_at": "2026-08-06T06:08:31Z"
+          "updated_at": "2026-08-11T09:11:30Z"
         },
         "label:has-text('Affirmation*') input:visible": {
           "attempts": 3,
@@ -446,31 +593,40 @@
           "updated_at": "2026-08-02T09:50:49Z"
         },
         "label:has-text('Are you Hispanic/Latino?') input:visible": {
-          "attempts": 14,
+          "attempts": 17,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 14,
+          "success": 17,
           "success_rate": 1.0,
           "type": "HISPANIC",
-          "updated_at": "2026-08-06T06:08:31Z"
+          "updated_at": "2026-08-11T09:11:30Z"
         },
         "label:has-text('Are you able to commit to a daily commute to Irvine, CA?*') input:visible": {
-          "attempts": 2,
+          "attempts": 6,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 2,
+          "success": 6,
           "success_rate": 1.0,
           "type": "COMMUTE",
-          "updated_at": "2026-08-06T04:05:29Z"
+          "updated_at": "2026-08-10T10:02:39Z"
         },
         "label:has-text('Are you at least 18 years or older?*') input:visible": {
-          "attempts": 2,
+          "attempts": 6,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 2,
+          "success": 6,
           "success_rate": 1.0,
           "type": "AGE_18",
-          "updated_at": "2026-08-06T04:05:29Z"
+          "updated_at": "2026-08-10T10:02:39Z"
+        },
+        "label:has-text('Attach') input:visible": {
+          "attempts": 5,
+          "fail": 0,
+          "host": "job-boards.greenhouse.io",
+          "success": 5,
+          "success_rate": 1.0,
+          "type": "RESUME_UPLOAD",
+          "updated_at": "2026-08-10T10:02:39Z"
         },
         "label:has-text('Country') input:visible": {
           "attempts": 1,
@@ -500,13 +656,13 @@
           "updated_at": "2026-08-02T09:50:49Z"
         },
         "label:has-text('Degree*') input:visible": {
-          "attempts": 3,
+          "attempts": 8,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 3,
+          "success": 8,
           "success_rate": 1.0,
           "type": "DEGREE",
-          "updated_at": "2026-08-06T04:08:26Z"
+          "updated_at": "2026-08-11T09:11:30Z"
         },
         "label:has-text('Desired Salary*') input:visible": {
           "attempts": 2,
@@ -518,13 +674,13 @@
           "updated_at": "2026-08-02T09:50:49Z"
         },
         "label:has-text('Disability Status') input:visible": {
-          "attempts": 14,
+          "attempts": 17,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 14,
+          "success": 17,
           "success_rate": 1.0,
           "type": "DISABILITY",
-          "updated_at": "2026-08-06T06:08:31Z"
+          "updated_at": "2026-08-11T09:11:30Z"
         },
         "label:has-text('Discipline') input:visible": {
           "attempts": 3,
@@ -547,15 +703,15 @@
           "updated_at": "2026-08-06T04:08:26Z"
         },
         "label:has-text('Do you currently live in the United States?*') input:visible": {
-          "attempts": 9,
+          "attempts": 11,
           "demoted": true,
           "demoted_at": "2026-08-03T09:47:59Z",
           "fail": 1,
           "host": "job-boards.greenhouse.io",
-          "success": 8,
-          "success_rate": 0.889,
+          "success": 10,
+          "success_rate": 0.909,
           "type": "US_RESIDENCE",
-          "updated_at": "2026-08-06T06:08:31Z"
+          "updated_at": "2026-08-10T10:44:25Z"
         },
         "label:has-text('Do you have a TS/SCI with Polygraph Security Clearance?*') input:visible": {
           "attempts": 3,
@@ -569,13 +725,32 @@
           "updated_at": "2026-08-02T09:50:49Z"
         },
         "label:has-text('Do you have any relatives or friends currently working at the company? \n*') input:visible": {
-          "attempts": 2,
+          "attempts": 6,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 2,
+          "success": 6,
           "success_rate": 1.0,
           "type": "WORKED_HERE_BEFORE",
-          "updated_at": "2026-08-06T04:05:29Z"
+          "updated_at": "2026-08-10T10:02:39Z"
+        },
+        "label:has-text('Do you know anyone or are you related to anyone who works at Capco?*') input:visible": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-11T09:09:45Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
+        },
+        "label:has-text('Do you require reasonable accommodations or adjustments?*') input:visible": {
+          "attempts": 1,
+          "fail": 0,
+          "host": "job-boards.greenhouse.io",
+          "success": 1,
+          "success_rate": 1.0,
+          "type": "ACCOMMODATIONS",
+          "updated_at": "2026-08-11T09:11:30Z"
         },
         "label:has-text('Employment Eligibility Information*') input:visible": {
           "attempts": 3,
@@ -589,22 +764,31 @@
           "updated_at": "2026-08-02T09:50:49Z"
         },
         "label:has-text('Gender') input:visible": {
-          "attempts": 14,
+          "attempts": 16,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 14,
+          "success": 16,
           "success_rate": 1.0,
           "type": "GENDER",
-          "updated_at": "2026-08-06T06:08:31Z"
+          "updated_at": "2026-08-10T10:44:25Z"
         },
-        "label:has-text('Have you worked for this company or any related entities in the past?*') input:visible": {
-          "attempts": 2,
+        "label:has-text('Gender*') input:visible": {
+          "attempts": 1,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 2,
+          "success": 1,
+          "success_rate": 1.0,
+          "type": "GENDER",
+          "updated_at": "2026-08-11T09:11:30Z"
+        },
+        "label:has-text('Have you worked for this company or any related entities in the past?*') input:visible": {
+          "attempts": 6,
+          "fail": 0,
+          "host": "job-boards.greenhouse.io",
+          "success": 6,
           "success_rate": 1.0,
           "type": "WORKED_HERE_BEFORE",
-          "updated_at": "2026-08-06T04:05:29Z"
+          "updated_at": "2026-08-10T10:02:39Z"
         },
         "label:has-text('Home Address*') input:visible": {
           "attempts": 3,
@@ -615,14 +799,24 @@
           "type": "ADDRESS_LINE1",
           "updated_at": "2026-08-02T09:50:49Z"
         },
+        "label:has-text('How did you hear about this role?*') input:visible": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-11T09:09:45Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
+        },
         "label:has-text('Location (City)*') input:visible": {
-          "attempts": 10,
+          "attempts": 13,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 10,
+          "success": 13,
           "success_rate": 1.0,
           "type": "ADDRESS_CITY",
-          "updated_at": "2026-08-06T06:08:31Z"
+          "updated_at": "2026-08-11T09:11:30Z"
         },
         "label:has-text('Preferred First Name') input:visible": {
           "attempts": 2,
@@ -645,13 +839,13 @@
           "updated_at": "2026-08-02T09:50:49Z"
         },
         "label:has-text('Veteran Status') input:visible": {
-          "attempts": 14,
+          "attempts": 17,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 14,
+          "success": 17,
           "success_rate": 1.0,
           "type": "VETERAN",
-          "updated_at": "2026-08-06T06:08:31Z"
+          "updated_at": "2026-08-11T09:11:30Z"
         },
         "label:has-text('Visa Requirement Status*') input:visible": {
           "attempts": 3,
@@ -674,22 +868,22 @@
           "updated_at": "2026-08-06T04:08:26Z"
         },
         "label:has-text('Where do you currently reside? *') input:visible": {
-          "attempts": 4,
+          "attempts": 8,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 4,
+          "success": 8,
           "success_rate": 1.0,
           "type": "LOCATION",
-          "updated_at": "2026-08-06T04:05:29Z"
+          "updated_at": "2026-08-10T10:02:39Z"
         },
         "label:has-text('Would you require relocation to Irvine, CA? *') input:visible": {
-          "attempts": 2,
+          "attempts": 6,
           "fail": 0,
           "host": "job-boards.greenhouse.io",
-          "success": 2,
+          "success": 6,
           "success_rate": 1.0,
           "type": "RELOCATION",
-          "updated_at": "2026-08-06T04:05:29Z"
+          "updated_at": "2026-08-10T10:02:39Z"
         },
         "verified_select": {
           "attempts": 3,
@@ -702,7 +896,7 @@
           "type": ""
         }
       },
-      "updated_at": "2026-08-06T06:08:31Z"
+      "updated_at": "2026-08-11T09:11:30Z"
     },
     "icims": {
       "selectors": {
@@ -729,77 +923,106 @@
     },
     "lever": {
       "selectors": {
+        "#customPronounsOption": {
+          "attempts": 7,
+          "demoted": true,
+          "demoted_at": "2026-08-11T19:12:37Z",
+          "fail": 5,
+          "host": "jobs.lever.co",
+          "success": 2,
+          "success_rate": 0.286,
+          "type": "",
+          "updated_at": "2026-08-11T18:58:27Z"
+        },
         "[name='email']": {
-          "attempts": 5,
+          "attempts": 18,
           "fail": 0,
           "host": "jobs.lever.co",
-          "success": 5,
+          "success": 18,
           "success_rate": 1.0,
           "type": "EMAIL",
-          "updated_at": "2026-08-06T06:05:06Z"
+          "updated_at": "2026-08-11T19:12:40Z"
         },
         "[name='name']": {
-          "attempts": 5,
+          "attempts": 18,
           "fail": 0,
           "host": "jobs.lever.co",
-          "success": 5,
+          "success": 18,
           "success_rate": 1.0,
           "type": "NAME_FULL",
-          "updated_at": "2026-08-06T06:05:06Z"
+          "updated_at": "2026-08-11T19:12:40Z"
         },
         "[name='org']": {
-          "attempts": 5,
+          "attempts": 18,
           "fail": 0,
           "host": "jobs.lever.co",
-          "success": 5,
+          "success": 18,
           "success_rate": 1.0,
           "type": "CURRENT_COMPANY",
-          "updated_at": "2026-08-06T06:05:06Z"
+          "updated_at": "2026-08-11T19:12:40Z"
         },
         "[name='phone']": {
-          "attempts": 5,
+          "attempts": 18,
           "fail": 0,
           "host": "jobs.lever.co",
-          "success": 5,
+          "success": 18,
           "success_rate": 1.0,
           "type": "PHONE",
-          "updated_at": "2026-08-06T06:05:06Z"
+          "updated_at": "2026-08-11T19:12:40Z"
         },
         "[name='urls[GitHub]']": {
-          "attempts": 5,
+          "attempts": 13,
           "fail": 0,
           "host": "jobs.lever.co",
-          "success": 5,
+          "success": 13,
           "success_rate": 1.0,
           "type": "GITHUB",
-          "updated_at": "2026-08-06T06:05:06Z"
+          "updated_at": "2026-08-11T19:03:28Z"
         },
         "[name='urls[LinkedIn]']": {
-          "attempts": 5,
+          "attempts": 18,
           "fail": 0,
           "host": "jobs.lever.co",
-          "success": 5,
+          "success": 18,
           "success_rate": 1.0,
           "type": "LINKEDIN",
-          "updated_at": "2026-08-06T06:05:06Z"
+          "updated_at": "2026-08-11T19:12:40Z"
         },
         "[name='urls[Portfolio]']": {
-          "attempts": 5,
+          "attempts": 18,
           "fail": 0,
           "host": "jobs.lever.co",
-          "success": 5,
+          "success": 18,
           "success_rate": 1.0,
           "type": "PORTFOLIO",
-          "updated_at": "2026-08-06T06:05:06Z"
+          "updated_at": "2026-08-11T19:12:40Z"
         },
         "[name='urls[Twitter]'], [name='urls[Twitter URL]'], [name='urls[X]']": {
-          "attempts": 5,
+          "attempts": 14,
           "fail": 0,
           "host": "jobs.lever.co",
-          "success": 5,
+          "success": 14,
           "success_rate": 1.0,
           "type": "TWITTER",
-          "updated_at": "2026-08-06T06:05:06Z"
+          "updated_at": "2026-08-11T19:12:40Z"
+        },
+        "input[name=\"cards[004cdb5c-e061-45f7-920b-d2b79556b182][field5]\"][value=\"Yes\"]": {
+          "attempts": 13,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 13,
+          "success_rate": 1.0,
+          "type": "WORK_AUTH",
+          "updated_at": "2026-08-11T19:12:40Z"
+        },
+        "input[name=\"cards[004cdb5c-e061-45f7-920b-d2b79556b182][field6]\"][value=\"No\"]": {
+          "attempts": 2,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 2,
+          "success_rate": 1.0,
+          "type": "VISA_STATUS",
+          "updated_at": "2026-08-11T19:12:40Z"
         },
         "input[name=\"cards[07fdf1f1-9952-493d-a9b7-320969a56fed][field0]\"][value=\"No\"]": {
           "attempts": 1,
@@ -820,31 +1043,160 @@
           "updated_at": "2026-08-06T03:04:02Z"
         },
         "input[name=\"cards[1cfa6217-5347-4f38-9206-6fac2ed25cfa][field0]\"][value=\"Yes\"]": {
+          "attempts": 2,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 2,
+          "success_rate": 1.0,
+          "type": "US_RESIDENCE",
+          "updated_at": "2026-08-10T09:42:32Z"
+        },
+        "input[name=\"cards[6313411a-2152-49df-86d5-2dcb03916e62][field0]\"][value=\"Yes\"]": {
+          "attempts": 5,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 5,
+          "success_rate": 1.0,
+          "type": "WORK_AUTH",
+          "updated_at": "2026-08-11T19:03:28Z"
+        },
+        "input[name=\"cards[746d8b72-02eb-47ec-a4dc-6fed6204c1da][field0]\"][value=\"Yes\"]": {
+          "attempts": 10,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 10,
+          "success_rate": 1.0,
+          "type": "WORK_AUTH",
+          "updated_at": "2026-08-10T11:58:01Z"
+        },
+        "input[name=\"cards[746d8b72-02eb-47ec-a4dc-6fed6204c1da][field1]\"][value=\"No\"]": {
+          "attempts": 3,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 3,
+          "success_rate": 1.0,
+          "type": "VISA_STATUS",
+          "updated_at": "2026-08-10T11:58:01Z"
+        },
+        "input[name=\"cards\\[004cdb5c-e061-45f7-920b-d2b79556b182\\]\\[field0\\]\"]:visible": {
           "attempts": 1,
           "fail": 0,
           "host": "jobs.lever.co",
           "success": 1,
           "success_rate": 1.0,
-          "type": "US_RESIDENCE",
-          "updated_at": "2026-08-06T04:15:26Z"
+          "type": "ADDRESS_CITY",
+          "updated_at": "2026-08-11T19:12:40Z"
         },
         "input[name=\"location\"]:visible": {
-          "attempts": 5,
+          "attempts": 15,
           "fail": 0,
           "host": "jobs.lever.co",
-          "success": 5,
+          "success": 15,
           "success_rate": 1.0,
           "type": "ADDRESS_CITY",
-          "updated_at": "2026-08-06T06:05:06Z"
+          "updated_at": "2026-08-11T19:04:38Z"
         },
-        "input[type=file]": {
-          "attempts": 5,
+        "input[name=\"pronouns\"][value=\"He/him\"]": {
+          "attempts": 7,
+          "demoted": true,
+          "demoted_at": "2026-08-11T19:12:37Z",
+          "fail": 5,
+          "host": "jobs.lever.co",
+          "success": 2,
+          "success_rate": 0.286,
+          "type": "",
+          "updated_at": "2026-08-11T18:58:27Z"
+        },
+        "input[name=\"surveysResponses[ce20ed16-4902-4abc-992b-6d42ed679aed][responses][field0]\"][value=\"I prefer not to disclose\"]": {
+          "attempts": 2,
           "fail": 0,
           "host": "jobs.lever.co",
-          "success": 5,
+          "success": 2,
+          "success_rate": 1.0,
+          "type": "RACE",
+          "updated_at": "2026-08-11T19:03:28Z"
+        },
+        "input[name=\"surveysResponses[ce20ed16-4902-4abc-992b-6d42ed679aed][responses][field1]\"][value=\"Female\"]": {
+          "attempts": 1,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 1,
+          "success_rate": 1.0,
+          "type": "GENDER",
+          "updated_at": "2026-08-11T18:58:01Z"
+        },
+        "input[name=\"surveysResponses[ce20ed16-4902-4abc-992b-6d42ed679aed][responses][field1]\"][value=\"Male\"]": {
+          "attempts": 1,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 1,
+          "success_rate": 1.0,
+          "type": "GENDER",
+          "updated_at": "2026-08-11T19:03:28Z"
+        },
+        "input[name=\"surveysResponses[ce20ed16-4902-4abc-992b-6d42ed679aed][responses][field2]\"][value=\"I prefer not to disclose\"]": {
+          "attempts": 1,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 1,
+          "success_rate": 1.0,
+          "type": "LGBTQIA",
+          "updated_at": "2026-08-11T19:03:28Z"
+        },
+        "input[name=\"surveysResponses[ce20ed16-4902-4abc-992b-6d42ed679aed][responses][field2]\"][value=\"Yes\"]": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-11T18:56:27Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
+        },
+        "input[name=\"urls[Other]\"]:visible": {
+          "attempts": 19,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 19,
+          "success_rate": 1.0,
+          "type": "PORTFOLIO",
+          "updated_at": "2026-08-11T19:12:40Z"
+        },
+        "input[name=\"urls[Portfolio]\"]:visible": {
+          "attempts": 28,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 28,
+          "success_rate": 1.0,
+          "type": "PORTFOLIO",
+          "updated_at": "2026-08-11T19:12:40Z"
+        },
+        "input[type=\"radio\"][name=\"cards[6313411a-2152-49df-86d5-2dcb03916e62][field0]\"][value=\"Yes\"]": {
+          "attempts": 1,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 1,
+          "success_rate": 1.0,
+          "type": "WORK_AUTH",
+          "updated_at": "2026-08-11T19:03:28Z"
+        },
+        "input[type=file]": {
+          "attempts": 6,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 6,
           "success_rate": 1.0,
           "type": "RESUME_UPLOAD",
-          "updated_at": "2026-08-06T06:05:06Z"
+          "updated_at": "2026-08-10T09:42:32Z"
+        },
+        "input[type=file][id*='resume' i]": {
+          "attempts": 12,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 12,
+          "success_rate": 1.0,
+          "type": "RESUME_UPLOAD",
+          "updated_at": "2026-08-11T19:12:40Z"
         },
         "select#disabilitySelectElement": {
           "attempts": 1,
@@ -854,6 +1206,52 @@
           "success_rate": 1.0,
           "type": "DISABILITY",
           "updated_at": "2026-08-06T03:04:02Z"
+        },
+        "select[name*='gender' i], select[id*='gender' i], select[name*='eeo'][name*='gender' i], select[name='eeo[gender]']": {
+          "attempts": 1,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 1,
+          "success_rate": 1.0,
+          "type": "GENDER",
+          "updated_at": "2026-08-11T19:10:59Z"
+        },
+        "select[name=\"cards[004cdb5c-e061-45f7-920b-d2b79556b182][field2]\"]:visible": {
+          "attempts": 3,
+          "demoted": true,
+          "demoted_at": "2026-08-11T19:10:56Z",
+          "fail": 3,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
+        },
+        "select[name=\"cards[6313411a-2152-49df-86d5-2dcb03916e62][field1]\"]:visible": {
+          "attempts": 5,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 5,
+          "success_rate": 1.0,
+          "type": "WORK_AUTH",
+          "updated_at": "2026-08-11T19:03:28Z"
+        },
+        "select[name=\"eeo[race]\"]:visible": {
+          "attempts": 1,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 1,
+          "success_rate": 1.0,
+          "type": "RACE",
+          "updated_at": "2026-08-11T19:10:59Z"
+        },
+        "select[name=\"eeo[veteran]\"]:visible": {
+          "attempts": 1,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 1,
+          "success_rate": 1.0,
+          "type": "VETERAN",
+          "updated_at": "2026-08-11T19:10:59Z"
         },
         "select[name='eeo[race]']": {
           "attempts": 1,
@@ -872,6 +1270,26 @@
           "success_rate": 1.0,
           "type": "VETERAN",
           "updated_at": "2026-08-06T04:17:50Z"
+        },
+        "textarea[name=\"cards[004cdb5c-e061-45f7-920b-d2b79556b182][field7]\"]:visible": {
+          "attempts": 3,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 3,
+          "success_rate": 1.0,
+          "type": "VISA_STATUS",
+          "updated_at": "2026-08-11T19:08:09Z"
+        },
+        "textarea[name=\"cards[004cdb5c-e061-45f7-920b-d2b79556b182][field9]\"]:visible": {
+          "attempts": 5,
+          "demoted": true,
+          "demoted_at": "2026-08-11T19:12:37Z",
+          "fail": 4,
+          "host": "jobs.lever.co",
+          "success": 1,
+          "success_rate": 0.2,
+          "type": "",
+          "updated_at": "2026-08-11T18:58:27Z"
         },
         "textarea[name=\"cards[07fdf1f1-9952-493d-a9b7-320969a56fed][field3]\"]:visible": {
           "attempts": 1,
@@ -901,16 +1319,34 @@
           "updated_at": "2026-08-06T03:04:02Z"
         },
         "textarea[name=\"cards[72b05921-859d-4fa5-ae5c-98395af0b6db][field1]\"]:visible": {
-          "attempts": 1,
+          "attempts": 2,
           "fail": 0,
           "host": "jobs.lever.co",
-          "success": 1,
+          "success": 2,
           "success_rate": 1.0,
           "type": "INTEREST",
-          "updated_at": "2026-08-06T04:15:26Z"
+          "updated_at": "2026-08-10T09:42:32Z"
+        },
+        "textarea[name=\"cards\\[004cdb5c-e061-45f7-920b-d2b79556b182\\]\\[field10\\]\"]:visible": {
+          "attempts": 2,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 2,
+          "success_rate": 1.0,
+          "type": "ADDRESS_CITY",
+          "updated_at": "2026-08-11T19:10:59Z"
+        },
+        "textarea[name=\"cards\\[004cdb5c-e061-45f7-920b-d2b79556b182\\]\\[field7\\]\"]:visible": {
+          "attempts": 2,
+          "fail": 0,
+          "host": "jobs.lever.co",
+          "success": 2,
+          "success_rate": 1.0,
+          "type": "WORKED_HERE_BEFORE",
+          "updated_at": "2026-08-11T19:10:59Z"
         }
       },
-      "updated_at": "2026-08-06T06:05:06Z"
+      "updated_at": "2026-08-11T19:12:40Z"
     },
     "recruitee": {
       "selectors": {
@@ -959,7 +1395,7 @@
     },
     "smartrecruiters": {
       "selectors": {},
-      "updated_at": "2026-08-06T06:14:13Z"
+      "updated_at": "2026-08-11T09:33:12Z"
     },
     "unknown": {
       "selectors": {
@@ -1104,202 +1540,220 @@
     "workday": {
       "selectors": {
         "#emailAddress": {
-          "attempts": 18,
+          "attempts": 30,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 18,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 30,
           "success_rate": 1.0,
           "type": "contact_email",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "[data-automation-id=\"createAccountCheckbox\"]": {
-          "attempts": 4,
+          "attempts": 14,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 4,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 14,
           "success_rate": 1.0,
           "type": "createAccountCheckbox",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "[data-automation-id=\"email\"]": {
-          "attempts": 18,
+          "attempts": 39,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 18,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 39,
           "success_rate": 1.0,
           "type": "email",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-12T06:00:32Z"
         },
         "[data-automation-id=\"formField-candidateIsPreviousWorker\"]": {
-          "attempts": 4,
+          "attempts": 7,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 4,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 7,
           "success_rate": 1.0,
           "type": "worked_here_before",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "[data-automation-id=\"formField-country\"] button": {
-          "attempts": 21,
+          "attempts": 38,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 21,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 38,
           "success_rate": 1.0,
           "type": "addressSection_country",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "[data-automation-id=\"formField-countryRegion\"] button": {
-          "attempts": 12,
+          "attempts": 29,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 12,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 29,
           "success_rate": 1.0,
           "type": "addressSection_countryRegion",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "[data-automation-id=\"formField-phoneNumber\"] input[type=\"text\"]": {
-          "attempts": 21,
+          "attempts": 39,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 21,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 39,
           "success_rate": 1.0,
           "type": "phone-number",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "[data-automation-id=\"formField-phoneType\"] button": {
-          "attempts": 20,
+          "attempts": 36,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 20,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 36,
           "success_rate": 1.0,
           "type": "phone-device-type",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "[data-automation-id=\"password\"]": {
-          "attempts": 19,
+          "attempts": 40,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 19,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 40,
           "success_rate": 1.0,
           "type": "password",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-12T06:00:32Z"
         },
         "[data-automation-id=\"phone-sms-opt-in\"]": {
-          "attempts": 4,
+          "attempts": 8,
           "fail": 0,
-          "host": "quantiphi.wd1.myworkdayjobs.com",
-          "success": 4,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 8,
           "success_rate": 1.0,
           "type": "",
-          "updated_at": "2026-08-06T05:27:02Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "[data-automation-id=\"verifyPassword\"]": {
-          "attempts": 6,
+          "attempts": 21,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 6,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 21,
           "success_rate": 1.0,
           "type": "verifyPassword",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "ashby_zip_input": {
-          "attempts": 4,
+          "attempts": 22,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 4,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 22,
           "success_rate": 1.0,
           "type": "ADDRESS_ZIP",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "candidateIsPreviousWorker[value=false]": {
-          "attempts": 12,
+          "attempts": 23,
           "fail": 0,
-          "host": "quantiphi.wd1.myworkdayjobs.com",
-          "success": 12,
+          "host": "wexinc.wd5.myworkdayjobs.com",
+          "success": 23,
           "success_rate": 1.0,
           "type": "worked_here_before",
-          "updated_at": "2026-08-06T05:27:02Z"
+          "updated_at": "2026-08-11T19:50:34Z"
         },
-        "input[name=\"addressLine1\"]": {
-          "attempts": 21,
-          "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 21,
-          "success_rate": 1.0,
-          "type": "addressSection_addressLine1",
-          "updated_at": "2026-08-06T06:11:05Z"
-        },
-        "input[name=\"addressLine1\"]:visible": {
-          "attempts": 21,
-          "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 21,
-          "success_rate": 1.0,
-          "type": "ADDRESS_LINE1",
-          "updated_at": "2026-08-06T06:11:05Z"
-        },
-        "input[name=\"addressLine2\"]:visible": {
+        "input[data-automation-id=\"email\"]:visible": {
           "attempts": 1,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
+          "host": "coke.wd1.myworkdayjobs.com",
           "success": 1,
-          "success_rate": 1.0,
-          "type": "ADDRESS_LINE2",
-          "updated_at": "2026-08-06T06:11:05Z"
-        },
-        "input[name=\"candidateIsPreviousWorker\"][value=\"false\"]": {
-          "attempts": 1,
-          "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 1,
-          "success_rate": 1.0,
-          "type": "WORKED_HERE_BEFORE",
-          "updated_at": "2026-08-06T06:11:05Z"
-        },
-        "input[name=\"candidateIsPreviousWorker\"][value=\"true\"]": {
-          "attempts": 5,
-          "fail": 0,
-          "host": "quantiphi.wd1.myworkdayjobs.com",
-          "success": 5,
-          "success_rate": 1.0,
-          "type": "",
-          "updated_at": "2026-08-06T05:27:02Z"
-        },
-        "input[name=\"city\"]": {
-          "attempts": 21,
-          "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 21,
-          "success_rate": 1.0,
-          "type": "addressSection_city",
-          "updated_at": "2026-08-06T06:11:05Z"
-        },
-        "input[name=\"city\"]:visible": {
-          "attempts": 21,
-          "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 21,
-          "success_rate": 1.0,
-          "type": "ADDRESS_CITY",
-          "updated_at": "2026-08-06T06:11:05Z"
-        },
-        "input[name=\"emailAddress\"]": {
-          "attempts": 3,
-          "fail": 0,
-          "host": "bbh.wd5.myworkdayjobs.com",
-          "success": 3,
-          "success_rate": 1.0,
-          "type": "contact_email",
-          "updated_at": "2026-08-06T05:17:35Z"
-        },
-        "input[name=\"emailAddress\"]:visible": {
-          "attempts": 3,
-          "fail": 0,
-          "host": "bbh.wd5.myworkdayjobs.com",
-          "success": 3,
           "success_rate": 1.0,
           "type": "EMAIL",
-          "updated_at": "2026-08-06T05:17:35Z"
+          "updated_at": "2026-08-11T10:49:21Z"
+        },
+        "input[data-automation-id=\"password\"]:visible": {
+          "attempts": 1,
+          "fail": 0,
+          "host": "coke.wd1.myworkdayjobs.com",
+          "success": 1,
+          "success_rate": 1.0,
+          "type": "PASSWORD",
+          "updated_at": "2026-08-11T10:49:21Z"
+        },
+        "input[name=\"addressLine1\"]": {
+          "attempts": 39,
+          "fail": 0,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 39,
+          "success_rate": 1.0,
+          "type": "addressSection_addressLine1",
+          "updated_at": "2026-08-11T19:52:16Z"
+        },
+        "input[name=\"addressLine1\"]:visible": {
+          "attempts": 39,
+          "fail": 0,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 39,
+          "success_rate": 1.0,
+          "type": "ADDRESS_LINE1",
+          "updated_at": "2026-08-11T19:52:16Z"
+        },
+        "input[name=\"addressLine2\"]:visible": {
+          "attempts": 5,
+          "fail": 0,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 5,
+          "success_rate": 1.0,
+          "type": "ADDRESS_LINE2",
+          "updated_at": "2026-08-11T19:52:16Z"
+        },
+        "input[name=\"candidateIsPreviousWorker\"][value=\"false\"]": {
+          "attempts": 19,
+          "fail": 0,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 19,
+          "success_rate": 1.0,
+          "type": "WORKED_HERE_BEFORE",
+          "updated_at": "2026-08-11T19:52:16Z"
+        },
+        "input[name=\"candidateIsPreviousWorker\"][value=\"true\"]": {
+          "attempts": 8,
+          "fail": 0,
+          "host": "sandoz.wd103.myworkdayjobs.com",
+          "success": 8,
+          "success_rate": 1.0,
+          "type": "",
+          "updated_at": "2026-08-11T18:51:34Z"
+        },
+        "input[name=\"city\"]": {
+          "attempts": 39,
+          "fail": 0,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 39,
+          "success_rate": 1.0,
+          "type": "addressSection_city",
+          "updated_at": "2026-08-11T19:52:16Z"
+        },
+        "input[name=\"city\"]:visible": {
+          "attempts": 39,
+          "fail": 0,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 39,
+          "success_rate": 1.0,
+          "type": "ADDRESS_CITY",
+          "updated_at": "2026-08-11T19:52:16Z"
+        },
+        "input[name=\"emailAddress\"]": {
+          "attempts": 9,
+          "fail": 0,
+          "host": "genpt.wd1.myworkdayjobs.com",
+          "success": 9,
+          "success_rate": 1.0,
+          "type": "contact_email",
+          "updated_at": "2026-08-11T19:45:28Z"
+        },
+        "input[name=\"emailAddress\"]:visible": {
+          "attempts": 9,
+          "fail": 0,
+          "host": "genpt.wd1.myworkdayjobs.com",
+          "success": 9,
+          "success_rate": 1.0,
+          "type": "EMAIL",
+          "updated_at": "2026-08-11T19:45:28Z"
         },
         "input[name=\"extension\"]:visible": {
           "attempts": 5,
@@ -1311,58 +1765,58 @@
           "updated_at": "2026-08-06T05:27:02Z"
         },
         "input[name=\"legalName--firstName\"]": {
-          "attempts": 21,
+          "attempts": 39,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 21,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 39,
           "success_rate": 1.0,
           "type": "legalNameSection_firstName",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "input[name=\"legalName--firstName\"]:visible": {
-          "attempts": 23,
+          "attempts": 56,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 23,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 56,
           "success_rate": 1.0,
           "type": "NAME_FIRST",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "input[name=\"legalName--lastName\"]": {
-          "attempts": 21,
+          "attempts": 39,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 21,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 39,
           "success_rate": 1.0,
           "type": "legalNameSection_lastName",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "input[name=\"legalName--lastName\"]:visible": {
-          "attempts": 21,
+          "attempts": 39,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 21,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 39,
           "success_rate": 1.0,
           "type": "NAME_LAST",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "input[name=\"phoneNumber\"]:visible": {
-          "attempts": 21,
+          "attempts": 39,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 21,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 39,
           "success_rate": 1.0,
           "type": "PHONE",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "input[name=\"postalCode\"]": {
-          "attempts": 21,
+          "attempts": 39,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 21,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 39,
           "success_rate": 1.0,
           "type": "addressSection_postalCode",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "input[name=\"postalCode\"]:visible": {
           "attempts": 17,
@@ -1374,25 +1828,25 @@
           "updated_at": "2026-08-06T05:00:21Z"
         },
         "input[name=\"regionSubdivision1\"]": {
-          "attempts": 14,
+          "attempts": 16,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 14,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 16,
           "success_rate": 1.0,
           "type": "addressSection_regionSubdivision1",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         },
         "input[name=\"regionSubdivision1\"]:visible": {
-          "attempts": 14,
+          "attempts": 16,
           "fail": 0,
-          "host": "oneok.wd1.myworkdayjobs.com",
-          "success": 14,
+          "host": "moog.wd5.myworkdayjobs.com",
+          "success": 16,
           "success_rate": 1.0,
           "type": "ADDRESS_COUNTY",
-          "updated_at": "2026-08-06T06:11:05Z"
+          "updated_at": "2026-08-11T19:52:16Z"
         }
       },
-      "updated_at": "2026-08-08T10:26:56Z"
+      "updated_at": "2026-08-12T06:00:32Z"
     }
   },
   "version": 1

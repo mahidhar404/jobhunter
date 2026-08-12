@@ -1,0 +1,6 @@
+{
+  "id": "gh_howheard_multiselect",
+  "platform": "greenhouse",
+  "fail_class": "multiselect_uncommitted",
+  "description": "Capco GH how-heard multiselect: chip-commit + verify after aliasing 'Internet job board' → 'Job Board'/'Indeed'. Regression for multiselect_uncommitted leftovers / menu zeroed by full-value typeahead."
+}

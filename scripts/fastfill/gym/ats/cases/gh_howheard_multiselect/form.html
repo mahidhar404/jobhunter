@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — Greenhouse How-Heard Multiselect</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 560px; margin: 2rem auto; }
+    .select__label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+    .select__control {
+      border: 1px solid #ccc; border-radius: 4px; padding: 8px 12px;
+      cursor: pointer; min-height: 20px; background: #fff;
+    }
+    .select__menu {
+      position: absolute; background: #fff; border: 1px solid #ccc;
+      border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.12); z-index: 9999;
+      min-width: 260px; max-height: 240px; overflow-y: auto;
+    }
+    .select__option { padding: 8px 12px; cursor: pointer; }
+    .select__option:hover { background: #deebff; }
+    .select__multi-value { display: inline-block; background: #e6f0ff; margin: 2px; padding: 2px 6px; border-radius: 3px; }
+    .actions { margin-top: 1.5rem; }
+    button { padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <h1>Application — Greenhouse</h1>
+  <p>Applicant: Test Dummy · randommail6969@gmail.com</p>
+
+  <div class="field">
+    <label class="select__label" for="hh-control">How did you hear about this job?*</label>
+    <div class="select__container">
+      <div id="hh-control" class="select__control" role="combobox"
+           aria-expanded="false" aria-haspopup="listbox" tabindex="0">
+        <div class="select__value-container">
+          <div class="select__placeholder">Select...</div>
+          <input class="select__input" role="combobox" aria-expanded="false" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button type="button" id="btn-submit">Submit application</button>
+  </div>
+
+  <script>
+    (function () {
+      // Dummy value "Internet job board" is NOT an exact option — the filler must
+      // alias to "Job Board" (or Indeed) WITHOUT typing the full essay (which
+      // zeroes the menu). Multi-value chips commit as .select__multi-value__label.
+      var OPTIONS = ['LinkedIn', 'Indeed', 'Job Board', 'Company Website', 'Referral', 'Other'];
+      var control = document.getElementById('hh-control');
+      var container = control.parentNode;
+      var valueContainer = control.querySelector('.select__value-container');
+      var input = control.querySelector('.select__input');
+      var menu = null;
+      var selected = [];
+      function render() {
+        valueContainer.querySelectorAll('.select__multi-value').forEach(function (n) { n.remove(); });
+        var ph = valueContainer.querySelector('.select__placeholder');
+        if (ph) ph.style.display = selected.length ? 'none' : '';
+        selected.forEach(function (s) {
+          var chip = document.createElement('div');
+          chip.className = 'select__multi-value';
+          var lab = document.createElement('div');
+          lab.className = 'select__multi-value__label';
+          lab.textContent = s;
+          chip.appendChild(lab);
+          valueContainer.insertBefore(chip, input);
+        });
+      }
+      function close() { if (menu) { menu.remove(); menu = null; } control.setAttribute('aria-expanded', 'false'); }
+      function open() {
+        close();
+        menu = document.createElement('div');
+        menu.className = 'select__menu';
+        var q = (input.value || '').toLowerCase();
+        OPTIONS.filter(function (o) { return o.toLowerCase().indexOf(q) >= 0; })
+          .forEach(function (o, i) {
+            var d = document.createElement('div');
+            d.className = 'select__option';
+            d.id = 'react-select-3-option-' + i;
+            d.textContent = o;
+            d.addEventListener('mousedown', function (e) {
+              e.preventDefault();
+              if (selected.indexOf(o) < 0) selected.push(o);
+              input.value = ''; render(); close();
+            });
+            menu.appendChild(d);
+          });
+        container.appendChild(menu);
+        control.setAttribute('aria-expanded', 'true');
+      }
+      control.addEventListener('click', function () { if (menu) close(); else open(); });
+      input.addEventListener('input', function () { if (menu) open(); });
+      input.addEventListener('focus', open);
+      document.getElementById('btn-submit').addEventListener('click', function (e) {
+        e.preventDefault();
+        alert('Gym fixture — submit blocked (no navigation).');
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -117,16 +117,35 @@ EMPTY_FIELDS_JS = """() => {
     if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
     return r.width > 0 && r.height > 0;
   };
+  const sanitizeLabel = (raw) => {
+    let t = String(raw || '').replace(/\\s+/g, ' ').trim();
+    t = t.replace(/\\b(current teammates|please apply via|internal career site|employee referral portal)[\\s\\S]*/i, '').trim();
+    return t.slice(0, 120);
+  };
   const labelFor = (el) => {
+    const fieldRoot = el.closest('[data-automation-id*="formField"], fieldset, [role="radiogroup"], [role="group"]');
+    if (fieldRoot) {
+      const leg = fieldRoot.querySelector('legend, [data-automation-id*="label"], label');
+      if (leg) {
+        const t = sanitizeLabel(leg.innerText || leg.textContent || '');
+        if (t && !/^(yes|no)$/i.test(t)) return t;
+      }
+    }
     const id = el.id;
     if (id) {
       const lab = document.querySelector('label[for="' + CSS.escape(id) + '"]');
-      if (lab) return (lab.innerText || lab.textContent || '').trim().slice(0, 120);
+      if (lab) {
+        const t = sanitizeLabel(lab.innerText || lab.textContent || '');
+        if (t && !/^(yes|no)$/i.test(t)) return t;
+      }
     }
     const wrap = el.closest('label');
-    if (wrap) return (wrap.innerText || '').trim().slice(0, 120);
+    if (wrap) {
+      const t = sanitizeLabel(wrap.innerText || '');
+      if (t && !/^(yes|no)$/i.test(t)) return t;
+    }
     const aria = el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
-    return (aria || el.name || el.id || '').trim().slice(0, 120);
+    return sanitizeLabel(aria || el.name || el.id || '');
   };
   const requiredish = (el) =>
     el.required || el.getAttribute('aria-required') === 'true' ||
@@ -160,12 +179,16 @@ EMPTY_FIELDS_JS = """() => {
     }
     if (t === 'checkbox' || t === 'radio') {
       // only flag unchecked when marked required
-      if (requiredish(el) && !el.checked) {
+      if (requiredish(el) && !el.checked && el.getAttribute('aria-checked') !== 'true') {
         const group = el.name
           ? document.querySelectorAll('input[type="' + t + '"][name="' + CSS.escape(el.name) + '"]')
           : [el];
-        const any = Array.from(group).some((g) => g.checked);
+        const any = Array.from(group).some((g) => g.checked || g.getAttribute('aria-checked') === 'true');
         if (!any) {
+          const root = el.closest('[data-automation-id*="formField"], fieldset, [role="radiogroup"], [role="group"]');
+          if (root && root.querySelector('[role="radio"][aria-checked="true"], input[type="radio"]:checked, input[type="radio"][aria-checked="true"]')) {
+            return;
+          }
           out.push({
             label: label || el.name || t,
             kind: 'unchecked',

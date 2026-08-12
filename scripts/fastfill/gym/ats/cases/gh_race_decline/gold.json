@@ -1,0 +1,13 @@
+{
+  "fields": [
+    {
+      "key": "race",
+      "selector": "#race-control",
+      "committed": "I don't wish to answer",
+      "required": true
+    }
+  ],
+  "footer_kind": "FINAL",
+  "expect_advance": false,
+  "notes": "RACE decline: fill must commit the decline option and NEVER invent a race (no Asian/White/etc). Dummy race policy stays Decline. Empty form fails gold (no decline committed)."
+}

@@ -71,6 +71,8 @@ DETERMINISTIC_ANSWERS: dict[str, str] = {
     "VETERAN": "I am not a protected veteran",
     "DISABILITY": "I do not have a disability",
     "AGE_RANGE": "Prefer not to disclose",
+    "LGBTQIA": "Prefer not to disclose",
+    "PRONOUNS": "Prefer not to say",
     # --- Work auth / screening ---
     "WORK_AUTH": "Yes",
     "US_RESIDENCE": "Yes",
@@ -90,6 +92,10 @@ DETERMINISTIC_ANSWERS: dict[str, str] = {
     "NOTICE_PERIOD": "Immediately available",
     "MARKETING_CONSENT": "No",
     "TERMS_CONSENT": "Yes",
+    "ACCOMMODATIONS": "No",
+    "ACCOMMODATIONS_DETAILS": "N/A",
+    "EMPLOYEE_REFERRAL": "No",
+    "REFERRAL_EMAIL": "N/A",
     "LATIN_AMERICA": "Yes",
     # --- Compensation / sourcing / interest (shared canned) ---
     "SALARY_EXPECTED": "Open / negotiable within the posted range",
@@ -117,6 +123,8 @@ SHARED_VALUE_TYPES: frozenset[str] = frozenset(
         "VETERAN",
         "DISABILITY",
         "AGE_RANGE",
+        "LGBTQIA",
+        "PRONOUNS",
         "WORK_AUTH",
         "US_RESIDENCE",
         "US_CITIZEN",
@@ -135,6 +143,10 @@ SHARED_VALUE_TYPES: frozenset[str] = frozenset(
         "NOTICE_PERIOD",
         "MARKETING_CONSENT",
         "TERMS_CONSENT",
+        "ACCOMMODATIONS",
+        "ACCOMMODATIONS_DETAILS",
+        "EMPLOYEE_REFERRAL",
+        "REFERRAL_EMAIL",
         "LATIN_AMERICA",
         "SALARY_EXPECTED",
         "SALARY_CURRENT",  # empty for both — never invent a figure
@@ -211,6 +223,17 @@ CATALOG_COVERAGE: list[tuple[str, str, str]] = [
     ("NAME_FULL", "Affirmation*", "Test Dummy"),
     ("BACKGROUND_CHECK", "willing to undergo a background check", "Yes"),
     ("MARKETING_CONSENT", "SMS / marketing opt-in", "No"),
+    (
+        "ACCOMMODATIONS",
+        "Do you require reasonable accommodations or adjustments?",
+        "No",
+    ),
+    (
+        "ACCOMMODATIONS_DETAILS",
+        "If you answered yes to the Reasonable Adjustments question, "
+        "please provide additional details. If not, enter N/A.",
+        "N/A",
+    ),
     ("HOW_HEARD", "How did you hear about this job?", "Internet job board"),
     ("RELOCATION", "Are you willing to relocate?", "Yes, willing to relocate"),
     ("NOTICE_PERIOD", "When can you start?", "Immediately available"),
@@ -272,6 +295,8 @@ def shared_values() -> dict[str, str]:
         "VETERAN": eeo["veteran_status"],
         "DISABILITY": eeo["disability_status"],
         "AGE_RANGE": DETERMINISTIC_ANSWERS["AGE_RANGE"],
+        "LGBTQIA": DETERMINISTIC_ANSWERS["LGBTQIA"],
+        "PRONOUNS": DETERMINISTIC_ANSWERS["PRONOUNS"],
         "WORK_AUTH": DETERMINISTIC_ANSWERS["WORK_AUTH"],
         "US_RESIDENCE": DETERMINISTIC_ANSWERS["US_RESIDENCE"],
         "US_CITIZEN": str(screening.get("us_citizen") or DETERMINISTIC_ANSWERS["US_CITIZEN"]),
@@ -307,6 +332,10 @@ def shared_values() -> dict[str, str]:
         ),
         "MARKETING_CONSENT": DETERMINISTIC_ANSWERS["MARKETING_CONSENT"],
         "TERMS_CONSENT": DETERMINISTIC_ANSWERS["TERMS_CONSENT"],
+        "ACCOMMODATIONS": DETERMINISTIC_ANSWERS["ACCOMMODATIONS"],
+        "ACCOMMODATIONS_DETAILS": DETERMINISTIC_ANSWERS["ACCOMMODATIONS_DETAILS"],
+        "EMPLOYEE_REFERRAL": DETERMINISTIC_ANSWERS["EMPLOYEE_REFERRAL"],
+        "REFERRAL_EMAIL": DETERMINISTIC_ANSWERS["REFERRAL_EMAIL"],
         "LATIN_AMERICA": str(
             screening.get("based_in_latin_america")
             or DETERMINISTIC_ANSWERS["LATIN_AMERICA"]

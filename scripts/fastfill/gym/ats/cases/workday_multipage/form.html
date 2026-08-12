@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — Workday Multipage</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 2rem auto; }
+    label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+    input { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+    .step { display: none; }
+    .step.active { display: block; }
+    .actions { margin-top: 1.5rem; }
+    button { padding: 8px 20px; margin-right: 8px; }
+    .progress { color: #666; font-size: 0.9rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Workday Application</h1>
+  <p class="progress" id="progress">Step 1 of 2 — Personal Information</p>
+
+  <div id="step1" class="step active">
+    <div class="field">
+      <label for="first-name">First Name <span aria-hidden="true">*</span></label>
+      <input id="first-name" name="firstName" type="text" required
+             placeholder="Legal first name" value="">
+    </div>
+    <div class="field" style="margin-top:1rem;">
+      <label for="last-name">Last Name</label>
+      <input id="last-name" name="lastName" type="text" placeholder="Legal last name" value="">
+    </div>
+    <div class="actions">
+      <button type="button" id="btn-next">Next</button>
+    </div>
+  </div>
+
+  <div id="step2" class="step">
+    <div class="field">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" placeholder="test+gym@example.com" value="">
+    </div>
+    <div class="actions">
+      <button type="button" id="btn-back">Back</button>
+      <button type="button" id="btn-submit">Submit</button>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var step1 = document.getElementById('step1');
+      var step2 = document.getElementById('step2');
+      var progress = document.getElementById('progress');
+
+      document.getElementById('btn-next').addEventListener('click', function () {
+        var fn = document.getElementById('first-name').value.trim();
+        if (!fn) {
+          alert('First Name is required.');
+          return;
+        }
+        step1.classList.remove('active');
+        step2.classList.add('active');
+        progress.textContent = 'Step 2 of 2 — Contact Information';
+      });
+
+      document.getElementById('btn-back').addEventListener('click', function () {
+        step2.classList.remove('active');
+        step1.classList.add('active');
+        progress.textContent = 'Step 1 of 2 — Personal Information';
+      });
+
+      document.getElementById('btn-submit').addEventListener('click', function (e) {
+        e.preventDefault();
+        alert('Gym fixture — submit blocked.');
+      });
+    })();
+  </script>
+</body>
+</html>

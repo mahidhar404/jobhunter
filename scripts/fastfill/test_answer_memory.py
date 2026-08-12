@@ -46,10 +46,11 @@ def _stub_experience(monkeypatch, rows):
     monkeypatch.setattr(cl, "load_experience", lambda *a, **k: list(rows))
 
 
-def test_paraphrase_not_recalled_when_disabled(monkeypatch):
-    # Explicitly disabled (default is now ON): paraphrase-only row not recalled.
-    monkeypatch.setenv("FASTFILL_ANSWER_MEMORY", "0")
-    monkeypatch.setenv("FASTFILL_SEMANTIC_MEMORY", "0")
+def test_paraphrase_not_recalled_by_default(monkeypatch):
+    # Default-OFF: paraphrase-only row not recalled; semantic never consulted.
+    monkeypatch.delenv("FASTFILL_ANSWER_MEMORY", raising=False)
+    monkeypatch.delenv("FASTFILL_SEMANTIC_MEMORY", raising=False)
+    monkeypatch.delenv("FASTFILL_SEMANTIC_MATCH", raising=False)
 
     def boom(a, b):  # semantic must not even be consulted when disabled
         raise AssertionError("semantic_sim called while answer-memory disabled")
@@ -62,23 +63,19 @@ def test_paraphrase_not_recalled_when_disabled(monkeypatch):
     assert out == []
 
 
-def test_paraphrase_recalled_by_default(monkeypatch):
-    # Default-ON: no flag set, paraphrase recalled via semantic similarity.
-    monkeypatch.delenv("FASTFILL_ANSWER_MEMORY", raising=False)
-    monkeypatch.delenv("FASTFILL_SEMANTIC_MEMORY", raising=False)
-    monkeypatch.delenv("FASTFILL_SEMANTIC_MATCH", raising=False)
+def test_paraphrase_not_recalled_when_disabled(monkeypatch):
+    monkeypatch.setenv("FASTFILL_ANSWER_MEMORY", "0")
+    monkeypatch.setenv("FASTFILL_SEMANTIC_MEMORY", "0")
+
+    def boom(a, b):
+        raise AssertionError("semantic_sim called while answer-memory disabled")
+
+    monkeypatch.setattr(sm, "semantic_sim", boom)
     _stub_experience(monkeypatch, [_FIXTURES[0]])
-
-    def fake_sim(a, b):
-        if {a.lower(), b.lower()} == {"desired compensation", "salary expectation"}:
-            return 0.9
-        return 0.0
-
-    monkeypatch.setattr(sm, "semantic_sim", fake_sim)
     out = cl.similar_leftover_answers(
         [{"label": "Salary expectation", "type": ""}], platform="greenhouse"
     )
-    assert len(out) == 1 and out[0]["value"] == "$120,000"
+    assert out == []
 
 
 def test_paraphrase_recalled_when_on(monkeypatch):

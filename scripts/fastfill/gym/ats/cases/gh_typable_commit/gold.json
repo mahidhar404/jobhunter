@@ -1,0 +1,13 @@
+{
+  "fields": [
+    {
+      "key": "location",
+      "selector": "#location-input",
+      "committed": "San Francisco, CA",
+      "required": true
+    }
+  ],
+  "footer_kind": "FINAL",
+  "expect_advance": false,
+  "notes": "Typable autocomplete: typing filter text without selecting an option must not satisfy gold."
+}

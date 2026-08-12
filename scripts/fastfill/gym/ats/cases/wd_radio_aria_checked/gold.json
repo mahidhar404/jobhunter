@@ -1,0 +1,20 @@
+{
+  "fields": [
+    {
+      "key": "previous_worker",
+      "selector": "input[name='candidateIsPreviousWorker'][value='false']",
+      "committed": "false",
+      "required": false,
+      "notes": "Answered via aria-checked=true; native .checked may stay false — gap oracle must not flag."
+    },
+    {
+      "key": "how_heard",
+      "selector": "#how-heard-display",
+      "committed": "Corporate Website",
+      "required": true
+    }
+  ],
+  "footer_kind": "ADVANCE",
+  "expect_advance": true,
+  "notes": "Empty scoring fails on how_heard if unset; adversarial suite asserts form_gaps/leftover_miss_scan on pre-answered radio."
+}

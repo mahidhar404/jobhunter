@@ -1,0 +1,13 @@
+{
+  "fields": [
+    {
+      "key": "department",
+      "selector": "#dept-trigger",
+      "committed": "Engineering",
+      "required": true
+    }
+  ],
+  "footer_kind": "FINAL",
+  "expect_advance": false,
+  "notes": "Listbox options render via portal on document.body, not nested inside the combobox control."
+}

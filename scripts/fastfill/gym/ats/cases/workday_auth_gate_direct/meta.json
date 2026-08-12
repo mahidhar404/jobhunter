@@ -1,0 +1,6 @@
+{
+  "id": "workday_auth_gate_direct",
+  "platform": "workday",
+  "tags": ["auth", "sign-in", "create-account"],
+  "description": "Sign-in form visible with Create Account link (no SSO reveal step)"
+}

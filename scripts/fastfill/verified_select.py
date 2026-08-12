@@ -1,19 +1,23 @@
 """Verified combobox / select commit — shared by GH, Workday, Ashby, Flash.
 
-Universal typable-dropdown algorithm (default for ALL typable selects):
-  1. Open / focus the dropdown
-  2. Split intended value into words
-     (Springfield, Illinois, United States → Springfield / Illinois / United / States;
-      Yes → Yes)
-  3. Type incrementally word-by-word (accumulate: w1, w1+w2, …)
-  4. After each chunk, wait for listbox options and score closest matches
-  5. If multiple options still match → type the next word to narrow
-  6. When a clear closest match exists → **click that option** (never leave filter text)
-  7. Verify committed selection (single-value / aria / chip) — not uncommitted input
-  8. Yes/No dropdowns use the same path (type Yes → wait → click Yes)
-  9. Skip only when already **committed** correct
+Primary select path (enumerate-then-score — Elanco Degree A.A. lesson):
+  Failure mode we fix: type-intended-first + loose soft-match committed
+  Associate/A.A. when Master's was intended (shared token \"degree\", virtualized
+  list showing A.* first).
 
-Never Enter-to-submit. Dummy-only. Never submit.
+  Target algorithm for Workday/GH typable selects:
+  1. Open the dropdown (never Enter-to-submit)
+  2. Enumerate listed options (scroll virtualized listboxes to load more)
+  3. Similarity-score EVERY option against intended dummy aliases
+     (exact > token > semantic); reject confusable pairs
+     (Master's≠A.A./Associate; Bachelor's≠A.A.; US≠Australia; IL≠ID)
+  4. Commit the best option only if score ≥ threshold; else leave blank/leftover
+  5. Type-to-filter ONLY when the list is huge/empty after enumerate AND the
+     filter token is a sanitized country/degree fragment (\"Master\", \"United
+     States\") — never free-form push of wrong values
+  6. Verify committed readback soft-matches intended — never placeholder_cleared alone
+
+Dummy-only. Never submit.
 """
 
 from __future__ import annotations
@@ -24,6 +28,37 @@ import re
 from typing import Any, Callable, Iterable
 
 _log = logging.getLogger("verified_select")
+
+# Enumerate-first: prefer scoring the full option list before typing.
+_ENUMERATE_FIRST_TYPES = frozenset(
+    {
+        "DEGREE",
+        "SCHOOL",
+        "DISCIPLINE",
+        "MAJOR",
+        "FIELD_OF_STUDY",
+        "ADDRESS_COUNTRY",
+        "ADDRESS_STATE",
+        "PHONE_COUNTRY_CODE",
+        "PHONE_DEVICE",
+        "HOW_HEARD",
+        "GENDER",
+        "HISPANIC",
+        "RACE",
+        "VETERAN",
+        "DISABILITY",
+        "WORK_AUTH",
+        "SPONSORSHIP",
+        "RELOCATION",
+        "NOTICE_PERIOD",
+        "AGE_18",
+        "SALARY_EXPECTED",
+        "SALARY_CURRENT",
+    }
+)
+_HUGE_OPTION_LIST = 48  # type-to-filter only when enumerate saw this many (or 0)
+_DEGREE_COMMIT_MIN = 70  # never commit weak Associate-via-\"degree\" soft matches
+_DEFAULT_COMMIT_MIN = 50
 
 # UI placeholders that mean "nothing committed"
 _PLACEHOLDER_RE = re.compile(
@@ -153,6 +188,304 @@ def soft_value_match(expected: str, actual: str) -> bool:
     if _bounded(el, al) or _bounded(al, el):
         return True
     return False
+
+
+# Job-board / platform tokens that must never be typed into Country Phone Code.
+_NON_COUNTRY_SEARCH_RE = re.compile(
+    r"\b("
+    r"indeed|linkedin|glassdoor|monster|ziprecruiter|zip[\s_-]*recruiter|"
+    r"dice|wellfound|lever|greenhouse|workday|ashby|"
+    r"internet[\s_-]*job[\s_-]*boards?|job[\s_-]*boards?|"
+    r"company[\s_-]*website|employee[\s_-]*referral|campus[\s_-]*recruit|"
+    r"career[\s_-]*fair|recruiter|referral|social[\s_-]*media"
+    r")\b",
+    re.I,
+)
+
+_US_COUNTRY_NAME_RE = re.compile(
+    r"united\s*states|\busa\b|\bu\.s\.a\.?\b|\bu\.s\.?\b",
+    re.I,
+)
+
+
+def _strip_country_dial(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+    try:
+        from gh_select import country_name_from_dial_option, looks_like_dial_code_option
+
+        if looks_like_dial_code_option(t):
+            return (country_name_from_dial_option(t) or t).strip()
+    except Exception:
+        pass
+    # Bare "Australia (+61)" / "United States of America (+1)"
+    m = re.match(r"^(.+?)\s*\(\s*\+\d", t)
+    if m:
+        return m.group(1).strip()
+    m = re.match(r"^(.+?)\s+\+\d", t)
+    if m:
+        return m.group(1).strip()
+    return t
+
+
+def is_us_country_name(text: str) -> bool:
+    """True when text clearly names the United States (address or dial row)."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    name = _strip_country_dial(raw).lower()
+    if not name:
+        return False
+    # Reject NANP territories that are not the US mainland/USA label
+    if re.search(
+        r"anguilla|jamaica|barbados|bahamas|canada|bermuda|cayman|"
+        r"puerto\s*rico|virgin\s*islands|american\s*samoa|guam",
+        name,
+    ):
+        return False
+    return bool(_US_COUNTRY_NAME_RE.search(name)) or name in {
+        "us",
+        "u.s",
+        "u.s.",
+        "usa",
+        "u.s.a",
+        "u.s.a.",
+    }
+
+
+def looks_like_country_option(text: str) -> bool:
+    """Heuristic: dial-coded row or country-ish label (not device / how-heard)."""
+    t = (text or "").strip()
+    if not t or len(t) < 2:
+        return False
+    low = t.lower()
+    if low in {
+        "mobile",
+        "cell",
+        "cellular",
+        "home",
+        "work",
+        "office",
+        "landline",
+        "telephone",
+        "fax",
+        "other",
+        "yes",
+        "no",
+    }:
+        return False
+    # Capco/GH EEO race menus: multi-word decline / ethnicity labels must NEVER
+    # count as countries — reject_confusable_country_option was dropping
+    # "I don't wish to answer" and leaving only Asian/White (highlight thrash).
+    if re.search(
+        r"decline|prefer\s+not|wish\s+to\s+answer|want\s+to\s+answer|"
+        r"self[\s_-]*identif|rather\s+not|choose\s+not|"
+        r"\brace\b|ethnic|hispanic|latino|alaska\s+native|"
+        r"african\s+american|pacific\s+islander|two\s+or\s+more|"
+        r"american\s+indian|native\s+hawaiian|asian\b|"
+        r"non[\s_-]*binary|\bgender\b|\bsex\b|veteran|disabilit|"
+        r"\bmale\b|\bfemale\b|\bwhite\b|\bblack\b",
+        low,
+    ):
+        return False
+    if _NON_COUNTRY_SEARCH_RE.search(t):
+        return False
+    try:
+        from gh_select import looks_like_dial_code_option
+
+        if looks_like_dial_code_option(t):
+            return True
+    except Exception:
+        if re.search(r"\(\s*\+\d{1,4}\s*\)|\+\s*\d{1,4}\b", t):
+            return True
+    name = _strip_country_dial(t)
+    # Prefer multi-word countries or well-known single-token countries
+    if " " in name.strip() and re.fullmatch(r"[A-Za-z][A-Za-z .'-]{2,60}", name):
+        return True
+    if name.lower() in {
+        "australia",
+        "austria",
+        "canada",
+        "china",
+        "france",
+        "germany",
+        "india",
+        "ireland",
+        "israel",
+        "italy",
+        "japan",
+        "mexico",
+        "netherlands",
+        "singapore",
+        "spain",
+        "switzerland",
+        "taiwan",
+        "thailand",
+        "ukraine",
+        "anguilla",
+        "jamaica",
+        "barbados",
+        "bahamas",
+        "bermuda",
+        "guam",
+    }:
+        return True
+    if is_us_country_name(name):
+        return True
+    return False
+
+
+def reject_confusable_country_option(intent: str, option: str) -> bool:
+    """True when intent and option are different countries (US ≉ Australia).
+
+    Blocks semantic false-positives that scored Australia≈United States at 70
+    and committed the wrong address / phone dial country (Morningstar Workday).
+
+    Never applies to EEO decline / race-ethnicity prose — Capco GH race menus
+    were filtered to Asian/White only when intent was \"Decline to self identify\".
+    """
+    intent_s = (intent or "").strip()
+    option_s = (option or "").strip()
+    if not intent_s or not option_s:
+        return False
+    try:
+        from gh_select import is_decline_like_alias
+
+        if is_decline_like_alias(intent_s) or is_decline_like_alias(option_s):
+            return False
+    except Exception:
+        if re.search(
+            r"decline|prefer\s+not|wish\s+to\s+answer|want\s+to\s+answer",
+            f"{intent_s} {option_s}",
+            re.I,
+        ):
+            return False
+    i_name = _strip_country_dial(intent_s)
+    o_name = _strip_country_dial(option_s)
+    if not i_name or not o_name:
+        return False
+    il, ol = i_name.lower().strip(), o_name.lower().strip()
+    if il == ol:
+        return False
+
+    def _strong_country(raw: str, name: str) -> bool:
+        """Dial-coded or known country — not weak multi-word EEO prose."""
+        if is_us_country_name(name) or is_us_country_name(raw):
+            return True
+        try:
+            from gh_select import looks_like_dial_code_option
+
+            if looks_like_dial_code_option(raw):
+                return True
+        except Exception:
+            if re.search(r"\(\s*\+\d{1,4}\s*\)|\+\s*\d{1,4}\b", raw):
+                return True
+        # Known single-token / US long-form only (not bare multi-word heuristic)
+        return bool(
+            looks_like_country_option(raw)
+            and (
+                is_us_country_name(name)
+                or " " not in name.strip()
+                or re.search(
+                    r"united\s+states|united\s+kingdom|saudi\s+arabia|"
+                    r"south\s+africa|new\s+zealand|south\s+korea|"
+                    r"costa\s+rica|hong\s+kong|puerto\s+rico",
+                    name,
+                    re.I,
+                )
+            )
+        )
+
+    # Require a strong country signal on at least one side — Decline↔Asian must
+    # never enter the confusable-country reject path.
+    if not (_strong_country(intent_s, i_name) or _strong_country(option_s, o_name)):
+        return False
+    # Lexical containment OK for US long forms (United States ⊂ … of America)
+    contained = il in ol or ol in il
+    us_i, us_o = is_us_country_name(i_name), is_us_country_name(o_name)
+    if us_i and not us_o:
+        return True
+    if us_o and not us_i and looks_like_country_option(intent_s):
+        return True
+    if contained:
+        return False
+    # Distinct dial-coded / country-named rows must never soft-or-semantic merge
+    if looks_like_country_option(intent_s) and looks_like_country_option(option_s):
+        return True
+    return False
+
+
+def is_safe_phone_country_search(query: str) -> bool:
+    """False when query is a job-board / platform / non-country token."""
+    q = (query or "").strip()
+    if not q:
+        return False
+    if _NON_COUNTRY_SEARCH_RE.search(q):
+        return False
+    if re.search(r"https?://|www\.|@", q, re.I):
+        return False
+    # Must look like a country name or dial code — not company/board free text
+    if looks_like_country_option(q) or is_us_country_name(q) or re.search(
+        r"^\+?\d{1,4}$", q
+    ):
+        return True
+    return False
+
+
+def phone_country_code_search_query(value: str | None = None) -> str:
+    """Search string for Country Phone Code — always a country/dial token.
+
+    Dummy / US profile runs must search ``United States`` (to land +1), never
+    how-heard / job-board names that Flash or wrong-field thrash may inject.
+    """
+    v = (value or "").strip()
+    if v and is_safe_phone_country_search(v) and (
+        is_us_country_name(v) or re.search(r"^\+?1$", v)
+    ):
+        return "United States"
+    if v and is_safe_phone_country_search(v) and not is_us_country_name(v):
+        # Explicit non-US country only when caller intentionally passed one;
+        # dummy autofill always prefers US — coerce unsafe / board tokens only.
+        if not _NON_COUNTRY_SEARCH_RE.search(v):
+            return _strip_country_dial(v) or "United States"
+    return "United States"
+
+
+def phone_country_code_candidates(values: dict | None = None) -> list[str]:
+    """Ordered Country Phone Code option candidates for dummy US fills."""
+    preferred = None
+    if values:
+        for key in (
+            "PHONE_COUNTRY_CODE",
+            "phone_country_code",
+            "ADDRESS_COUNTRY",
+            "country",
+        ):
+            raw = values.get(key) if isinstance(values, dict) else None
+            if raw and is_safe_phone_country_search(str(raw)):
+                preferred = str(raw).strip()
+                break
+    search = phone_country_code_search_query(preferred)
+    out = [
+        "United States of America (+1)",
+        "United States (+1)",
+        "United States of America",
+        "United States",
+        "+1",
+    ]
+    if search and search not in out:
+        out.insert(0, search)
+    # Dedupe preserving order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for c in out:
+        k = c.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(c)
+    return uniq
 
 
 # Confusable US state pairs — typing "IL" / filtering "I…" must never accept Idaho.
@@ -411,6 +744,59 @@ def is_how_heard_category_option(text: str | None) -> bool:
         }
 
 
+def looks_like_phone_country_or_address_chip(text: str | None) -> bool:
+    """True when chrome is a dial/address country chip — never a how-heard source.
+
+    Live Morningstar/Elanco: bare ``multiSelectContainer`` often wraps Country
+    Phone Code (``United States (+1)``). How-heard must not treat that as a
+    committed source, and must never type ``Indeed`` into that filter.
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    low = s.lower()
+    # Explicit phone / country field labels in wrap text
+    if re.search(
+        r"country\s*phone\s*code|phone\s*country|calling\s*code|dial\s*code|"
+        r"countryphonecode|phonenumber--countryphonecode|"
+        r"\baddress\s*country\b|country\s*/\s*region",
+        low,
+    ):
+        return True
+    # Dial-coded rows: "United States (+1)", "Australia (+61)"
+    if re.search(r"\(\s*\+\d{1,4}\s*\)|\+\s*\d{1,4}\b", s):
+        # Exclude how-heard leaves that somehow include + (none today)
+        if not _NON_COUNTRY_SEARCH_RE.search(s):
+            return True
+    # Country-only chip without job-board tokens
+    if looks_like_country_option(s) and not _NON_COUNTRY_SEARCH_RE.search(s):
+        # "1 item selected, United States" without (+N) still dial/address
+        if re.search(
+            r"united\s*states|\baustralia\b|\bcanada\b|\bunited\s*kingdom\b|\busa\b",
+            low,
+        ) and not re.search(
+            r"indeed|linkedin|glassdoor|job\s*board|referral|hear about",
+            low,
+        ):
+            return True
+    return False
+
+
+def how_heard_scope_reject_aid(automation_id: str | None) -> bool:
+    """True when an automation-id is phone/address country — not how-heard."""
+    aid = (automation_id or "").lower()
+    if not aid:
+        return False
+    return bool(
+        re.search(
+            r"countryphonecode|phonenumber--countryphonecode|phone.?country|"
+            r"phonecountry|calling.?code|dial.?code|"
+            r"addresssection_country(?!region)|formfield-country(?!region)",
+            aid,
+        )
+    )
+
+
 def how_heard_source_committed(
     shown: str | None,
     candidates: Iterable[str] | None = None,
@@ -420,9 +806,13 @@ def how_heard_source_committed(
     Requires ``N items selected`` chrome (≥1). Category headers and bare filter
     text (``Indeed`` typed into the search box, ``Internet job board``) are
     never enough — Walmart hierarchical menus leave that text without a chip.
+
+    Country Phone Code / Address Country chips must never count as how-heard.
     """
     s = (shown or "").strip()
     if not s or is_multiselect_uncommitted(s):
+        return False
+    if looks_like_phone_country_or_address_chip(s):
         return False
     if not multiselect_has_chip(s):
         # No chip chrome → typed filter / category header / single-value lookalike
@@ -436,8 +826,9 @@ def how_heard_source_committed(
     for c in leaf_cands:
         if soft_value_match(c, s) or c.lower() in sl:
             return True
-    # Chip exists for some other concrete source — still committed (stop thrash)
-    return True
+    # Callers passed priority leaves — unrelated chips (e.g. Antal Talent when
+    # LinkedIn was intended) are NOT committed; do not stop thrash on wrong chip.
+    return False
 
 
 async def settle_open_listbox(page) -> None:
@@ -447,14 +838,70 @@ async def settle_open_listbox(page) -> None:
 
         await press_escape_unless_captcha(page)
     except Exception:
-        try:
-            await page.keyboard.press("Escape")
-        except Exception:
-            pass
+        # FILL3-019: never raw Escape — fail closed when captcha gate unavailable.
+        pass
+
+
+async def listbox_still_open(page) -> bool:
+    """True when a visible promptOption / listbox menu is still open mid-widget."""
+    try:
+        return bool(
+            await page.evaluate(
+                """() => {
+                  const vis = (el) => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0
+                      && window.getComputedStyle(el).visibility !== 'hidden';
+                  };
+                  const opts = document.querySelectorAll(
+                    '[data-automation-id="promptOption"],[role="option"],'
+                    + '[role="listbox"] [role="option"]'
+                  );
+                  let n = 0;
+                  for (const o of opts) {
+                    if (vis(o)) { n++; if (n >= 2) return true; }
+                  }
+                  const lb = document.querySelector('[role="listbox"]');
+                  return !!(lb && vis(lb));
+                }"""
+            )
+        )
+    except Exception:
+        return False
+
+
+async def settle_before_advance(page, report: dict | None = None) -> dict:
+    """Close mid-widget menus before Save and Continue — never ADVANCE with listbox open."""
+    detail: dict[str, Any] = {"settled": False, "was_open": False}
+    try:
+        open_now = await listbox_still_open(page)
+        detail["was_open"] = open_now
+        if open_now:
+            await settle_open_listbox(page)
+            try:
+                await page.wait_for_timeout(200)
+            except Exception:
+                pass
+            still = await listbox_still_open(page)
+            detail["still_open"] = still
+            detail["settled"] = not still
+            if report is not None:
+                report["mid_widget_open"] = bool(still)
+                report["listbox_open"] = bool(still)
+        elif report is not None:
+            report["mid_widget_open"] = False
+            report["listbox_open"] = False
+            detail["settled"] = True
+    except Exception as e:
+        detail["error"] = str(e)[:80]
+    return detail
 
 
 def _default_score_option(opt: str, alias: str) -> int:
     if states_are_confusable(alias, opt):
+        return 0
+    if reject_confusable_country_option(alias, opt):
         return 0
     go, ga = _gender_polarity_side(opt), _gender_polarity_side(alias)
     if go and ga and go != ga:
@@ -464,6 +911,8 @@ def _default_score_option(opt: str, alias: str) -> int:
 
         s = int(_score_option(opt, alias) or 0)
         if s > 0 and states_are_confusable(alias, opt):
+            return 0
+        if s > 0 and reject_confusable_country_option(alias, opt):
             return 0
         if s > 0:
             return s
@@ -481,10 +930,11 @@ def _default_score_option(opt: str, alias: str) -> int:
         return _semantic_option_bonus(opt, alias)
 
 
-# Option-scoring semantic fallback: OFF by default. Only fires when the lexical/
-# exact/soft scorers found nothing (score 0), never overriding polarity or
-# state-confusable guards (those already returned 0 above). Capped BELOW soft(80)
-# and exact(100) so a fuzzy paraphrase can never outrank a real lexical match.
+# Option-scoring semantic fallback: ON by default (FASTFILL_SEMANTIC_OPTIONS=1).
+# Only fires when the lexical/exact/soft scorers found nothing (score 0), never
+# overriding polarity or state-confusable guards (those already returned 0 above).
+# Capped BELOW soft(80) and exact(100) so a fuzzy paraphrase can never outrank a
+# real lexical match. Kill with FASTFILL_SEMANTIC_MATCH=0 or _OPTIONS=0.
 _SEMANTIC_OPTION_THRESHOLD = float(
     os.environ.get("FASTFILL_SEMANTIC_OPTIONS_THRESHOLD", "0.8") or 0.8
 )
@@ -497,6 +947,20 @@ def _semantic_option_bonus(opt: str, alias: str) -> int:
     if os.environ.get("FASTFILL_SEMANTIC_MATCH", "1") == "0":
         return 0
     if os.environ.get("FASTFILL_SEMANTIC_OPTIONS", "1") == "0":
+        return 0
+    # Never semantic-merge distinct countries (United States ≉ Australia @ ~0.8).
+    if reject_confusable_country_option(alias, opt):
+        return 0
+    # Dial/address country: lexical + dial only — semantic false friends (US↔AU)
+    # caused Morningstar-class wrong phone country. Disable entirely.
+    try:
+        from gh_select import looks_like_dial_code_option
+
+        if looks_like_dial_code_option(opt) or looks_like_dial_code_option(alias):
+            return 0
+    except Exception:
+        pass
+    if looks_like_country_option(opt) or looks_like_country_option(alias):
         return 0
     try:
         from semantic_match import semantic_sim
@@ -774,6 +1238,254 @@ def rank_option_matches(
     return ranked_pref
 
 
+def commit_min_score_for(field_type: str = "", label: str = "") -> int:
+    """Minimum score to commit an option. Degree/country/FoS are stricter."""
+    ftype = str(field_type or "").upper()
+    lab = str(label or "").lower()
+    if ftype == "DEGREE" or re.search(r"\bdegree\b|qualification|education level", lab):
+        return _DEGREE_COMMIT_MIN
+    if ftype in (
+        "PHONE_COUNTRY_CODE",
+        "ADDRESS_COUNTRY",
+        "FIELD_OF_STUDY",
+        "DISCIPLINE",
+        "MAJOR",
+        "GENDER",
+    ) or re.search(
+        r"country[\s_-]*phone|phone[\s_-]*country|field of study|\bmajor\b|gender|\bsex\b",
+        lab,
+    ):
+        return _DEGREE_COMMIT_MIN  # same bar as degree — no soft early commit
+    if ftype == "SCHOOL" or re.search(r"\bschool\b|university|college", lab):
+        return 65
+    return _DEFAULT_COMMIT_MIN
+
+
+def sanitized_typeahead_token(
+    field_type: str,
+    value: str,
+    aliases: list[str] | None = None,
+) -> str:
+    """Safe filter fragment for huge lists — never free-form essays.
+
+    Degree → \"Master\" / \"Bachelor\"; country → short country name; else \"\".
+    Empty means: do not type-to-filter (leave blank if enumerate missed).
+    """
+    ftype = str(field_type or "").upper()
+    cands = [c for c in ([value] + list(aliases or [])) if c]
+    # Phone dial BEFORE gh_select fallback (which would return Indeed raw)
+    if ftype == "PHONE_COUNTRY_CODE":
+        raw = (value or (cands[0] if cands else "")).strip()
+        return phone_country_code_search_query(raw)[:28]
+    try:
+        from gh_select import _type_fragment_for
+
+        frag = _type_fragment_for(ftype, cands) if ftype else ""
+        if frag:
+            # Never push job-board tokens for address country either
+            if ftype == "ADDRESS_COUNTRY" and not (
+                is_safe_phone_country_search(frag) or looks_like_country_option(frag)
+            ):
+                frag = ""
+            else:
+                return str(frag)[:28]
+    except Exception:
+        pass
+    if ftype == "DEGREE" or re.search(r"master|bachelor|doctor|associate", (value or ""), re.I):
+        v = (value or "").lower()
+        if re.search(r"master|\bm\.?s\.?\b", v):
+            return "Master"
+        if re.search(r"bachelor|\bb\.?s\.?\b", v):
+            return "Bachelor"
+        if re.search(r"ph\.?d|doctor", v):
+            return "Doctor"
+        return ""
+    if ftype == "ADDRESS_COUNTRY":
+        raw = (value or (cands[0] if cands else "")).strip()
+        if not is_safe_phone_country_search(raw) and not looks_like_country_option(raw):
+            return "United States"
+        # Strip dial codes; keep country head only
+        head = re.split(r"\s*\+|,", raw)[0].strip()
+        if len(head) >= 4 and not re.search(r"require|sponsor|essay|describe", head, re.I):
+            if is_safe_phone_country_search(head) or looks_like_country_option(head):
+                return head[:28]
+            return "United States"
+        return ""
+    if ftype in ("DISCIPLINE", "MAJOR", "FIELD_OF_STUDY"):
+        for a in cands:
+            if a and "computer" in a.lower():
+                return "Computer Science"
+        return (cands[0][:28] if cands else "") or ""
+    return ""
+
+
+def pick_best_scored_option(
+    texts: list[str],
+    aliases: Iterable[str],
+    score_fn: Callable[[str, str], int] | None = None,
+    *,
+    intent: str = "",
+    min_score: int = 70,
+) -> tuple[int, str, int] | None:
+    """Pure enumerate→score→threshold pick. None when no option clears the bar.
+
+    Used by tests and by the live enumerate-first path so Master's never
+    commits A.A./Associate when those are the only visible weak soft-matches.
+    """
+    score_fn = score_fn or _default_score_option
+    cands = [c for c in aliases if c]
+    primary = (intent or "").strip() or (cands[0] if cands else "")
+    if not texts or not cands:
+        return None
+
+    def _reject(intent_s: str, opt: str) -> bool:
+        if reject_confusable_state_option(intent_s, opt):
+            return True
+        if reject_confusable_country_option(intent_s, opt):
+            return True
+        return False
+
+    filtered, orig_idx = filter_options_preserving_indices(
+        texts, primary, reject_fn=_reject
+    )
+    if not filtered:
+        return None
+    ranked = remap_ranked_to_original(
+        rank_option_matches(filtered, cands, score_fn), orig_idx
+    )
+    # Strict threshold: do NOT use at_last_word weak floors (those accepted
+    # Associate Degree at 65 when Master's was intended).
+    clear = clear_closest_match(
+        ranked,
+        at_last_word=False,
+        min_score=min_score,
+        intent=primary,
+    )
+    if not clear:
+        return None
+    _i, _t, sc = clear
+    if sc < min_score:
+        return None
+    return clear
+
+
+async def enumerate_listbox_options(
+    page,
+    *,
+    selectors: list[str] | None = None,
+    root: Any | None = None,
+    filter_input: Any | None = None,
+    timeout_ms: int = 2500,
+    max_scrolls: int = 10,
+    max_options: int = 200,
+) -> tuple[Any, list[str]]:
+    """Collect option texts, scrolling the listbox to load virtualized rows.
+
+    Scroll / ArrowDown only while the unique option set grows. When a pass
+    yields no new texts (after one scroll + one ArrowDown nudge), stop — do
+    not re-walk a short fully-loaded menu to max_scrolls (GH highlight thrash).
+    Long virtualized Workday lists still multi-scroll while new rows appear.
+
+    Returns (locator, texts) with texts aligned to locator indices when possible.
+    Dummy-only helper — never submits.
+    """
+    opts, texts = await wait_for_option_texts(
+        page,
+        selectors=selectors,
+        timeout_ms=timeout_ms,
+        filter_input=filter_input,
+        nudge=True,
+        allow_enter_nudge=False,
+        root=root,
+        max_options=max_options,
+    )
+    if not texts:
+        return opts, []
+
+    seen: list[str] = list(texts)
+    # Scroll listbox container to force virtualized rows to mount
+    scroll_targets = [
+        '[role="listbox"]',
+        '[data-automation-id="promptOption"]',
+        ".select__menu",
+        ".select__menu-list",
+        '[class*="menu-list"]',
+        '[class*="MenuList"]',
+    ]
+
+    async def _merge_visible() -> None:
+        _, more = await wait_for_option_texts(
+            page,
+            selectors=selectors,
+            timeout_ms=600,
+            filter_input=None,
+            nudge=False,
+            root=root,
+            max_options=max_options,
+        )
+        for t in more:
+            if t and t not in seen:
+                seen.append(t)
+
+    for _ in range(max_scrolls):
+        before = len(seen)
+        scope = root or page
+        for sel in scroll_targets:
+            try:
+                box = scope.locator(f"{sel}:visible").first
+                if await box.count() == 0:
+                    continue
+                await box.evaluate(
+                    """(el) => {
+                      el.scrollTop = Math.min(el.scrollHeight, el.scrollTop + Math.max(180, el.clientHeight || 200));
+                    }"""
+                )
+                try:
+                    await page.wait_for_timeout(120)
+                except Exception:
+                    pass
+                await _merge_visible()
+                # One container per pass — avoid multi-selector ArrowDown stacks
+                break
+            except Exception:
+                continue
+
+        if len(seen) <= before:
+            # Scroll added nothing (or no scroll target). One ArrowDown may
+            # advance a virtualized window that ignores scrollTop; then re-check.
+            try:
+                await page.keyboard.press("ArrowDown")
+                await page.wait_for_timeout(80)
+            except Exception:
+                pass
+            try:
+                await _merge_visible()
+            except Exception:
+                pass
+
+        if len(seen) <= before:
+            # Option set stable — early-exit (no A→B→C→D highlight loops)
+            break
+        if len(seen) >= max_options:
+            break
+    # Re-query locator so indices match the latest DOM when possible
+    opts2, texts2 = await wait_for_option_texts(
+        page,
+        selectors=selectors,
+        timeout_ms=800,
+        filter_input=None,
+        nudge=False,
+        root=root,
+        max_options=max_options,
+    )
+    # Prefer the union of scrolled texts for scoring; click uses live locator
+    merged = list(texts2) if texts2 else list(seen)
+    for t in seen:
+        if t and t not in merged:
+            merged.append(t)
+    return (opts2 if texts2 else opts), merged[:max_options]
+
+
 def clear_closest_match(
     ranked: list[tuple[int, int, str]],
     *,
@@ -785,7 +1497,10 @@ def clear_closest_match(
     """Return (index, text, score) when a clear closest option exists."""
     if intent:
         ranked = [
-            r for r in ranked if not reject_confusable_state_option(intent, r[2])
+            r
+            for r in ranked
+            if not reject_confusable_state_option(intent, r[2])
+            and not reject_confusable_country_option(intent, r[2])
         ]
     if not ranked:
         return None
@@ -832,6 +1547,10 @@ async def nudge_listbox_after_type(
     Prefer ArrowDown / prompt-icon click. Enter is opt-in and only while the
     filter input stays focused — never used as a form Submit. Workday source
     prompts often need a key nudge before ``promptOption`` rows appear.
+
+    CRITICAL: never click page-global ``promptIcon`` / bare ``multiSelectContainer``
+    — that reopened Country Phone Code after typing Indeed (Morningstar class).
+    Icons are scoped to the active filter's formField / multiSelect ancestor.
     """
     detail: dict[str, Any] = {"nudges": []}
     if filter_input is not None:
@@ -847,29 +1566,73 @@ async def nudge_listbox_after_type(
         await page.wait_for_timeout(280)
     except Exception as e:
         detail["arrow_error"] = str(e)[:80]
-    # 2) Workday prompt / multiselect list icon beside the input
-    icon_sels = [
-        '[data-automation-id="promptIcon"]',
-        '[data-automation-id="multiSelectContainer"] [data-automation-id="promptIcon"]',
-        'div[data-automation-id="multiSelectContainer"] button',
-        '[data-automation-id="formField-source"] button',
-        '[data-automation-id="formField-how_heard"] button',
-        'button[aria-label*="Select" i]',
-        'button[title*="Select" i]',
-    ]
-    for sel in icon_sels:
-        try:
-            loc = page.locator(sel).first
-            if await loc.count() == 0:
+    # 2) Workday prompt / multiselect list icon — SCOPED to active filter only
+    icon_clicked = False
+    if filter_input is not None:
+        scoped_sels = [
+            "xpath=ancestor::*[@data-automation-id='formField-source' "
+            "or contains(@data-automation-id,'formField-how') "
+            "or contains(@data-automation-id,'formField-candidateSource') "
+            "or contains(@data-automation-id,'formField-school') "
+            "or contains(@data-automation-id,'formField-degree') "
+            "or contains(@data-automation-id,'formField-fieldOfStudy') "
+            "or contains(@data-automation-id,'formField-discipline') "
+            "or contains(@data-automation-id,'formField-major') "
+            "or @data-automation-id='multiSelectContainer'][1]"
+            "//*[@data-automation-id='promptIcon']",
+            "xpath=ancestor::*[@data-automation-id='multiSelectContainer' "
+            "or contains(@data-automation-id,'formField-')][1]"
+            "//button[contains(@aria-label,'Select') or @data-automation-id='promptIcon']",
+        ]
+        for sel in scoped_sels:
+            try:
+                loc = filter_input.locator(sel).first
+                if await loc.count() == 0:
+                    continue
+                if not await loc.is_visible(timeout=400):
+                    continue
+                # Reject if ancestor is phone/country dial widget
+                try:
+                    wrap_aid = await loc.evaluate(
+                        """el => {
+                          const w = el.closest('[data-automation-id*="formField"],'
+                            + '[data-automation-id*="phone"],[data-automation-id*="Phone"]');
+                          return (w && w.getAttribute('data-automation-id')) || '';
+                        }"""
+                    )
+                except Exception:
+                    wrap_aid = ""
+                if how_heard_scope_reject_aid(str(wrap_aid or "")):
+                    detail["nudges"].append(f"icon_skipped_dial:{str(wrap_aid)[:40]}")
+                    continue
+                await loc.click(timeout=2000)
+                detail["nudges"].append(f"icon:scoped:{sel[:48]}")
+                await page.wait_for_timeout(320)
+                icon_clicked = True
+                break
+            except Exception:
                 continue
-            if not await loc.is_visible(timeout=400):
+    if not icon_clicked:
+        # Fallback: only explicitly scoped how-heard / source formFields (never bare)
+        for sel in (
+            '[data-automation-id="formField-source"] [data-automation-id="promptIcon"]',
+            '[data-automation-id="formField-how_heard"] [data-automation-id="promptIcon"]',
+            '[data-automation-id="formField-howDidYouHear"] [data-automation-id="promptIcon"]',
+            '[data-automation-id="formField-source"] button[aria-label*="Select" i]',
+            '[data-automation-id="formField-how_heard"] button[aria-label*="Select" i]',
+        ):
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() == 0:
+                    continue
+                if not await loc.is_visible(timeout=400):
+                    continue
+                await loc.click(timeout=2000)
+                detail["nudges"].append(f"icon:{sel[:48]}")
+                await page.wait_for_timeout(320)
+                break
+            except Exception:
                 continue
-            await loc.click(timeout=2000)
-            detail["nudges"].append(f"icon:{sel[:48]}")
-            await page.wait_for_timeout(320)
-            break
-        except Exception:
-            continue
     # 3) Last resort: Enter on the focused filter (loads suggestions on some WD prompts)
     if allow_enter:
         try:
@@ -1127,6 +1890,10 @@ async def fiber_search_select(
                 detail["status"] = "confusable_rejected"
                 detail["error"] = f"confusable:{picked_f[:40]}"
                 rejected = True
+            elif reject_confusable_country_option(primary, picked_f):
+                detail["status"] = "country_rejected"
+                detail["error"] = f"country:{picked_f[:40]}"
+                rejected = True
             else:
                 try:
                     from gh_select import looks_like_dial_code_option
@@ -1139,6 +1906,22 @@ async def fiber_search_select(
                         rejected = True
                 except Exception:
                     pass
+                # Gender polarity + job-board into country: soft_value_match gate
+                if not rejected and not soft_value_match(primary, picked_f):
+                    # Allow dial-shaped intent where soft may fail on (+1) chrome
+                    try:
+                        from gh_select import looks_like_dial_code_option
+
+                        dial_ok = looks_like_dial_code_option(picked_f) and any(
+                            looks_like_dial_code_option(c) or is_us_country_name(c)
+                            for c in cands
+                        )
+                    except Exception:
+                        dial_ok = False
+                    if not dial_ok:
+                        detail["status"] = "soft_match_rejected"
+                        detail["error"] = f"soft:{picked_f[:40]}"
+                        rejected = True
             if rejected:
                 detail["option_clicked"] = False
                 detail["ok"] = False
@@ -1223,20 +2006,87 @@ _HOW_HEARD_OPTION_SELS = [
     '[data-automation-id*="promptOption" i]',
 ]
 
+# NEVER bare multiSelectContainer — Workday reuses that for Country Phone Code.
+# Typing Indeed into the first multiSelectContainer is the Morningstar live bug.
 _HOW_HEARD_INPUT_SELS = (
     'input[name="source--source"], '
     '[data-automation-id="source--source"], '
     '[data-automation-id="formField-source"] input, '
     '[data-automation-id="formField-how_heard"] input, '
-    '[data-automation-id="multiSelectContainer"] input'
+    '[data-automation-id="formField-howDidYouHear"] input, '
+    '[data-automation-id="formField-candidateSource"] input, '
+    '[data-automation-id="formField-source"] [data-automation-id="multiSelectContainer"] input, '
+    '[data-automation-id="formField-how_heard"] [data-automation-id="multiSelectContainer"] input, '
+    '[data-automation-id="formField-howDidYouHear"] [data-automation-id="multiSelectContainer"] input, '
+    '[data-automation-id="formField-candidateSource"] [data-automation-id="multiSelectContainer"] input'
 )
 
 _HOW_HEARD_WRAP_SELS = (
     '[data-automation-id="formField-source"], '
     '[data-automation-id="formField-how_heard"], '
     '[data-automation-id="formField-howDidYouHear"], '
-    '[data-automation-id="multiSelectContainer"]'
+    '[data-automation-id="formField-candidateSource"]'
 )
+
+
+_PHONE_COUNTRY_AID_RE = re.compile(
+    r"countryphonecode|phonenumber--countryphonecode|phone.?country|"
+    r"phonecountry|calling.?code|dial.?code|"
+    r"addresssection_country(?!region)|formfield-country(?!region)",
+    re.I,
+)
+
+
+async def is_how_heard_safe_filter_input(loc) -> bool:
+    """False when *loc* sits inside Country Phone Code / Address Country.
+
+    Guards hierarchical how-heard / fiber loops that previously used bare
+    ``multiSelectContainer`` and typed job-board names into dial-code filters.
+    """
+    try:
+        meta = await loc.evaluate(
+            """el => {
+              const wrap = el.closest(
+                '[data-automation-id*="formField"], [data-automation-id="multiSelectContainer"]'
+              ) || el.parentElement;
+              const aid = (
+                (wrap && wrap.getAttribute('data-automation-id')) ||
+                el.getAttribute('data-automation-id') ||
+                el.getAttribute('name') ||
+                el.id ||
+                ''
+              ).toLowerCase();
+              const label = (
+                (wrap && (wrap.innerText || '')) || ''
+              ).toLowerCase().slice(0, 220);
+              return {aid, label};
+            }"""
+        ) or {}
+    except Exception:
+        return False
+    aid = str(meta.get("aid") or "")
+    label = str(meta.get("label") or "")
+    if how_heard_scope_reject_aid(aid) or _PHONE_COUNTRY_AID_RE.search(aid):
+        return False
+    if looks_like_phone_country_or_address_chip(label):
+        # Allow when wrap also clearly names how-heard / source
+        if not re.search(
+            r"how\s*(did|do)\s*you\s*hear|where\s*did\s*you\s*hear|"
+            r"hear about|candidate\s*source|\bsource\b",
+            label,
+        ):
+            return False
+    # Prefer explicit source / hear aids; reject unknown bare containers that
+    # look like dial rows only.
+    if "multiselectcontainer" in aid and not re.search(
+        r"source|how_?heard|hearabou|candidate", aid
+    ):
+        if re.search(
+            r"country\s*phone|phone\s*country|\(\s*\+\d|united\s*states\s*\(\+",
+            label,
+        ):
+            return False
+    return True
 
 
 async def _read_how_heard_wrap_text(page) -> str:
@@ -1252,8 +2102,11 @@ async def _read_how_heard_wrap_text(page) -> str:
             except Exception:
                 pass
             snip = ((await loc.inner_text()) or "").strip()
-            if snip:
-                return snip[:240]
+            if not snip:
+                continue
+            if looks_like_phone_country_or_address_chip(snip):
+                continue
+            return snip[:240]
         except Exception:
             continue
     return ""
@@ -1411,9 +2264,9 @@ async def fill_hierarchical_how_heard(
             for c in (leaf_candidates or how_heard_leaf_candidates())
             if c and not is_how_heard_category_option(c)
         ][:3]
-        cats = list(category_candidates or how_heard_category_candidates())[:3]
+        cats = list(category_candidates or how_heard_category_candidates())[:2]
     except Exception:
-        leaves = list(leaf_candidates or ["Indeed", "LinkedIn", "Company Website"])[:3]
+        leaves = list(leaf_candidates or ["LinkedIn", "Indeed", "Company Website"])[:5]
         cats = list(category_candidates or ["Internet job board", "Job Board"])[:3]
 
     detail["leaves"] = leaves
@@ -1717,6 +2570,8 @@ async def click_best_option(
     def _reject(intent_s: str, opt: str) -> bool:
         if reject_confusable_state_option(intent_s, opt):
             return True
+        if reject_confusable_country_option(intent_s, opt):
+            return True
         if device_type:
             try:
                 from gh_select import looks_like_dial_code_option
@@ -1737,8 +2592,13 @@ async def click_best_option(
     ranked = remap_ranked_to_original(
         rank_option_matches(filtered, candidates, score_fn), orig_idx
     )
+    # Shared commit floor — never soft 40 / last-word (Male⊂Female, A.A. class)
+    min_s = commit_min_score_for("", primary) if primary else 50
     clear = clear_closest_match(
-        ranked, at_last_word=True, min_score=40, intent=primary
+        ranked,
+        at_last_word=False,
+        min_score=min_s,
+        intent=primary,
     )
     if not clear:
         detail["error"] = "no_matching_option"
@@ -1867,10 +2727,12 @@ async def typable_dropdown_narrow_and_click(
     field_type: str = "",
     root: Any | None = None,
 ) -> dict[str, Any]:
-    """Word-by-word type → wait → narrow → click closest option.
+    """Enumerate options → score → click best (type-to-filter only if needed).
 
-    Never uses Enter as form Submit. For async Workday How-Heard prompts,
-    may nudge with ArrowDown / prompt icon / filter-Enter so options load.
+    Primary path (Elanco Degree lesson): do NOT push free-form intended text
+    first. Open list is assumed already focused by caller; we collect options
+    (scroll virtualized), score against aliases, commit only above threshold.
+    Typing is a last resort with a sanitized token (\"Master\", not essays).
     """
     score_fn = score_fn or _default_score_option
     cands = [c for c in (aliases or []) if c]
@@ -1882,15 +2744,18 @@ async def typable_dropdown_narrow_and_click(
         words = split_select_words(cands[0])
     ftype_u = str(field_type or "").upper()
     lab_l = str(label or "").lower()
+    min_score = commit_min_score_for(field_type, label)
     # Workday "How Did You Hear" / School / State prompts need async option load.
     needs_async_nudge = ftype_u in (
         "HOW_HEARD",
         "SOURCE",
         "SCHOOL",
         "ADDRESS_STATE",
+        "DEGREE",
     ) or (
         "how did you hear" in lab_l
         or "school" in lab_l
+        or "degree" in lab_l
         or "countryregion" in lab_l
         or lab_l.endswith("state")
     )
@@ -1908,24 +2773,31 @@ async def typable_dropdown_narrow_and_click(
             cands = list(dict.fromkeys([*expanded, *cands]))
             words = split_select_words(primary)
     detail: dict[str, Any] = {
-        "mode": "typable_dropdown_word_by_word",
+        "mode": "enumerate_then_score",
         "option_clicked": False,
         "words": words[:12],
         "steps": [],
         "typed_frag": "",
         "aliases_tried": cands[:12],
+        "min_score": min_score,
     }
     if not cands:
         detail["error"] = "no_aliases"
         return detail
 
-    # Root fix for Workday async prompts: fiber searchSelect before type/nudge.
+    # Fiber may open/filter async prompts — commit only when score ≥ threshold.
+    # Never accept sc==0 (legacy "fiber didn't report") — that class committed
+    # wrong options on SCHOOL / HOW_HEARD / STATE (same family as Degree A.A.).
     if prefer_fiber and filter_input is not None:
         try:
+            # Sanitize filter token for enumerate-first kinds (never Indeed→phone)
+            fiber_tok = (
+                sanitized_typeahead_token(ftype_u, primary, cands) or primary
+            )
             fiber = await fiber_search_select(
                 page,
                 filter_input,
-                primary,
+                fiber_tok,
                 aliases=cands,
                 wait_ms=min(2200, max(1200, timeout_ms // 2)),
             )
@@ -1934,252 +2806,245 @@ async def typable_dropdown_narrow_and_click(
                 for k in ("status", "picked", "score", "options", "error", "algorithm")
             }
             picked_f = str(fiber.get("picked") or "")
-            if (
+            sc = int(fiber.get("score") or 0)
+            soft_ok = soft_value_match(primary, picked_f) or any(
+                soft_value_match(c, picked_f) for c in cands[:8] if c
+            )
+            fiber_ok = (
                 fiber.get("option_clicked")
                 and picked_f
+                and sc >= min_score
                 and not reject_confusable_state_option(primary, picked_f)
-            ):
+                and not reject_confusable_country_option(primary, picked_f)
+                and soft_ok
+            )
+            if fiber_ok:
                 detail.update(
                     {
                         "option_clicked": True,
                         "picked": picked_f,
-                        "score": fiber.get("score"),
+                        "score": sc,
                         "algorithm": "fiber_search_select",
                         "options": (fiber.get("options") or [])[:12],
                     }
                 )
                 return detail
+            if fiber.get("option_clicked") and (sc < min_score or not fiber_ok):
+                detail["fiber_below_threshold"] = sc
+                detail["fiber_rejected_picked"] = picked_f[:60]
         except Exception as e:
             detail["fiber_error"] = str(e)[:80]
 
-    opts = (root or page).locator(
-        (option_selectors or [".select__option", "[role='option']"])[0]
-    )
-    texts: list[str] = []
-    ranked: list[tuple[int, int, str]] = []
+    async def _click_text(opts_loc, texts_live: list[str], want: str) -> bool:
+        """Click option by exact text, then soft_value_match — never raw ``in``.
 
-    async def _wait_rank(*, allow_enter: bool = False):
-        o, t = await wait_for_option_texts(
+        Male⊂Female / IL⊂Idaho must not unique-substring-commit.
+        """
+        want_n = (want or "").strip()
+        if not want_n:
+            return False
+        for i, t in enumerate(texts_live):
+            if (t or "").strip() == want_n:
+                try:
+                    await opts_loc.nth(i).click(timeout=timeout_ms)
+                    return True
+                except Exception:
+                    continue
+        hits = [
+            i
+            for i, t in enumerate(texts_live)
+            if t and soft_value_match(want_n, t)
+        ]
+        if len(hits) == 1:
+            try:
+                await opts_loc.nth(hits[0]).click(timeout=timeout_ms)
+                return True
+            except Exception:
+                return False
+        return False
+
+    # Fiber may leave a filter token in the input that zeros the option list
+    # (Capco HOW_HEARD: fiber typed "Internet job board" → 0 options → enumerate
+    # saw an empty menu → no_matching_option). Clear it so the enumerate-first
+    # path can score the FULL short list (Job Board / Indeed / Other) and commit.
+    if prefer_fiber and filter_input is not None and not detail.get("option_clicked"):
+        try:
+            cur = (await filter_input.input_value()) or ""
+        except Exception:
+            cur = ""
+        if cur.strip():
+            try:
+                await filter_input.fill("")
+                await page.wait_for_timeout(180)
+            except Exception:
+                pass
+
+    # --- PRIMARY: enumerate → score → commit (no typing) ---
+    opts, texts = await enumerate_listbox_options(
+        page,
+        selectors=option_selectors,
+        root=root,
+        filter_input=filter_input,
+        timeout_ms=min(timeout_ms, 3200 if needs_async_nudge else 2200),
+        max_scrolls=8 if ftype_u in ("DEGREE", "SCHOOL", "HOW_HEARD") else 5,
+    )
+    detail["enumerated"] = len(texts)
+    detail["options"] = texts[:20]
+    # HOW_HEARD: priority walk — first matching board/site commits, no alias thrash.
+    if ftype_u == "HOW_HEARD" and texts:
+        try:
+            from fill_verify import pick_how_heard_from_options
+
+            prio_pick = pick_how_heard_from_options(texts)
+            if prio_pick:
+                clicked = await _click_text(opts, texts, prio_pick)
+                if clicked:
+                    detail.update(
+                        {
+                            "option_clicked": True,
+                            "picked": prio_pick,
+                            "score": 100,
+                            "algorithm": "how_heard_priority",
+                        }
+                    )
+                    return detail
+        except Exception:
+            pass
+    pick = pick_best_scored_option(
+        texts, cands, score_fn, intent=primary, min_score=min_score
+    )
+    detail["steps"].append(
+        {
+            "phase": "enumerate",
+            "n_options": len(texts),
+            "best": (pick[2], pick[1][:60]) if pick else None,
+        }
+    )
+    if pick:
+        _idx, picked, best_s = pick
+        # Prefer clicking by live text (virtualized indices may drift after scroll)
+        live_opts, live_texts = await wait_for_option_texts(
             page,
             selectors=option_selectors,
-            timeout_ms=min(timeout_ms, 3200 if needs_async_nudge else 2200),
-            filter_input=filter_input,
-            nudge=needs_async_nudge,
-            allow_enter_nudge=allow_enter and needs_async_nudge,
+            timeout_ms=1200,
+            filter_input=None,
+            nudge=False,
             root=root,
         )
-        # ATS-001/015: drop confusable states; keep original indices for click.
-        # Never fall back to unfiltered list (``] or t``) — that remaps Illinois→Idaho.
-        filtered, orig_idx = filter_options_preserving_indices(t, primary)
-        ranked = remap_ranked_to_original(
-            rank_option_matches(filtered, cands, score_fn), orig_idx
-        )
-        return o, filtered, ranked
-
-    if not use_type or not words:
-        opts, texts, ranked = await _wait_rank()
-        clear = clear_closest_match(ranked, at_last_word=True, min_score=40, intent=primary)
-        detail["options"] = texts[:12]
-        if not clear:
-            detail["error"] = "no_matching_option"
-            return detail
-        best_i, picked, best_s = clear
-        try:
-            await opts.nth(best_i).click(timeout=timeout_ms)
+        clicked = await _click_text(live_opts, live_texts or texts, picked)
+        if not clicked and live_opts is not None:
+            try:
+                await live_opts.nth(_idx).click(timeout=timeout_ms)
+                clicked = True
+            except Exception as e:
+                detail["error"] = f"option_click_failed:{e}"[:120]
+        if clicked:
             detail.update(
-                {"option_clicked": True, "picked": picked, "score": best_s}
+                {
+                    "option_clicked": True,
+                    "picked": picked,
+                    "score": best_s,
+                    "algorithm": "enumerate_then_score",
+                }
             )
-        except Exception as e:
-            detail["error"] = f"option_click_failed:{e}"[:120]
+            return detail
+
+    # --- FALLBACK: sanitized type-to-filter only when list huge/empty ---
+    safe_tok = sanitized_typeahead_token(ftype_u, primary, cands)
+    allow_type = bool(use_type) and bool(safe_tok) and (
+        len(texts) == 0 or len(texts) >= _HUGE_OPTION_LIST or pick is None
+    )
+    # Degree/country always may try sanitized filter once if enumerate missed
+    if (
+        not allow_type
+        and use_type
+        and safe_tok
+        and ftype_u in _ENUMERATE_FIRST_TYPES
+        and pick is None
+    ):
+        allow_type = True
+
+    if not allow_type:
+        detail["error"] = "no_matching_option"
+        detail["reason"] = "enumerate_below_threshold_no_safe_filter"
         return detail
 
+    detail["typed_frag"] = safe_tok
+    detail["algorithm"] = "sanitize_filter_then_score"
     try:
         await filter_input.fill("")
     except Exception:
         pass
-
-    # ATS3-013: try full intended string once before word-by-word clears/retypes.
-    if use_type and len(words) > 1:
-        full = " ".join(words)
-        ok_full = await _type_into_filter(filter_input, full, timeout_ms=timeout_ms)
-        if ok_full:
-            detail["typed_frag"] = full
-            try:
-                await page.wait_for_timeout(550 if needs_async_nudge else 320)
-            except Exception:
-                pass
-            opts, texts, ranked = await _wait_rank(allow_enter=False)
-            if not texts and needs_async_nudge:
-                try:
-                    nudge = await nudge_listbox_after_type(
-                        page, filter_input, allow_enter=True
-                    )
-                    detail.setdefault("nudges", []).append(nudge)
-                    await page.wait_for_timeout(400)
-                except Exception:
-                    pass
-                opts, texts, ranked = await _wait_rank(allow_enter=True)
-            clear = clear_closest_match(
-                ranked, at_last_word=True, intent=primary
-            ) or _early_unique_high_match(ranked, intent=primary, min_score=80)
-            detail["steps"].append(
-                {
-                    "typed": full[:80],
-                    "n_options": len(texts),
-                    "best": (clear[2], clear[1][:60]) if clear else None,
-                    "top": [(s, t[:40]) for s, _, t in ranked[:3]],
-                    "full_first": True,
-                }
-            )
-            detail["options"] = texts[:12]
-            if clear:
-                best_i, picked, best_s = clear
-                try:
-                    await opts.nth(best_i).click(timeout=timeout_ms)
-                    detail.update(
-                        {
-                            "option_clicked": True,
-                            "picked": picked,
-                            "score": best_s,
-                            "narrowed_at_word": len(words),
-                            "full_string_first": True,
-                        }
-                    )
-                    return detail
-                except Exception as e:
-                    detail["error"] = f"option_click_failed:{e}"[:120]
-            # Reset filter before word-by-word fallback
-            try:
-                await filter_input.fill("")
-            except Exception:
-                pass
-
-    # ATS3-013: for long multi-word intents, only try head / head+2 / full
-    # (skip middle retypes that rarely change the list).
-    word_indices = list(range(len(words)))
-    if len(words) > 3:
-        word_indices = sorted({0, min(1, len(words) - 1), len(words) - 1})
-
-    for step_n, i in enumerate(word_indices):
-        typed = " ".join(words[: i + 1])
-        if step_n == 0:
-            ok_type = await _type_into_filter(filter_input, typed, timeout_ms=timeout_ms)
-        else:
-            # Append only the new trailing words since last typed fragment
-            prev = detail.get("typed_frag") or ""
-            if typed.startswith(prev) and prev:
-                suffix = typed[len(prev) :]
-                ok_type = await _append_into_filter(
-                    filter_input, suffix, timeout_ms=timeout_ms
-                )
-                if not ok_type:
-                    ok_type = await _type_into_filter(
-                        filter_input, typed, timeout_ms=timeout_ms
-                    )
-            else:
-                ok_type = await _type_into_filter(
-                    filter_input, typed, timeout_ms=timeout_ms
-                )
-        if not ok_type:
-            try:
-                await page.keyboard.type(typed[:80], delay=25)
-            except Exception:
-                detail["error"] = "type_failed"
-                return detail
-        detail["typed_frag"] = typed
+    ok_type = await _type_into_filter(filter_input, safe_tok, timeout_ms=timeout_ms)
+    if not ok_type:
         try:
-            # Workday prompt search is async — give it more than a paint frame.
-            await page.wait_for_timeout(650 if needs_async_nudge else 380)
+            await page.keyboard.type(safe_tok[:28], delay=25)
+        except Exception:
+            detail["error"] = "type_failed"
+            return detail
+    try:
+        await page.wait_for_timeout(550 if needs_async_nudge else 320)
+    except Exception:
+        pass
+    if needs_async_nudge:
+        try:
+            nudge = await nudge_listbox_after_type(
+                page, filter_input, allow_enter=False
+            )
+            detail.setdefault("nudges", []).append(nudge)
         except Exception:
             pass
-        # First pass: ArrowDown/icon only. If still empty on last word, allow
-        # filter-Enter (observed needed for Quantiphi How-Heard suggestions).
-        opts, texts, ranked = await _wait_rank(allow_enter=False)
-        if not texts and needs_async_nudge:
-            try:
-                nudge = await nudge_listbox_after_type(
-                    page,
-                    filter_input,
-                    allow_enter=(i == len(words) - 1),
-                )
-                detail.setdefault("nudges", []).append(nudge)
-                await page.wait_for_timeout(500)
-            except Exception:
-                pass
-            opts, texts, ranked = await _wait_rank(
-                allow_enter=(i == len(words) - 1)
-            )
-        at_last = i == len(words) - 1
-        clear = clear_closest_match(ranked, at_last_word=at_last, intent=primary)
-        if not clear and not at_last:
-            clear = _early_unique_high_match(ranked, intent=primary, min_score=80)
-        detail["steps"].append(
-            {
-                "typed": typed[:80],
-                "n_options": len(texts),
-                "best": (clear[2], clear[1][:60]) if clear else None,
-                "top": [(s, t[:40]) for s, _, t in ranked[:3]],
-            }
-        )
+
+    opts, texts = await enumerate_listbox_options(
+        page,
+        selectors=option_selectors,
+        root=root,
+        filter_input=filter_input,
+        timeout_ms=min(timeout_ms, 2800),
+        max_scrolls=4,
+    )
+    detail["enumerated_after_filter"] = len(texts)
+    detail["options"] = texts[:20]
+    pick = pick_best_scored_option(
+        texts, cands, score_fn, intent=primary, min_score=min_score
+    )
+    detail["steps"].append(
+        {
+            "phase": "sanitize_filter",
+            "typed": safe_tok,
+            "n_options": len(texts),
+            "best": (pick[2], pick[1][:60]) if pick else None,
+        }
+    )
+    if not pick:
+        detail["error"] = "no_matching_option"
+        detail["reason"] = "filtered_below_threshold"
+        return detail
+    _idx, picked, best_s = pick
+    live_opts, live_texts = await wait_for_option_texts(
+        page,
+        selectors=option_selectors,
+        timeout_ms=1200,
+        filter_input=None,
+        nudge=False,
+        root=root,
+    )
+    clicked = await _click_text(live_opts, live_texts or texts, picked)
+    if not clicked:
         try:
-            from fill_step_log import note_step
-
-            note_step(
-                report,
-                action="select_word_by_word",
-                label=str(label or "")[:80],
-                field_type=str(field_type or "")[:48],
-                before=detail.get("typed_frag") or "",
-                after=typed[:80],
-                via="verified_select",
-                layer="typable_dropdown",
-                reason="narrow_options",
-                extra={
-                    "word_i": i + 1,
-                    "n_options": len(texts),
-                    "picked": clear[1][:60] if clear else None,
-                },
-            )
-        except Exception:
-            pass
-        detail["options"] = texts[:12]
-        if clear:
-            best_i, picked, best_s = clear
-            try:
-                await opts.nth(best_i).click(timeout=timeout_ms)
-                detail.update(
-                    {
-                        "option_clicked": True,
-                        "picked": picked,
-                        "score": best_s,
-                        "narrowed_at_word": i + 1,
-                    }
-                )
-                return detail
-            except Exception as e:
-                detail["error"] = f"option_click_failed:{e}"[:120]
-                continue
-
-    if ranked:
-        clear = clear_closest_match(ranked, at_last_word=True, min_score=50, intent=primary)
-        if clear:
-            best_i, picked, best_s = clear
-            try:
-                await opts.nth(best_i).click(timeout=timeout_ms)
-                detail.update(
-                    {
-                        "option_clicked": True,
-                        "picked": picked,
-                        "score": best_s,
-                        "narrowed_at_word": len(words),
-                        "forced_last": True,
-                    }
-                )
-                return detail
-            except Exception as e:
-                detail["error"] = f"option_click_failed:{e}"[:120]
-                return detail
-    detail["error"] = detail.get("error") or "no_clear_closest_match"
+            await (live_opts or opts).nth(_idx).click(timeout=timeout_ms)
+            clicked = True
+        except Exception as e:
+            detail["error"] = f"option_click_failed:{e}"[:120]
+            return detail
+    detail.update(
+        {
+            "option_clicked": True,
+            "picked": picked,
+            "score": best_s,
+            "algorithm": "sanitize_filter_then_score",
+        }
+    )
     return detail
 
 
@@ -2199,7 +3064,7 @@ async def fill_typable_dropdown(
     label: str = "",
     report: dict | None = None,
 ) -> dict[str, Any]:
-    """Universal typable dropdown: open → word-by-word → click → verify commit."""
+    """Open → enumerate options → score → commit best (sanitize-filter fallback)."""
     score_fn = score_fn or _default_score_option
     value = normalize_select_answer(label, str(value or ""), field_type=field_type)
     cands = list(aliases or [])
@@ -2207,7 +3072,7 @@ async def fill_typable_dropdown(
         cands = [value, *cands]
     detail: dict[str, Any] = {
         "mode": "typable_dropdown",
-        "algorithm": "word_by_word",
+        "algorithm": "enumerate_then_score",
         "value": value,
         "option_clicked": False,
         "ok": False,
@@ -2447,6 +3312,8 @@ async def fill_typable_dropdown(
             out["error"] = out.get("error") or "select_not_committed"
         return out
 
+    # Enumerate-first is inside typable_dropdown_narrow_and_click; use_type
+    # only gates the sanitized type-to-filter fallback after scoring the list.
     first = await _attempt(use_type=True)
     detail.update(first)
     if detail.get("ok"):
@@ -2486,6 +3353,7 @@ async def fill_typable_dropdown(
             detail.update(retry)
             detail["retried_after_mismatch"] = True
             return detail
+    # Second pass: enumerate-only (no type) in case filter left the list empty
     second = await _attempt(use_type=False)
     detail["retry"] = {
         k: second.get(k)
@@ -2562,11 +3430,21 @@ async def read_combobox_display(locator) -> str:
                     "xpath=ancestor::*[@data-automation-id='formField-source' "
                     "or contains(@data-automation-id,'formField-source') "
                     "or contains(@data-automation-id,'formField-how') "
-                    "or @data-automation-id='multiSelectContainer' "
-                    "or contains(@data-automation-id,'multiSelect')][1]"
+                    "or contains(@data-automation-id,'formField-candidateSource') "
+                    "or contains(@data-automation-id,'formField-howDidYouHear')][1]"
                 ).first
                 if await wrap.count():
+                    try:
+                        wrap_aid = (
+                            await wrap.get_attribute("data-automation-id") or ""
+                        )
+                    except Exception:
+                        wrap_aid = ""
+                    if how_heard_scope_reject_aid(wrap_aid):
+                        return ""
                     chip = ((await wrap.inner_text()) or "").strip()
+                    if chip and looks_like_phone_country_or_address_chip(chip):
+                        return ""
                     if chip and how_heard_source_committed(chip):
                         return chip[:200]
             except Exception:
@@ -3041,6 +3919,8 @@ async def fill_workday_combobox(
 _SELECT_FIELD_TYPES = frozenset(
     {
         "ADDRESS_COUNTRY",
+        "PHONE_COUNTRY_CODE",
+        "PHONE_DEVICE",
         "ADDRESS_CITY",
         "WORK_AUTH",
         "US_RESIDENCE",
@@ -3072,6 +3952,10 @@ _SELECT_FIELD_TYPES = frozenset(
         "FELONY",
         "BACKGROUND_CHECK",
         "TERMS_CONSENT",
+        "ACCOMMODATIONS",
+        "ACCOMMODATIONS_DETAILS",
+        "EMPLOYEE_REFERRAL",
+        "REFERRAL_EMAIL",
     }
 )
 
@@ -3080,6 +3964,7 @@ _SELECT_LABEL_RE = re.compile(
     r"authorized\s+to\s+work|employment\s+eligibility|gender|race|ethnicity|"
     r"veteran|disabilit|\bschool\b|\bdegree\b|\bdiscipline\b|\bmajor\b|"
     r"field\s+of\s+study|salary|how\s+did\s+you\s+hear|"
+    r"were\s+you\s+referred|referred\s+to\s+this|"
     r"yes\s*/\s*no|select\s+one",
     re.I,
 )
@@ -3359,14 +4244,27 @@ def normalize_select_answer(
         "AGE_18",
         "MARKETING_CONSENT",
         "TERMS_CONSENT",
+        "ACCOMMODATIONS",
         "LATIN_AMERICA",
         "US_RESIDENCE",
     ) or re.search(
         r"authorized\s+to\s+work|require\s+.*sponsorship|live\s+in\s+the\s+united|"
-        r"willing\s+to\s+relocate|background\s+check",
+        r"willing\s+to\s+relocate|background\s+check|"
+        r"reasonable\s+accommodations?\s+or\s+adjustments|"
+        r"(require|need).{0,40}(accommodation|adjustment)",
         label_l,
     ):
         low = raw.lower()
+        if ftype == "ACCOMMODATIONS" or re.search(
+            r"(require|need).{0,40}(accommodation|adjustment)|"
+            r"reasonable\s+accommodations?\s+or\s+adjustments",
+            label_l,
+        ):
+            if re.search(r"\bno\b|do\s+not|don'?t|not\s+require|not\s+need", low):
+                return "No"
+            if re.search(r"\byes\b", low):
+                return "Yes"
+            return "No"
         if ftype == "SPONSORSHIP" or "sponsorship" in label_l:
             # Check No / will-not-require BEFORE need-sponsor (avoids matching
             # "will not need sponsorship" as Yes via "need sponsor").

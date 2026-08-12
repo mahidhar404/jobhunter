@@ -6,7 +6,7 @@ No network. Verifies:
   - append_row + load_timeline round-trip.
   - ratchet_check fails on safety fails and on pass_rate below best-epsilon.
   - mask_pii redacts emails / phones / SSNs (incl. nested).
-  - trace_llm is a no-op unless FASTFILL_TRACE=1, and writes masked JSONL when on;
+  - trace_llm writes a PII-masked local JSONL mirror (and optional Langfuse);
     Langfuse absence never raises.
 
 DUMMY / synthetic fixtures only.

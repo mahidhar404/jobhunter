@@ -96,8 +96,8 @@
       "label_pattern": "input",
       "platform": "greenhouse",
       "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
-      "seen": 3,
-      "updated_at": "2026-08-03T09:15:01Z"
+      "seen": 4,
+      "updated_at": "2026-08-11T09:09:45Z"
     },
     {
       "avoid_strategy": "refill_pass_1",
@@ -204,8 +204,8 @@
       "label_pattern": "input",
       "platform": "greenhouse",
       "reason": "UNFILLABLE_AFTER_2",
-      "seen": 5,
-      "updated_at": "2026-08-03T09:47:59Z"
+      "seen": 6,
+      "updated_at": "2026-08-11T09:11:30Z"
     },
     {
       "avoid_strategy": "retry_same_selector",
@@ -330,8 +330,8 @@
       "label_pattern": "preferred first name",
       "platform": "gh",
       "reason": "UNFILLABLE_AFTER_2: live_empty_after_claimed_verified",
-      "seen": 5,
-      "updated_at": "2026-08-08T10:26:57Z"
+      "seen": 7,
+      "updated_at": "2026-08-11T18:28:23Z"
     },
     {
       "avoid_strategy": "retry_same_selector",
@@ -339,8 +339,8 @@
       "label_pattern": "school*",
       "platform": "gh",
       "reason": "UNFILLABLE_AFTER_2: gh_select_failed",
-      "seen": 5,
-      "updated_at": "2026-08-08T10:26:57Z"
+      "seen": 7,
+      "updated_at": "2026-08-11T18:28:23Z"
     },
     {
       "avoid_strategy": "refill_pass_1",
@@ -456,8 +456,8 @@
       "label_pattern": "please identify your race",
       "platform": "greenhouse",
       "reason": "UNFILLABLE_AFTER_2",
-      "seen": 1,
-      "updated_at": "2026-08-03T09:47:59Z"
+      "seen": 2,
+      "updated_at": "2026-08-11T09:11:30Z"
     },
     {
       "avoid_strategy": "retry_same_selector",
@@ -870,8 +870,8 @@
       "label_pattern": "email",
       "platform": "greenhouse",
       "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
-      "seen": 1,
-      "updated_at": "2026-08-06T06:06:50Z"
+      "seen": 2,
+      "updated_at": "2026-08-10T09:58:30Z"
     },
     {
       "avoid_strategy": "retry_same_selector",
@@ -879,8 +879,8 @@
       "label_pattern": "email",
       "platform": "greenhouse",
       "reason": "UNFILLABLE_AFTER_2",
-      "seen": 1,
-      "updated_at": "2026-08-06T06:06:59Z"
+      "seen": 2,
+      "updated_at": "2026-08-10T09:59:19Z"
     },
     {
       "avoid_strategy": "refill_pass_1",
@@ -888,8 +888,8 @@
       "label_pattern": "no_extractable_fields_after_entry",
       "platform": "smartrecruiters",
       "reason": "UNFILLABLE_AFTER_2: generic_dom_no_fields",
-      "seen": 1,
-      "updated_at": "2026-08-06T06:14:04Z"
+      "seen": 4,
+      "updated_at": "2026-08-11T09:32:27Z"
     },
     {
       "avoid_strategy": "retry_same_selector",
@@ -897,8 +897,8 @@
       "label_pattern": "no_extractable_fields_after_entry",
       "platform": "smartrecruiters",
       "reason": "UNFILLABLE_AFTER_2",
-      "seen": 1,
-      "updated_at": "2026-08-06T06:14:13Z"
+      "seen": 4,
+      "updated_at": "2026-08-11T09:33:12Z"
     },
     {
       "avoid_strategy": "initial_fill",
@@ -926,6 +926,519 @@
       "reason": "UNFILLABLE_AFTER_2: unclassified",
       "seen": 1,
       "updated_at": "2026-08-07T07:44:40Z"
+    },
+    {
+      "avoid_strategy": "ashby_widgets",
+      "field_type": "WORK_AUTH",
+      "label_pattern": "are you currently legally authorized to work in the country where this position",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: option_click_failed",
+      "seen": 3,
+      "updated_at": "2026-08-10T11:23:25Z"
+    },
+    {
+      "avoid_strategy": "ashby_widgets",
+      "field_type": "SPONSORSHIP",
+      "label_pattern": "will you now or in the future require employer sponsorship to work in that count",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: option_click_failed",
+      "seen": 3,
+      "updated_at": "2026-08-10T11:23:25Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "SPONSORSHIP",
+      "label_pattern": "will you now or in the future require employer sponsorship to work in that count",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-10T11:24:13Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "WORK_AUTH",
+      "label_pattern": "are you currently legally authorized to work in the country where this position",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-10T11:24:13Z"
+    },
+    {
+      "avoid_strategy": "inpage_flash",
+      "field_type": null,
+      "label_pattern": "why you're excited about joining artificial analysis?",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: unverified_readback",
+      "seen": 2,
+      "updated_at": "2026-08-10T11:23:25Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "why you're excited about joining artificial analysis?",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 2,
+      "updated_at": "2026-08-10T11:24:13Z"
+    },
+    {
+      "avoid_strategy": "low_success_selector",
+      "field_type": null,
+      "label_pattern": "why you're excited about joining artificial analysis?",
+      "platform": "ashby",
+      "reason": "unverified_readback",
+      "seen": 7,
+      "updated_at": "2026-08-10T11:24:13Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "yes",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: unanswered_radio_group",
+      "seen": 5,
+      "updated_at": "2026-08-11T19:04:34Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "yes",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 5,
+      "updated_at": "2026-08-11T19:04:38Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "SPONSORSHIP",
+      "label_pattern": "do you now or will you in the future, require sponsorship for employment, visa s",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: no select__control",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:09:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "do you know anyone or are you related to anyone who works at capco?*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:09:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "NAME_FULL",
+      "label_pattern": "capco job candidate privacy notice acknowledgement*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: no_matching_option",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:09:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "RACE",
+      "label_pattern": "please identify your race or ethnicity*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: no_matching_option",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:09:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "RACE",
+      "label_pattern": "please identify your race",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: no_matching_option",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:09:45Z"
+    },
+    {
+      "avoid_strategy": "gh_select",
+      "field_type": "HOW_HEARD",
+      "label_pattern": "how did you hear about this role?*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: multiselect_uncommitted",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:09:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "question_67436191",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:09:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "1344",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:09:45Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "1393",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:09:45Z"
+    },
+    {
+      "avoid_strategy": "leftover_miss_scan",
+      "field_type": null,
+      "label_pattern": "combobox",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: l01_miss_scan:empty_required_select",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:09:45Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "HOW_HEARD",
+      "label_pattern": "how did you hear about this role?*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:11:30Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "NAME_FULL",
+      "label_pattern": "capco job candidate privacy notice acknowledgement*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:11:30Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "RACE",
+      "label_pattern": "please identify your race or ethnicity*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:11:30Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "SPONSORSHIP",
+      "label_pattern": "do you now or will you in the future, require sponsorship for employment, visa s",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:11:30Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "1344",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:11:30Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "1393",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:11:30Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "combobox",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:11:30Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "do you know anyone or are you related to anyone who works at capco?*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:11:30Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "question_67436191",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-11T09:11:30Z"
+    },
+    {
+      "avoid_strategy": "leftover_miss_scan",
+      "field_type": null,
+      "label_pattern": "do you have 5+ years of data engineering experience, including hands-on ownershi",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: l01_miss_scan:unanswered_ashby_yesno",
+      "seen": 3,
+      "updated_at": "2026-08-11T09:18:48Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "do you have 5+ years of data engineering experience, including hands-on ownershi",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-11T09:19:33Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "input-6",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-11T10:48:20Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "input-7",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-11T10:48:20Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "input-6",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-11T10:49:21Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "input-7",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-11T10:49:21Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "do you identify as part of the lgbtqia+ community?",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-11T18:56:27Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "female",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: unanswered_radio_group",
+      "seen": 3,
+      "updated_at": "2026-08-11T19:04:34Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "cards[004cdb5c-e061-45f7-920b-d2b79556b182][field6]",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_radio_group",
+      "seen": 3,
+      "updated_at": "2026-08-11T19:08:06Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "cards[004cdb5c-e061-45f7-920b-d2b79556b182][field0]",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 4,
+      "updated_at": "2026-08-11T19:10:56Z"
+    },
+    {
+      "avoid_strategy": "extract+classify",
+      "field_type": "HOW_HEARD",
+      "label_pattern": "how did you hear about this job?\u2731",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: multiselect_uncommitted",
+      "seen": 3,
+      "updated_at": "2026-08-11T19:10:56Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "do you identify as part of the lgbtqia+ community?",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-11T18:58:01Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "HOW_HEARD",
+      "label_pattern": "how did you hear about this job?\u2731",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-11T19:10:59Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "cards[004cdb5c-e061-45f7-920b-d2b79556b182][field0]",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 4,
+      "updated_at": "2026-08-11T19:10:59Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "cards[004cdb5c-e061-45f7-920b-d2b79556b182][field6]",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-11T19:08:09Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "female",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 3,
+      "updated_at": "2026-08-11T19:04:38Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "he/him",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 5,
+      "updated_at": "2026-08-11T19:12:37Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "pronouns",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 5,
+      "updated_at": "2026-08-11T19:12:37Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "he/him",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 5,
+      "updated_at": "2026-08-11T19:12:40Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "pronouns",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 5,
+      "updated_at": "2026-08-11T19:12:40Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "are you related to, or do you know a member of our board of directors or executi",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 4,
+      "updated_at": "2026-08-11T19:12:37Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "are you related to, or do you know a member of our board of directors or executi",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 4,
+      "updated_at": "2026-08-11T19:12:40Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "SPONSORSHIP",
+      "label_pattern": "will you now or in the future require sponsorship for employment visa status (e.",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: lever_widget_failed",
+      "seen": 1,
+      "updated_at": "2026-08-11T19:08:06Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "femalemalenon-binary",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: unanswered_radio_group",
+      "seen": 2,
+      "updated_at": "2026-08-11T19:12:37Z"
+    },
+    {
+      "avoid_strategy": "enumerate_unanswered_choices",
+      "field_type": null,
+      "label_pattern": "will you now or in the future require sponsorship for employment visa status (e.",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: unanswered_choice_group",
+      "seen": 1,
+      "updated_at": "2026-08-11T19:08:06Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "SPONSORSHIP",
+      "label_pattern": "will you now or in the future require sponsorship for employment visa status (e.",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 2,
+      "updated_at": "2026-08-11T19:08:09Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "femalemalenon-binary",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 2,
+      "updated_at": "2026-08-11T19:12:40Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "unknown",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: lever_scan_failed:Page.evaluate: ReferenceError: label is not defined\n    at eval (eval at evaluate (:303:30), <anonymou",
+      "seen": 1,
+      "updated_at": "2026-08-11T19:10:56Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "UNTYPED",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-11T19:10:59Z"
     }
   ],
   "version": 1

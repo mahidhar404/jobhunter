@@ -1,0 +1,13 @@
+{
+  "fields": [],
+  "footer_kind": "NONE",
+  "expect_advance": false,
+  "auth_gate": {
+    "initial_action": "switch_then_create",
+    "has_sign_in_with_email": false,
+    "has_email_field": true,
+    "has_create_form": false,
+    "has_create_account_link": true
+  },
+  "notes": "Direct sign-in form (email+password visible) with Create Account link — common Workday apply gate."
+}

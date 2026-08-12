@@ -1,0 +1,7 @@
+{
+  "id": "crossfill_accommodations",
+  "platform": "generic",
+  "fail_class": "cross_fill_accommodations",
+  "playbook": "radio",
+  "description": "Accommodations radio vs marketing consent checkbox — classify_field must not cross-fill."
+}

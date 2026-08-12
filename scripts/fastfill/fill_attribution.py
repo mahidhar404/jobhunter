@@ -69,6 +69,10 @@ DETERMINISTIC_TYPES: frozenset[str] = frozenset(
         # Misc policy
         "HOW_HEARD",
         "TERMS_CONSENT",
+        "ACCOMMODATIONS",
+        "ACCOMMODATIONS_DETAILS",
+        "EMPLOYEE_REFERRAL",
+        "REFERRAL_EMAIL",
         "PASSWORD",
         "PASSWORD_CONFIRM",
         "NOTICE_PERIOD",

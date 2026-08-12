@@ -1,0 +1,14 @@
+{
+  "fields": [
+    {
+      "key": "degree",
+      "selector": "#degree-control",
+      "committed": "Master's Degree",
+      "required": true,
+      "notes": "Empty/open-listbox state must fail gold; listbox_open must block can_claim_ready."
+    }
+  ],
+  "footer_kind": "FINAL",
+  "expect_advance": false,
+  "notes": "False-complete trap: combobox aria-expanded=true with menu visible but no committed value."
+}

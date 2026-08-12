@@ -90,6 +90,30 @@ def load_eval_urls() -> list[dict]:
     return [u for u in (data.get("urls") or []) if isinstance(u, dict) and u.get("url")]
 
 
+def load_urls_json(path: Path) -> list[dict]:
+    """Load an explicit cycle queue from JSON (never-seen picks, custom lists).
+
+    Accepts either a bare list of ``{url, platform, ...}`` rows or an object with
+    ``urls`` / ``picked`` arrays (NEVER_SEEN_PICK_*.json shape).
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict):
+        rows = data.get("urls") or data.get("picked") or data.get("queue") or []
+    else:
+        rows = []
+    out: list[dict] = []
+    for u in rows:
+        if not isinstance(u, dict) or not u.get("url"):
+            continue
+        row = dict(u)
+        plat = str(row.get("platform") or "unknown").lower()
+        row["_slot"] = slot_for_platform(plat)
+        out.append(row)
+    return out
+
+
 def slot_for_platform(platform: str) -> str:
     p = (platform or "unknown").lower()
     if p in VARIETY_SLOTS:
@@ -178,8 +202,18 @@ def evaluate_cycle_success(
 
     reasons: list[str] = []
     empties = vision.get("empty_fields") or []
+    # Match vision_judge.finalize_verdict: optional EEO / location blanks do not
+    # block COMPLETE (GH race sub-select left blank after Hispanic=No).
+    blocking_empties = [
+        e
+        for e in empties
+        if not (
+            isinstance(e, dict)
+            and (e.get("optional_demographic") or e.get("optional_location"))
+        )
+    ]
     source = str(vision.get("source") or "")
-    complete = vision.get("complete") is True and len(empties) == 0
+    complete = vision.get("complete") is True and len(blocking_empties) == 0
 
     # Honest source required for SUCCESS (missing/stub/heuristic → fail)
     if source == "heuristic_report":
@@ -208,6 +242,28 @@ def evaluate_cycle_success(
         reasons.append("validation_after_advance")
     if report.get("stuck_on_same_page"):
         reasons.append("stuck_on_same_page")
+    if report.get("listbox_open") or report.get("mid_widget_open"):
+        complete = False
+        reasons.append("mid_widget_open")
+    if str(report.get("advance_blocked_reason") or "").strip():
+        complete = False
+        reasons.append(f"advance_blocked:{report.get('advance_blocked_reason')}")
+    gaps = report.get("gaps_after_save") or []
+    if gaps or report.get("gaps_block_ready"):
+        complete = False
+        reasons.append(f"gaps_after_save:{len(gaps)}")
+    if int(report.get("thrash_retouches") or 0) > 0:
+        complete = False
+        reasons.append(f"thrash_retouches:{report.get('thrash_retouches')}")
+    # Report leftovers / unfillable always override a lying COMPLETE (e.g. live
+    # DOM scanned after navigate-away to a careers listing with no inputs).
+    leftovers = [u for u in (report.get("leftovers") or []) if isinstance(u, dict)]
+    if leftovers:
+        complete = False
+        reasons.append(f"leftovers_remain:{len(leftovers)}")
+    if report.get("unfillable_after_2") or int(report.get("unfillable_count") or 0) > 0:
+        complete = False
+        reasons.append("unfillable_after_2")
     # Live blanks / false_verified demotions → cannot SUCCESS
     req_after = report.get("required_empty_after_fill") or []
     if req_after:
@@ -232,8 +288,8 @@ def evaluate_cycle_success(
                 break
     if not complete:
         reasons.append("vision_not_complete")
-        if empties:
-            reasons.append(f"empty_fields:{len(empties)}")
+        if blocking_empties:
+            reasons.append(f"empty_fields:{len(blocking_empties)}")
     if vision.get("confidence") == "ambiguous" and not complete:
         reasons.append("vision_ambiguous")
 
@@ -262,7 +318,7 @@ def evaluate_cycle_success(
         # Note for fixer; still SUCCESS this run
         verdict = "SUCCESS"
 
-    return {
+    decision = {
         "success": success,
         "verdict": verdict,
         "reasons": reasons,
@@ -273,6 +329,14 @@ def evaluate_cycle_success(
         "dummy_email_ok": _dummy_email_ok(report),
         "resume_verified": bool(report.get("resume_verified")),
     }
+    # P1.5 / thrash / wrong-value: demote false SUCCESS (page-complete ≠ form-complete)
+    try:
+        from fail_taxonomy import apply_midwizard_to_decision
+
+        decision = apply_midwizard_to_decision(report, decision)
+    except Exception:
+        pass
+    return decision
 
 
 def append_failure(entry: dict) -> None:
@@ -291,6 +355,8 @@ def captcha_unresolved_should_skip_retries(summary: dict) -> bool:
 
     if summary.get("captcha_human_solved"):
         return False
+    if summary.get("job_skipped") or summary.get("skipped_stale"):
+        return True
     blocker = summary.get("blocker")
     if blocker in CAPTCHA_BLOCKERS:
         return True
@@ -303,8 +369,17 @@ def captcha_unresolved_should_skip_retries(summary: dict) -> bool:
     ):
         return True
     cw = summary.get("captcha_wait")
-    if isinstance(cw, dict) and (cw.get("timed_out") or cw.get("via") == "timeout"):
+    if isinstance(cw, dict) and (
+        cw.get("timed_out") or cw.get("via") in ("timeout", "job_skip")
+    ):
         return True
+    try:
+        from stale_skip import login_wall_should_skip_retries
+
+        if login_wall_should_skip_retries(summary):
+            return True
+    except Exception:
+        pass
     return False
 
 
@@ -352,7 +427,7 @@ def run_live_attempt(
     headed: bool = True,
     hold_seconds: int = 0,
     captcha_wait: bool | None = None,
-    captcha_timeout_s: float = 600,
+    captcha_timeout_s: float | None = None,
     refill_passes: int = 2,
     refill_wait_enter: bool | None = None,
 ) -> dict[str, Any]:
@@ -362,13 +437,16 @@ def run_live_attempt(
     refill passes (no Enter babysitting). Use refill_wait_enter=True only when
     explicitly requested.
     """
+    from captcha_pause import resolve_captcha_timeout_s
     from fill_attribution import analyze_fill_attribution, write_attribution
     from fast_fill import (
         VARIETY_MAX_HOLD_SECONDS,
         refuse_headed_if_chrome_busy,
         run_fast_fill,
     )
-    from vision_judge import judge_screenshot, write_vision_judge
+    from vision_judge import HONEST_COMPLETE_SOURCES, judge_screenshot, write_vision_judge
+
+    captcha_timeout_s = resolve_captcha_timeout_s(captcha_timeout_s)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     shot = out_dir / "after_fill.png"
@@ -440,9 +518,24 @@ def run_live_attempt(
     assert report.get("never_submit") is True
     assert report.get("submit_clicked") is False
 
-    vision = judge_screenshot(shot if shot.exists() else None, report=report)
-    # Prefer live DOM when page still available — not applicable here (browser closed).
-    # Force non-COMPLETE if heuristic + PNG (already handled in vision_judge).
+    # Prefer in-browser DOM judge only when report agrees the form is clean.
+    # Airbnb Magnit register: navigate-away left careers listing → live DOM
+    # COMPLETE with empty_fields=[] while leftovers still listed email.
+    live = report.get("vision_judge_live")
+    leftovers = [u for u in (report.get("leftovers") or []) if isinstance(u, dict)]
+    live_ok = (
+        isinstance(live, dict)
+        and str(live.get("source") or "") in HONEST_COMPLETE_SOURCES
+        and not leftovers
+        and not report.get("unfillable_after_2")
+        and int(report.get("unfillable_count") or 0) == 0
+    )
+    if live_ok:
+        vision = dict(live)
+        if shot.exists():
+            vision["screenshot"] = str(shot)
+    else:
+        vision = judge_screenshot(shot if shot.exists() else None, report=report)
     write_vision_judge(vision, out_dir / "vision_judge.json")
     attr = analyze_fill_attribution(report, vision=vision)
     write_attribution(attr, out_dir / "attribution.json")
@@ -498,11 +591,15 @@ def run_cycle(
     platforms: list[str] | None = None,
     hold_seconds: int = 0,
     captcha_wait: bool | None = None,
-    captcha_timeout_s: float = 600,
+    captcha_timeout_s: float | None = None,
     refill_passes: int = 2,
     refill_wait_enter: bool | None = None,
+    urls_json: Path | None = None,
 ) -> dict[str, Any]:
     """Drive the variety cycle until streak or queue exhausted."""
+    from captcha_pause import resolve_captcha_timeout_s
+
+    captcha_timeout_s = resolve_captcha_timeout_s(captcha_timeout_s)
     run_id = f"cycle_{_utc_stamp()}"
     base = RESULTS_ROOT / run_id
     base.mkdir(parents=True, exist_ok=True)
@@ -548,12 +645,26 @@ def run_cycle(
             "stopped_reason": "dry_run",
             "base_dir": str(base),
         }
+        rollup = _attach_regression_lane(rollup, base)
         (base / "rollup.json").write_text(json.dumps(rollup, indent=2))
         return rollup
 
-    queue = build_variety_queue(
-        load_eval_urls(), limit=limit, seed=seed, platforms=platforms
-    )
+    if urls_json:
+        queue = load_urls_json(Path(urls_json))
+        if limit and limit > 0:
+            queue = queue[:limit]
+        if platforms:
+            want = {p.lower() for p in platforms}
+            queue = [
+                q
+                for q in queue
+                if str(q.get("platform") or q.get("_slot") or "").lower() in want
+                or str(q.get("_slot") or "").lower() in want
+            ]
+    else:
+        queue = build_variety_queue(
+            load_eval_urls(), limit=limit, seed=seed, platforms=platforms
+        )
     attempts: list[dict] = []
     streak = 0
     platforms_ok: set[str] = set()
@@ -640,6 +751,28 @@ def run_cycle(
                 }
             )
             if captcha_gave_up:
+                try:
+                    from stale_skip import apply_stale_skip, write_fix_skipped
+
+                    write_fix_skipped(
+                        attempt_dir,
+                        reason="captcha_or_login_wall_unresolved",
+                        fail_class="BLOCKED",
+                        detail="Orchestrator skip — next variety URL (no retry burn).",
+                        also_fix_applied_note=True,
+                    )
+                    apply_stale_skip(
+                        attempt_dir,
+                        {
+                            "reason": "captcha_or_login_wall_unresolved",
+                            "fail_class": "BLOCKED",
+                            "detail": "unresolved captcha/login wall",
+                        },
+                        url=url,
+                        mode="attended" if headed else "unattended",
+                    )
+                except Exception:
+                    pass
                 break  # next variety URL — do not retry CAPTCHA BLOCKED
             # Chromium missing: fail-fast — do not burn ×3 retries
             if (
@@ -659,7 +792,40 @@ def run_cycle(
             skip_marker = attempt_dir / "FIX_SKIPPED.md"
             unfillable_md = attempt_dir / "UNFILLABLE_AFTER_2.md"
             fixer_trigger = attempt_dir / "FIXER_TRIGGER.md"
-            wait_s = float(os.environ.get("FASTFILL_AGENT4_WAIT_S") or "120")
+            try:
+                from stale_skip import (
+                    agent4_wait_s,
+                    should_skip_agent4_wait,
+                    write_fix_skipped,
+                )
+
+                unfixable = should_skip_agent4_wait(summary)
+                wait_s = 0.0 if unfixable else agent4_wait_s(headed=headed)
+                if unfixable:
+                    if not skip_marker.exists():
+                        write_fix_skipped(
+                            attempt_dir,
+                            reason="unfixable_signature_this_turn",
+                            fail_class=str(
+                                (decision.get("taxonomy") or {}).get("code")
+                                or decision.get("verdict")
+                                or summary.get("blocker")
+                                or "BLOCKED"
+                            ),
+                            detail=(
+                                "Agent4 wait skipped — CAPTCHA/login_wall/env "
+                                "not fixable this turn."
+                            ),
+                            also_fix_applied_note=True,
+                        )
+                    print(
+                        "[agent4] unfixable signature — FIX_SKIPPED + next URL "
+                        "(no wait)",
+                        flush=True,
+                    )
+                    break  # next variety URL
+            except Exception:
+                wait_s = float(os.environ.get("FASTFILL_AGENT4_WAIT_S") or "45")
             attempt_hints = []
             if unfillable_md.is_file():
                 attempt_hints.append(f"UNFILLABLE_AFTER_2: {unfillable_md}")
@@ -760,7 +926,43 @@ def run_cycle(
         "never_submit": True,
         "dummy": True,
     }
+    rollup = _attach_regression_lane(rollup, base)
     (base / "rollup.json").write_text(json.dumps(rollup, indent=2))
+    return rollup
+
+
+def _attach_regression_lane(rollup: dict[str, Any], base: Path) -> dict[str, Any]:
+    """Phase 6: run the offline DeepEval/builtin regression lane after a cycle.
+
+    Always offline + deterministic (no network). Skip with FASTFILL_CYCLE_REGRESSION=0.
+    Live answer-memory A/B stays opt-in via answer_memory_ab.py (expensive).
+    """
+    if os.environ.get("FASTFILL_CYCLE_REGRESSION", "1") == "0":
+        rollup["regression_lane"] = {"skipped": True, "reason": "FASTFILL_CYCLE_REGRESSION=0"}
+        return rollup
+    try:
+        from regression_deepeval import run_cases
+
+        results = run_cases()
+        failed = [r for r in results if not r["ok"]]
+        lane = {
+            "n": len(results),
+            "passed": len(results) - len(failed),
+            "failed": len(failed),
+            "ok": not failed,
+            "failures": [{"name": r["name"], "detail": r["detail"]} for r in failed],
+        }
+        (base / "regression_lane.json").write_text(json.dumps(lane, indent=2))
+        rollup["regression_lane"] = lane
+        if failed:
+            print(
+                f"[regression] {len(failed)}/{len(results)} failed — see regression_lane.json",
+                flush=True,
+            )
+        else:
+            print(f"[regression] {len(results)}/{len(results)} passed", flush=True)
+    except Exception as e:  # noqa: BLE001 — never break the cycle on lane errors
+        rollup["regression_lane"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
     return rollup
 
 
@@ -803,6 +1005,15 @@ def main() -> int:
         help="Restrict slots (repeatable): greenhouse, lever, ashby, workday, mid_tier, unknown",
     )
     ap.add_argument(
+        "--urls-json",
+        type=Path,
+        default=None,
+        help=(
+            "Explicit queue JSON (list or {urls|picked|queue}) — for never-seen "
+            "picks; skips eval_urls variety rotation"
+        ),
+    )
+    ap.add_argument(
         "--dry-run",
         action="store_true",
         help="No browser — attribution + vision heuristic on fixture report",
@@ -835,8 +1046,11 @@ def main() -> int:
     ap.add_argument(
         "--captcha-timeout",
         type=int,
-        default=600,
-        help="Seconds to wait for human CAPTCHA (default 600)",
+        default=None,
+        help=(
+            "Seconds to wait for human CAPTCHA (default: FASTFILL_CAPTCHA_TIMEOUT_S "
+            "or 600 standalone / ~120 attended improvement cycle)"
+        ),
     )
     ap.add_argument(
         "--refill-passes",
@@ -877,9 +1091,8 @@ def main() -> int:
         assert resolve_captcha_wait(headed=True, captcha_wait=None) is True
         assert resolve_captcha_wait(headed=False, captcha_wait=None) is False
         assert "press Enter" in CAPTCHA_WAIT_MESSAGE
-        assert CAPTCHA_WAIT_MESSAGE.startswith(
-            "CAPTCHA detected — solve it in the browser, then press Enter here to continue"
-        )
+        assert CAPTCHA_WAIT_MESSAGE.startswith("CAPTCHA detected")
+        assert "click Continue" in CAPTCHA_WAIT_MESSAGE or "press Enter here to continue" in CAPTCHA_WAIT_MESSAGE
         import inspect
 
         from captcha_pause import wait_for_human_captcha
@@ -927,6 +1140,8 @@ def main() -> int:
             {"complete": True, "empty_fields": [], "confidence": "high"},
         )
         assert bad["success"] is False and "resume_missing" in bad["reasons"]
+        lane = dry.get("regression_lane") or {}
+        assert lane.get("ok") is True, lane
         print(json.dumps({"queue_slots": slots, "dry": dry}, indent=2))
         print("self-test OK")
         return 0
@@ -956,11 +1171,22 @@ def main() -> int:
         platforms=args.platforms,
         hold_seconds=args.hold_seconds,
         captcha_wait=captcha_wait,
-        captcha_timeout_s=float(args.captcha_timeout),
+        captcha_timeout_s=(
+            float(args.captcha_timeout) if args.captcha_timeout is not None else None
+        ),
         refill_passes=int(args.refill_passes),
         refill_wait_enter=refill_wait_enter,
+        urls_json=args.urls_json,
     )
     print(json.dumps(rollup, indent=2))
+    lane = rollup.get("regression_lane") or {}
+    if (
+        lane
+        and lane.get("ok") is False
+        and os.environ.get("FASTFILL_CYCLE_REGRESSION_SOFT", "0") != "1"
+    ):
+        print("[cycle] regression_lane FAILED — exit 1", flush=True)
+        return 1
     return 0
 
 

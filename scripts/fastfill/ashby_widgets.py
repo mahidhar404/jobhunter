@@ -1530,6 +1530,33 @@ def _ashby_yesno_default_for_label(label: str, values: dict | None = None) -> bo
         return False
     if re.search(r"previously (worked|employed)|worked here before", low):
         return False
+    # Experience-years screening ("Do you have 5+ years…", "at least 3 years of
+    # experience?"). Answer honestly from dummy resume truth: dummy total years
+    # of experience (default 3.0) vs the threshold in the question. Never invent
+    # EEO — this is a non-EEO screening fact grounded in the dummy resume.
+    if re.search(r"\byears?\b", low) and re.search(
+        r"experience|worked|working|background|professional", low
+    ):
+        m = re.search(
+            r"(\d+(?:\.\d+)?)\s*\+?\s*(?:or\s+more\s+)?years?|"
+            r"(?:at\s+least|minimum\s+of|min\.?|more\s+than|over)\s+(\d+(?:\.\d+)?)\s*years?",
+            low,
+        )
+        if m:
+            threshold = float(m.group(1) or m.group(2) or 0)
+            try:
+                dummy_years = float(
+                    str((values or {}).get("YEARS_EXPERIENCE") or "3.0") or 3.0
+                )
+            except (TypeError, ValueError):
+                dummy_years = 3.0
+            return dummy_years >= threshold
+        # "Do you have experience with X?" (no threshold) — dummy has relevant
+        # experience → Yes.
+        return True
+    # Generic "Do you have experience …" without the word "years".
+    if re.search(r"do you have (?:relevant |prior |professional )?experience", low):
+        return True
     # Hybrid / office / relocation willingness — dummy Yes (Plaid leftover)
     if re.search(
         r"hybrid|in[\s_-]*office|on[\s_-]*site|come[\s_-]*into[\s_-]*the[\s_-]*office|"

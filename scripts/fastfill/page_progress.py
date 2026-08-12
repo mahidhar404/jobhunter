@@ -470,7 +470,10 @@ FOOTER_PRIMARY_PROBE_JS = """() => {
   const floor = window.innerHeight * 0.55;
   const cands = [];
   const skipRe = /phone|mobile|device|country.?code|prefix|language|sign.?in|menu/i;
-  const preferRe = /save\\s+and\\s+continue|continue|\\bnext\\b|submit|review/i;
+  // Prefer ADVANCE (Next/Continue) over sticky FINAL (Submit) when both are
+  // visible mid-wizard — equal prefer + bottom-right otherwise picks Submit.
+  const advanceRe = /save\\s+and\\s+continue|save\\s*&\\s*continue|\\bcontinue\\b|\\bnext\\b/i;
+  const finalRe = /\\bsubmit\\b|review\\s+and\\s+submit|\\bapply\\b/i;
   for (const el of nodes) {
     if (!visible(el)) continue;
     const t = labelOf(el);
@@ -479,11 +482,14 @@ FOOTER_PRIMARY_PROBE_JS = """() => {
     if (skipRe.test(t) || skipRe.test(aid)) continue;
     const r = el.getBoundingClientRect();
     if (r.bottom < floor) continue;
+    let prefer = 0;
+    if (advanceRe.test(t)) prefer = 2;
+    else if (finalRe.test(t)) prefer = 1;
     cands.push({
       t,
       r,
       aid,
-      prefer: preferRe.test(t) ? 1 : 0,
+      prefer,
     });
   }
   if (!cands.length) {
@@ -752,11 +758,21 @@ def can_claim_ready(report: dict) -> bool:
     """
     if report.get("verdict") == "FAIL":
         return False
+    if report.get("stuck_on_same_page"):
+        return False
     if workday_wizard_incomplete(report):
         return False
     if report.get("advanced_incomplete") or report.get("validation_after_advance"):
         return False
     if report.get("required_empty_before_advance") or report.get("required_empty_after_fill"):
+        return False
+    # Open listbox / mid-widget — never Ready while a prompt is still open
+    if report.get("listbox_open") or report.get("mid_widget_open"):
+        return False
+    # Explicit advance gate (listbox / required empties / miss) — never Ready
+    if report.get("advance_blocked_reason"):
+        return False
+    if report.get("hold_incomplete"):
         return False
     # ChamPro gaps()-after-Save: hard required/validation leftovers
     gaps = report.get("gaps_after_save")

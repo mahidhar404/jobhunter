@@ -50,6 +50,11 @@ _FORBIDDEN_ROW_KEYS = frozenset(
     }
 )
 
+# Keys that must never appear in playbook cache rows.
+_FORBIDDEN_PLAYBOOK_KEYS = _FORBIDDEN_ROW_KEYS | frozenset(
+    {"value", "readback", "picked", "shown", "answer", "profile"}
+)
+
 _JOB_ID_RE = re.compile(
     r"^(?:"
     r"\d{4,}"  # greenhouse / icims numeric ids
@@ -233,6 +238,54 @@ def _scrub_row(row: Any) -> dict[str, str] | None:
     return {"selector": rewritten, "type": ftype}
 
 
+def _scrub_playbook_row(row: Any, *, field_type: str = "") -> dict[str, Any] | None:
+    """Keep only allowlisted playbook stats; drop PII-bearing keys."""
+    if not isinstance(row, dict):
+        return None
+    pb = str(row.get("playbook") or row.get("playbook_id") or "").strip()
+    if not pb:
+        return None
+    try:
+        from playbooks import is_allowed_playbook
+    except ImportError:
+        return None
+    if not is_allowed_playbook(pb):
+        return None
+    ft = str(field_type or row.get("field_type") or "").strip()
+    if not ft:
+        return None
+    sel = str(row.get("selector") or "").strip()
+    success = int(row.get("success") or 0)
+    fail = int(row.get("fail") or 0)
+    updated = str(
+        row.get("updated")
+        or row.get("updated_at")
+        or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    )
+    return {
+        "playbook": pb,
+        "selector": sel,
+        "success": max(0, success),
+        "fail": max(0, fail),
+        "updated": updated,
+    }
+
+
+def _scrub_playbooks(raw: Any) -> dict[str, dict[str, Any]]:
+    """Normalize playbooks dict keyed by field_type."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for ft, row in raw.items():
+        ftype = str(ft or "").strip()
+        if not ftype:
+            continue
+        clean = _scrub_playbook_row(row, field_type=ftype)
+        if clean:
+            out[ftype] = clean
+    return out
+
+
 def _scrub_entry(entry: dict[str, Any]) -> dict[str, Any]:
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -242,6 +295,7 @@ def _scrub_entry(entry: dict[str, Any]) -> dict[str, Any]:
             continue
         seen.add(clean["selector"])
         rows.append(clean)
+    playbooks = _scrub_playbooks(entry.get("playbooks"))
     out = {
         "platform": str(entry.get("platform") or "unknown"),
         "url_sample": str(entry.get("url_sample") or "")[:180],
@@ -251,6 +305,8 @@ def _scrub_entry(entry: dict[str, Any]) -> dict[str, Any]:
         ),
         "map": rows,
     }
+    if playbooks:
+        out["playbooks"] = playbooks
     return out
 
 
@@ -310,8 +366,22 @@ def sanitize_cache(*, write: bool = True) -> dict[str, Any]:
                 scrubbed["updated_at"] = prev["updated_at"]
             if len(prev.get("url_sample") or "") > len(scrubbed.get("url_sample") or ""):
                 scrubbed["url_sample"] = prev["url_sample"]
-        if not scrubbed["map"]:
+        if not scrubbed["map"] and not scrubbed.get("playbooks"):
             continue
+        if new_key in new_entries and scrubbed.get("playbooks"):
+            prev_pbs = new_entries[new_key].get("playbooks") or {}
+            merged_pbs = dict(prev_pbs)
+            for ft, row in (scrubbed.get("playbooks") or {}).items():
+                if ft not in merged_pbs:
+                    merged_pbs[ft] = row
+                else:
+                    prev = merged_pbs[ft]
+                    merged_pbs[ft] = {
+                        **row,
+                        "success": max(int(prev.get("success") or 0), int(row.get("success") or 0)),
+                        "fail": max(int(prev.get("fail") or 0), int(row.get("fail") or 0)),
+                    }
+            scrubbed["playbooks"] = merged_pbs
         new_entries[new_key] = scrubbed
 
     result = {
@@ -359,7 +429,7 @@ def _save(data: dict[str, Any]) -> None:
         if not isinstance(entry, dict):
             continue
         scrubbed = _scrub_entry(entry)
-        if scrubbed["map"]:
+        if scrubbed["map"] or scrubbed.get("playbooks"):
             clean_entries[k] = scrubbed
     payload["entries"] = clean_entries
     CACHE_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -461,6 +531,82 @@ def record_from_report(report: dict | str | Path) -> int:
     return record_successful_fills(url, platform, data.get("filled") or [])
 
 
+def lookup_playbook(url: str, platform: str, field_type: str) -> str | None:
+    """Return cached playbook id for field_type on this fingerprint, or None."""
+    ftype = str(field_type or "").strip()
+    if not ftype:
+        return None
+    key = page_fingerprint(url, platform)
+    entry = (_load().get("entries") or {}).get(key) or {}
+    playbooks = _scrub_playbooks(entry.get("playbooks"))
+    row = playbooks.get(ftype)
+    if not row:
+        return None
+    pb = str(row.get("playbook") or "").strip()
+    return pb or None
+
+
+def record_playbook_hit(
+    url: str,
+    platform: str,
+    field_type: str,
+    playbook_id: str,
+    selector: str = "",
+    *,
+    ok: bool = True,
+) -> bool:
+    """Persist playbook strategy hit for a field type (no PII values).
+
+    Returns False when playbook_id is not allowlisted. Increments success when
+    ok=True, else increments fail.
+    """
+    from playbooks import is_allowed_playbook
+
+    pb = str(playbook_id or "").strip()
+    ftype = str(field_type or "").strip()
+    if not pb or not ftype:
+        return False
+    if not is_allowed_playbook(pb):
+        return False
+
+    data = _load()
+    key = page_fingerprint(url, platform)
+    entries = data.setdefault("entries", {})
+    entry = entries.get(key)
+    if not isinstance(entry, dict):
+        entry = {
+            "platform": (platform or "unknown").lower().strip() or "unknown",
+            "url_sample": (url or "")[:180],
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "map": [],
+        }
+    playbooks = _scrub_playbooks(entry.get("playbooks"))
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    prev = playbooks.get(ftype) or {}
+    success = int(prev.get("success") or 0)
+    fail = int(prev.get("fail") or 0)
+    if ok:
+        success += 1
+    else:
+        fail += 1
+    sel = str(selector or prev.get("selector") or "").strip()
+    playbooks[ftype] = {
+        "playbook": pb,
+        "selector": sel,
+        "success": success,
+        "fail": fail,
+        "updated": now,
+    }
+    entry["playbooks"] = playbooks
+    entry["updated_at"] = now
+    entry["platform"] = (platform or entry.get("platform") or "unknown").lower().strip() or "unknown"
+    if url:
+        entry["url_sample"] = (url or "")[:180]
+    entries[key] = _scrub_entry(entry)
+    _save(data)
+    return True
+
+
 def invalidate(url: str, platform: str, selector: str | None = None) -> None:
     """Drop whole entry or one selector after a verify miss."""
     data = _load()
@@ -517,6 +663,74 @@ def clear_cache() -> None:
         CACHE_PATH.unlink()
 
 
+def _self_test() -> int:
+    """Deterministic tests for playbook cache + sanitize (no disk side effects)."""
+    from playbooks import detect_playbook, is_allowed_playbook
+
+    assert detect_playbook({"tag": "select"}) == "native_select"
+    assert not is_allowed_playbook("free_form_click")
+
+    assert record_playbook_hit(
+        "https://boards.greenhouse.io/acme/jobs/123",
+        "greenhouse",
+        "DEGREE",
+        "free_form_click",
+    ) is False
+    assert lookup_playbook(
+        "https://boards.greenhouse.io/acme/jobs/123",
+        "greenhouse",
+        "DEGREE",
+    ) is None
+
+    # In-memory scrub tests (no forbidden keys leak)
+    dirty_pb = _scrub_playbook_row(
+        {
+            "playbook": "react_select_portal",
+            "selector": "#degree",
+            "success": 2,
+            "fail": 0,
+            "value": "secret",
+            "email": "x@y.com",
+        },
+        field_type="DEGREE",
+    )
+    assert dirty_pb is not None
+    assert dirty_pb["playbook"] == "react_select_portal"
+    assert "value" not in dirty_pb and "email" not in dirty_pb
+
+    assert _scrub_playbook_row({"playbook": "bad_id"}, field_type="X") is None
+
+    entry = _scrub_entry(
+        {
+            "platform": "greenhouse",
+            "url_sample": "https://example.com/j/1",
+            "map": [{"selector": "input#x", "type": "EMAIL", "value": "leak@x.com"}],
+            "playbooks": {
+                "DEGREE": {
+                    "playbook": "typable_commit",
+                    "selector": ".degree",
+                    "success": 1,
+                    "fail": 0,
+                    "updated": "2026-01-01T00:00:00Z",
+                    "answer": "Masters",
+                }
+            },
+        }
+    )
+    assert entry["map"] == [{"selector": "input#x", "type": "EMAIL"}]
+    assert entry["playbooks"]["DEGREE"]["playbook"] == "typable_commit"
+    assert "answer" not in entry["playbooks"]["DEGREE"]
+
+    # Backward compat: entries without playbooks key scrub cleanly
+    legacy = _scrub_entry(
+        {"platform": "lever", "url_sample": "https://jobs.lever.co/co", "map": []}
+    )
+    assert "playbooks" not in legacy
+
+    print("record_replay self-test OK")
+    return 0
+
+
 async def apply_replay_map(page, url: str, platform: str, values: dict) -> list[dict]:
     """Fill from cached selector map using current dummy values. 0 LLM.
 
@@ -525,7 +739,20 @@ async def apply_replay_map(page, url: str, platform: str, values: dict) -> list[
     UUID-only LINKEDIN/GITHUB/PORTFOLIO selectors are skipped + invalidated
     (prefer label-based fill via ashby_widgets / pack).
     """
-    from field_map import validate_filled  # local import
+    from field_map import validate_filled, value_ok_for_field_shape  # local import
+
+    _DOM_LABEL_JS = """(el) => {
+      const skipOpt = /^(yes|no|female|male|non-binary|select\\.\\.\\.)$/i;
+      let block = el.closest('.application-question, fieldset, li, .section, div');
+      for (let i = 0; i < 8 && block; i++) {
+        const lines = (block.innerText || '').split('\\n')
+          .map((l) => l.trim())
+          .filter((l) => l.length > 15 && !skipOpt.test(l));
+        if (lines.length) return lines[0].slice(0, 200);
+        block = block.parentElement;
+      }
+      return '';
+    }"""
 
     rows = lookup_replay(url, platform)
     if not rows:
@@ -560,6 +787,15 @@ async def apply_replay_map(page, url: str, platform: str, values: dict) -> list[
                 misses += 1
                 continue
             if not await loc.is_visible(timeout=600):
+                continue
+            dom_label = ""
+            try:
+                dom_label = await loc.evaluate(_DOM_LABEL_JS)
+            except Exception:
+                dom_label = ""
+            if not value_ok_for_field_shape(str(val), label=dom_label, ftype=ftype):
+                invalidate(url, platform, row["selector"])
+                misses += 1
                 continue
             tag = (await loc.evaluate("el => (el.tagName || '').toLowerCase()")) or ""
             role = (await loc.get_attribute("role")) or ""
@@ -715,8 +951,15 @@ if __name__ == "__main__":
     )
     ap.add_argument("--fingerprint", metavar="URL", help="Print fingerprint debug for URL")
     ap.add_argument("--platform", default="", help="Platform hint for --fingerprint")
+    ap.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run deterministic playbook-cache and sanitize tests",
+    )
     args = ap.parse_args()
 
+    if args.self_test:
+        raise SystemExit(_self_test())
     if args.clear:
         clear_cache()
         print(json.dumps({"cleared": True, "path": str(CACHE_PATH)}))

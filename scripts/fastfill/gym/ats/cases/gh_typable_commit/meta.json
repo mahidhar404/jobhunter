@@ -1,0 +1,6 @@
+{
+  "id": "gh_typable_commit",
+  "platform": "greenhouse",
+  "fail_class": "typable_no_commit",
+  "description": "Typable autocomplete where typing alone is insufficient; must select listbox option."
+}

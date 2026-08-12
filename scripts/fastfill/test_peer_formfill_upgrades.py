@@ -21,11 +21,10 @@ def test_is_workday_select_placeholder():
 
 
 def test_select_one_uses_placeholder_cleared_verify():
-    """jobhard-style: Select One verify accepts placeholder_cleared."""
+    """jobhard-style: Select One verify uses is_workday_select_placeholder + verify_via."""
     import exp_workday_selectors as m
 
     src = inspect.getsource(m._fill_select_one_by_label)
-    assert "placeholder_cleared" in src
     assert "is_workday_select_placeholder" in src
     assert "verify_via" in src
     assert "contains_pick" in src

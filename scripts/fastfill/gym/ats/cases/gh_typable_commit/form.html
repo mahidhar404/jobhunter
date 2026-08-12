@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — Greenhouse Typable Commit</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 2rem auto; }
+    label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+    .autocomplete-wrap { position: relative; }
+    #location-input {
+      width: 100%; box-sizing: border-box; padding: 8px 12px;
+      border: 1px solid #ccc; border-radius: 4px;
+    }
+    [role="listbox"] {
+      position: absolute; top: 100%; left: 0; right: 0;
+      background: #fff; border: 1px solid #ccc; border-top: none;
+      z-index: 100; max-height: 160px; overflow-y: auto;
+    }
+    [role="option"] { padding: 8px 12px; cursor: pointer; }
+    [role="option"]:hover { background: #eef; }
+    .hint { font-size: 0.85rem; color: #666; margin-top: 0.25rem; }
+    button { margin-top: 1.5rem; padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <h1>Application — Greenhouse</h1>
+  <p>Applicant: Ada Lovelace · test+gym@example.com</p>
+
+  <div class="field">
+    <label for="location-input">Preferred location</label>
+    <div class="autocomplete-wrap">
+      <input id="location-input" type="text" role="combobox" aria-expanded="false"
+             aria-autocomplete="list" placeholder="Start typing a city…"
+             data-committed="" autocomplete="off">
+      <div id="location-listbox" role="listbox" hidden></div>
+    </div>
+    <p class="hint">Typing alone does not commit — you must select an option.</p>
+  </div>
+
+  <button type="button" id="btn-submit">Submit application</button>
+
+  <script>
+    (function () {
+      var CITIES = [
+        { value: 'sf', label: 'San Francisco, CA' },
+        { value: 'nyc', label: 'New York, NY' },
+        { value: 'remote', label: 'Remote — United States' }
+      ];
+      var input = document.getElementById('location-input');
+      var listbox = document.getElementById('location-listbox');
+      var committed = '';
+
+      function renderOptions(filter) {
+        var q = (filter || '').toLowerCase();
+        listbox.innerHTML = '';
+        var matches = CITIES.filter(function (c) {
+          return !q || c.label.toLowerCase().indexOf(q) >= 0;
+        });
+        matches.forEach(function (c, i) {
+          var opt = document.createElement('div');
+          opt.setAttribute('role', 'option');
+          opt.id = 'loc-opt-' + i;
+          opt.textContent = c.label;
+          opt.dataset.value = c.value;
+          opt.addEventListener('mousedown', function (e) {
+            e.preventDefault();
+            committed = c.label;
+            input.value = c.label;
+            input.dataset.committed = c.label;
+            input.setAttribute('data-committed', c.label);
+            listbox.hidden = true;
+            input.setAttribute('aria-expanded', 'false');
+          });
+          listbox.appendChild(opt);
+        });
+        listbox.hidden = matches.length === 0;
+        input.setAttribute('aria-expanded', matches.length ? 'true' : 'false');
+      }
+
+      input.addEventListener('input', function () {
+        // Typing updates filter text but clears committed until option picked
+        input.dataset.committed = '';
+        input.setAttribute('data-committed', '');
+        renderOptions(input.value);
+      });
+
+      input.addEventListener('focus', function () {
+        renderOptions(input.value);
+      });
+
+      document.getElementById('btn-submit').addEventListener('click', function (e) {
+        e.preventDefault();
+        alert('Gym fixture — submit blocked.');
+      });
+    })();
+  </script>
+</body>
+</html>

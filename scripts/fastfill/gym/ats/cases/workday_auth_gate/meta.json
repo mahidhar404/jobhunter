@@ -1,0 +1,9 @@
+{
+  "id": "workday_auth_gate",
+  "platform": "workday",
+  "fail_class": "auth_gate",
+  "playbook": "text_input",
+  "description": "Workday sign-in-only gate: Sign in with email hidden behind reveal; create account link after reveal.",
+  "scoring": "auth_probe",
+  "expect_fail_fill": false
+}

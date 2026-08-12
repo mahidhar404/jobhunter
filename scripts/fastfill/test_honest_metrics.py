@@ -892,6 +892,59 @@ def test_finalize_reconciles_verified_fill_leftover_by_selector():
     assert out["never_submit"] is True and out["submit_clicked"] is False
 
 
+def test_finalize_reconciles_workday_automation_id_leftover():
+    """WD pack misses by automation_id must clear when extract+classify verified the same field."""
+    from fast_fill import _finalize
+
+    report = {
+        "url": "https://jci.wd5.myworkdayjobs.com/x",
+        "platform": "workday",
+        "verdict": "FAIL",
+        "filled": [
+            {
+                "type": "NAME_FIRST",
+                "label": "First Name*",
+                "selector": 'input[name="legalName--firstName"]:visible',
+                "value": "Test",
+                "readback": "Test",
+                "ok": True,
+                "verified": True,
+            },
+            {
+                "type": "ADDRESS_COUNTRY",
+                "automation_id": "addressSection_country",
+                "selector": '[data-automation-id="formField-country"] button',
+                "value": "United States of America",
+                "readback": "United States of America",
+                "ok": True,
+                "verified": True,
+            },
+        ],
+        "leftovers": [
+            {
+                "label": "legalNameSection_firstName",
+                "automation_id": "legalNameSection_firstName",
+                "reason": "not_in_dom",
+            },
+            {
+                "label": "addressSection_country",
+                "automation_id": "addressSection_country",
+                "reason": "fill_error",
+            },
+            {
+                "label": "how_heard",
+                "automation_id": "how_heard",
+                "reason": "hierarchical_no_chip",
+            },
+        ],
+    }
+    out = _finalize(dict(report))
+    labels = [l.get("label") for l in (out.get("leftovers") or [])]
+    assert "legalNameSection_firstName" not in labels
+    assert "addressSection_country" not in labels
+    assert "how_heard" in labels
+
+
 def test_finalize_keeps_unverified_leftover():
     """Reconciliation only clears VERIFIED fills — an unverified same-selector
     attempt must NOT silently clear a genuine leftover."""
@@ -1571,6 +1624,12 @@ def test_guard_words_refuse_dangerous_maps():
         {"label": "Country Phone Code", "name": "countryPhoneCode", "id": ""}
     )
     assert country != ADDRESS_COUNTRY
+    try:
+        from field_map import PHONE_COUNTRY_CODE as _PCC
+
+        assert country == _PCC
+    except ImportError:
+        pass
 
 
 def test_gaps_block_ready():

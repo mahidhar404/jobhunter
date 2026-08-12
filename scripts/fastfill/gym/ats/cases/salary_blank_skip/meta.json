@@ -1,0 +1,6 @@
+{
+  "id": "salary_blank_skip",
+  "platform": "generic",
+  "fail_class": "blank_skip",
+  "description": "Salary field appears filled visually but input value is empty; scorer checks real committed value."
+}

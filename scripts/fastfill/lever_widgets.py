@@ -22,15 +22,20 @@ import re
 from typing import Any
 
 from field_map import (
+    ADDRESS_CITY,
     DISABILITY,
     GENDER,
     HISPANIC,
+    LGBTQIA,
     PORTFOLIO,
+    PRONOUNS,
     RACE,
     SPONSORSHIP,
     VETERAN,
     WORK_AUTH,
+    WORKED_HERE_BEFORE,
     classify_field,
+    value_ok_for_field_shape,
 )
 from gh_select import aliases_for
 
@@ -53,16 +58,46 @@ _LEVER_QUESTION_TYPES: list[tuple[re.Pattern[str], str]] = [
         SPONSORSHIP,
     ),
     (re.compile(r"\bgender\b|sex\b", re.I), GENDER),
+    (
+        re.compile(
+            r"lgbtq|lgbtqia|lgbtq\+|sexual[\s_-]*orientation|"
+            r"identify[\s_-]*as[\s_-]*part[\s_-]*of[\s_-]*the[\s_-]*lgbt",
+            re.I,
+        ),
+        LGBTQIA,
+    ),
+    (re.compile(r"\bpronouns?\b", re.I), PRONOUNS),
     (re.compile(r"hispanic|latino|latina", re.I), HISPANIC),
     (re.compile(r"\brace\b|ethnicity|racial", re.I), RACE),
     (re.compile(r"veteran", re.I), VETERAN),
     (re.compile(r"disabilit", re.I), DISABILITY),
+    (
+        re.compile(
+            r"worked[\s_-]*with|ever[\s_-]*worked|worked[\s_-]*for[\s_-]*this|"
+            r"previously[\s_-]*employed|subsidiaries",
+            re.I,
+        ),
+        WORKED_HERE_BEFORE,
+    ),
+    (re.compile(r"home[\s_-]*city|current[\s_-]*city", re.I), ADDRESS_CITY),
 ]
 
-_EEO_TYPES = frozenset({GENDER, HISPANIC, RACE, VETERAN, DISABILITY})
+_EEO_TYPES = frozenset({GENDER, HISPANIC, RACE, VETERAN, DISABILITY, LGBTQIA, PRONOUNS})
 
 # Discover Lever question blocks + radios/selects (page-evaluate, no Playwright refs).
 _LEVER_SCAN_JS = """() => {
+  const skipOpt = /^(yes|no|female|male|non-binary|select\\.\\.\\.)$/i;
+  const questionLabelFor = (el) => {
+    let block = el.closest('.application-question, fieldset, li, .section, div');
+    for (let i = 0; i < 8 && block; i++) {
+      const lines = (block.innerText || '').split('\\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 15 && !skipOpt.test(l));
+      if (lines.length) return lines[0].slice(0, 200);
+      block = block.parentElement;
+    }
+    return '';
+  };
   const out = [];
   const blocks = Array.from(document.querySelectorAll(
     '.application-question, [class*="application-question"], ' +
@@ -80,23 +115,16 @@ _LEVER_SCAN_JS = """() => {
       document.querySelectorAll(`input[type=radio][name="${CSS.escape(name)}"]`)
     );
     if (!radios.length) continue;
-    let label = '';
+    let label = questionLabelFor(radios[0]);
     const first = radios[0];
-    const block = first.closest(
-      '.application-question, fieldset, li, [class*="question"], div'
-    );
-    if (block) {
-      const lab = block.querySelector('label, legend, .application-label, h4, p');
-      label = ((lab && (lab.innerText || lab.textContent)) || '').trim();
-      if (!label) label = (block.innerText || '').split('\\n')[0].trim();
-    }
-    if (!label) {
-      // previous sibling text
-      let prev = first.parentElement;
-      for (let i = 0; i < 4 && prev; i++) {
-        const t = (prev.innerText || '').trim();
-        if (t && t.length > 12) { label = t.split('\\n')[0].trim(); break; }
-        prev = prev.parentElement;
+    if (!label || label.length < 12 || skipOpt.test(label)) {
+      const block = first.closest(
+        '.application-question, fieldset, li, [class*="question"], div'
+      );
+      if (block) {
+        const lab = block.querySelector('label, legend, .application-label, h4, p');
+        const t = ((lab && (lab.innerText || lab.textContent)) || '').trim();
+        if (t && t.length > 12 && !skipOpt.test(t)) label = t.split('\\n')[0].trim();
       }
     }
     const options = radios.map((r) => {
@@ -185,6 +213,36 @@ _LEVER_SCAN_JS = """() => {
       empty: !val,
     });
   }
+  // Card textareas + free-text (Home City, worked-here, etc.)
+  for (const inp of document.querySelectorAll(
+    'textarea[name*="cards"], input.card-field-input[type=text][name*="cards"], ' +
+    'input[type=text][name*="cards"][required]'
+  )) {
+    const name = inp.getAttribute('name') || '';
+    if (/eeo|pronoun|resume|cover|baseTemplate/i.test(name)) continue;
+    let label = '';
+    const directField = inp.closest('.application-field');
+    if (directField) {
+      const prev = directField.previousElementSibling;
+      if (prev && /application-label|question-label/i.test(prev.className || '')) {
+        label = (prev.innerText || prev.textContent || '').trim();
+      }
+    }
+    if (!label) label = questionLabelFor(inp);
+    const val = (inp.value || '').trim();
+    const esc = CSS.escape(name);
+    out.push({
+      kind: inp.tagName === 'TEXTAREA' ? 'textarea' : 'text',
+      name,
+      id: inp.id || '',
+      label: label.slice(0, 200),
+      value: val.slice(0, 200),
+      empty: !val,
+      selector: inp.tagName === 'TEXTAREA'
+        ? `textarea[name="${esc}"]:visible`
+        : `input[name="${esc}"]:visible`,
+    });
+  }
   return out;
 }"""
 
@@ -229,7 +287,11 @@ def classify_lever_question(label: str, *, name: str = "") -> str | None:
         RACE,
         VETERAN,
         DISABILITY,
+        LGBTQIA,
+        PRONOUNS,
         PORTFOLIO,
+        WORKED_HERE_BEFORE,
+        ADDRESS_CITY,
     ):
         return ftype
     return None
@@ -320,6 +382,7 @@ def pick_eeo_select_option(
 ) -> dict | None:
     """Pick preferred dummy EEO option; Decline aliases are fallback only."""
     from field_map import DUMMY_PROFILE, build_value_map
+    from gh_select import _score_option
 
     prefer = (desired or "").strip()
     if not prefer:
@@ -344,10 +407,9 @@ def pick_eeo_select_option(
         for i, a in enumerate(cands):
             if not a:
                 continue
-            if o_low == a:
-                score = max(score, 100 - i)
-            elif a in o_low or o_low in a:
-                score = max(score, 80 - i)
+            sc = _score_option(olab, a)
+            if sc:
+                score = max(score, sc - i)
         # Preferred concrete answers outrank Decline when both match weakly
         if ftype == "GENDER" and re.search(r"\bmale\b|\bman\b", o_low):
             score = max(score, 95)
@@ -367,6 +429,11 @@ def pick_eeo_select_option(
         ):
             if "decline" not in o_low and "wish" not in o_low:
                 score = max(score, 95)
+        if ftype in ("LGBTQIA", "AGE_RANGE") and re.search(
+            r"prefer not|decline|wish not|choose not",
+            o_low,
+        ):
+            score = max(score, 92)
         if "decline" in o_low or "prefer not" in o_low or "wish not" in o_low:
             score = max(score, 70)  # fallback, not preferred
         if "do not want to answer" in o_low or "don't want to answer" in o_low:
@@ -375,6 +442,34 @@ def pick_eeo_select_option(
             best_score = score
             best = opt
     if best_score <= 0:
+        return None
+    return best
+
+
+def pick_eeo_radio_option(
+    ftype: str,
+    desired: str,
+    options: list[dict],
+) -> dict | None:
+    """Pick EEO radio option (Gender/LGBTQIA/etc.) via scored aliases."""
+    from gh_select import _score_option
+
+    cands = aliases_for(ftype, desired)
+    best = None
+    best_score = -1
+    for opt in options or []:
+        olab = str(opt.get("label") or opt.get("value") or "").strip()
+        if not olab:
+            continue
+        score = 0
+        for i, alias in enumerate(cands):
+            sc = _score_option(olab, alias)
+            if sc:
+                score = max(score, sc - i)
+        if score > best_score:
+            best_score = score
+            best = opt
+    if best_score < 55:
         return None
     return best
 
@@ -463,16 +558,8 @@ async def fill_lever_widgets(page, values: dict[str, Any]) -> list[dict]:
             opt_label = str(pick.get("label") or pick.get("value") or "")
             opt_value = str(pick.get("value") or "")
             clicked = False
-            # Prefer label click (Lever wraps input in <label>)
-            try:
-                if opt_label:
-                    loc = page.get_by_label(re.compile(re.escape(opt_label[:40]), re.I))
-                    if await loc.count() > 0:
-                        await loc.first.click(timeout=2500, force=True)
-                        clicked = True
-            except Exception:
-                clicked = False
-            if not clicked and name and opt_value:
+            # Prefer name+value (Lever has many Yes/No groups — label click is ambiguous)
+            if name and opt_value:
                 try:
                     sel = f'input[type=radio][name={_css_attr(name)}][value={_css_attr(opt_value)}]'
                     loc = page.locator(sel).first
@@ -482,18 +569,34 @@ async def fill_lever_widgets(page, values: dict[str, Any]) -> list[dict]:
                     try:
                         await page.locator(sel).first.click(timeout=2500, force=True)
                         clicked = True
-                    except Exception as e:
-                        results.append(
-                            {
-                                "ok": False,
-                                "type": ftype,
-                                "label": label[:80],
-                                "via": "lever_widgets",
-                                "reason": f"radio_click_failed:{e}"[:100],
-                                "flash_candidate": True,
-                            }
-                        )
-                        continue
+                    except Exception:
+                        clicked = False
+            if not clicked and opt_label and len(opt_label) > 3:
+                try:
+                    loc = page.get_by_label(re.compile(re.escape(opt_label[:40]), re.I))
+                    if await loc.count() > 0:
+                        await loc.first.click(timeout=2500, force=True)
+                        clicked = True
+                except Exception:
+                    clicked = False
+            if not clicked and name and opt_value:
+                try:
+                    sel = f'input[type=radio][name={_css_attr(name)}][value={_css_attr(opt_value)}]'
+                    loc = page.locator(sel).first
+                    await loc.check(timeout=2500, force=True)
+                    clicked = True
+                except Exception as e:
+                    results.append(
+                        {
+                            "ok": False,
+                            "type": ftype,
+                            "label": label[:80],
+                            "via": "lever_widgets",
+                            "reason": f"radio_click_failed:{e}"[:100],
+                            "flash_candidate": True,
+                        }
+                    )
+                    continue
             if not clicked:
                 results.append(
                     {
@@ -542,6 +645,221 @@ async def fill_lever_widgets(page, values: dict[str, Any]) -> list[dict]:
             )
             if verified:
                 filled_types.add(ftype)
+            continue
+
+        if kind == "radio" and ftype in _EEO_TYPES:
+            desired_eeo = str(values.get(ftype) or "")
+            if row.get("anyChecked"):
+                want = pick_eeo_radio_option(
+                    ftype, desired_eeo, list(row.get("options") or [])
+                )
+                checked = [o for o in (row.get("options") or []) if o.get("checked")]
+                already_ok = False
+                if want and checked:
+                    want_lab = str(want.get("label") or want.get("value") or "").strip().lower()
+                    want_val = str(want.get("value") or "").strip().lower()
+                    for o in checked:
+                        ol = str(o.get("label") or "").strip().lower()
+                        ov = str(o.get("value") or "").strip().lower()
+                        if (want_lab and ol == want_lab) or (want_val and ov == want_val):
+                            already_ok = True
+                            break
+                if already_ok:
+                    filled_types.add(ftype)
+                    results.append(
+                        {
+                            "ok": True,
+                            "verified": True,
+                            "type": ftype,
+                            "label": label[:80],
+                            "via": "lever_widgets",
+                            "reason": "already_checked",
+                            "value": desired_eeo,
+                        }
+                    )
+                    continue
+            pick = pick_eeo_radio_option(
+                ftype, desired_eeo, list(row.get("options") or [])
+            )
+            if not pick:
+                results.append(
+                    {
+                        "ok": False,
+                        "type": ftype,
+                        "label": label[:80],
+                        "via": "lever_widgets",
+                        "reason": "no_eeo_radio_option",
+                        "flash_candidate": True,
+                    }
+                )
+                continue
+            opt_label = str(pick.get("label") or pick.get("value") or "")
+            opt_value = str(pick.get("value") or "")
+            clicked = False
+            try:
+                if opt_label:
+                    loc = page.get_by_label(re.compile(re.escape(opt_label[:40]), re.I))
+                    if await loc.count() > 0:
+                        await loc.first.click(timeout=2500, force=True)
+                        clicked = True
+            except Exception:
+                clicked = False
+            if not clicked and name and opt_value:
+                try:
+                    sel = f'input[type=radio][name={_css_attr(name)}][value={_css_attr(opt_value)}]'
+                    loc = page.locator(sel).first
+                    await loc.check(timeout=2500, force=True)
+                    clicked = True
+                except Exception:
+                    try:
+                        await page.locator(sel).first.click(timeout=2500, force=True)
+                        clicked = True
+                    except Exception as e:
+                        results.append(
+                            {
+                                "ok": False,
+                                "type": ftype,
+                                "label": label[:80],
+                                "via": "lever_widgets",
+                                "reason": f"eeo_radio_click_failed:{e}"[:100],
+                                "flash_candidate": True,
+                            }
+                        )
+                        continue
+            verified = False
+            try:
+                if name and opt_value:
+                    sel = f'input[type=radio][name={_css_attr(name)}][value={_css_attr(opt_value)}]'
+                    verified = bool(await page.locator(sel).first.is_checked())
+            except Exception:
+                verified = clicked
+            results.append(
+                {
+                    "ok": verified,
+                    "verified": verified,
+                    "type": ftype,
+                    "label": label[:80],
+                    "via": "lever_widgets",
+                    "value": desired_eeo,
+                    "readback": opt_label[:80],
+                    "picked": opt_label[:80],
+                    "mode": "radio",
+                    "flash_candidate": not verified,
+                }
+            )
+            if verified:
+                filled_types.add(ftype)
+            continue
+
+        if kind in ("text", "textarea"):
+            # Classify from label; restrict ADDRESS_CITY to explicit home/current city
+            ftype_text = classify_lever_question(label, name=name)
+            if kind == "textarea" and not ftype_text:
+                ftype_text, _ = classify_field(
+                    {"label": label, "name": name, "type": "textarea"}
+                )
+            if ftype_text == ADDRESS_CITY and not re.search(
+                r"home[\s_-]*city|current[\s_-]*city", label, re.I
+            ):
+                ftype_text = None
+            if ftype_text in filled_types:
+                continue
+            if ftype_text not in (WORKED_HERE_BEFORE, ADDRESS_CITY):
+                continue
+            ftype = ftype_text
+            if ftype == WORKED_HERE_BEFORE:
+                desired = str(values.get(WORKED_HERE_BEFORE) or "No")
+            else:
+                desired = str(
+                    values.get(ADDRESS_CITY)
+                    or values.get("LOCATION")
+                    or "Springfield"
+                ).split(",")[0].strip()
+            existing = str(row.get("value") or "").strip()
+            if existing and (
+                desired.lower() in existing.lower()
+                or existing.lower() in desired.lower()
+            ):
+                if value_ok_for_field_shape(existing, label=label, ftype=ftype):
+                    filled_types.add(ftype)
+                    results.append(
+                        {
+                            "ok": True,
+                            "verified": True,
+                            "type": ftype,
+                            "label": label[:80],
+                            "via": "lever_widgets",
+                            "reason": "already_correct",
+                            "value": existing[:80],
+                            "readback": existing[:80],
+                        }
+                    )
+                    continue
+            if not value_ok_for_field_shape(desired, label=label, ftype=ftype):
+                results.append(
+                    {
+                        "ok": False,
+                        "type": ftype,
+                        "label": label[:80],
+                        "via": "lever_widgets",
+                        "reason": "crossfill_shape_rejected",
+                        "flash_candidate": True,
+                    }
+                )
+                continue
+            sel_css = str(row.get("selector") or "")
+            if not sel_css and name:
+                tag = "textarea" if kind == "textarea" else "input"
+                sel_css = f'{tag}[name={_css_attr(name)}]:visible'
+            if not sel_css:
+                continue
+            try:
+                loc = page.locator(sel_css).first
+                if await loc.count() == 0:
+                    results.append(
+                        {
+                            "ok": False,
+                            "type": ftype,
+                            "label": label[:80],
+                            "via": "lever_widgets",
+                            "reason": "text_selector_missing",
+                            "flash_candidate": True,
+                        }
+                    )
+                    continue
+                await loc.fill(desired[:200], timeout=4000)
+                readback = (await loc.input_value() or "").strip()
+                ok = bool(readback) and (
+                    desired.lower() in readback.lower()
+                    or readback.lower() in desired.lower()
+                )
+                results.append(
+                    {
+                        "ok": ok,
+                        "verified": ok,
+                        "type": ftype,
+                        "label": label[:80],
+                        "via": "lever_widgets",
+                        "value": desired[:80],
+                        "readback": readback[:80],
+                        "selector": sel_css,
+                        "mode": kind,
+                        "flash_candidate": not ok,
+                    }
+                )
+                if ok:
+                    filled_types.add(ftype)
+            except Exception as e:
+                results.append(
+                    {
+                        "ok": False,
+                        "type": ftype,
+                        "label": label[:80],
+                        "via": "lever_widgets",
+                        "reason": f"text_fill_failed:{e}"[:100],
+                        "flash_candidate": True,
+                    }
+                )
             continue
 
         # Other radio groups (unclassified or non-auth): promote if unanswered
@@ -812,6 +1130,40 @@ def self_test() -> None:
         ],
     )
     assert male and male["label"].lower() == "male"
+    # FILL2-001: Male must not match Female via substring
+    not_female = pick_eeo_select_option(
+        GENDER,
+        [
+            {"label": "Female", "value": "Female"},
+            {"label": "Male", "value": "Male"},
+        ],
+    )
+    assert not_female and not_female["label"].lower() == "male"
+    lgbtq = pick_eeo_radio_option(
+        LGBTQIA,
+        "Prefer not to disclose",
+        [
+            {"label": "Yes", "value": "Yes"},
+            {"label": "No", "value": "No"},
+            {"label": "Prefer not to disclose", "value": "Prefer not"},
+        ],
+    )
+    assert lgbtq and "prefer not" in lgbtq["label"].lower()
+    assert (
+        classify_lever_question("Do you identify as part of the LGBTQIA+ community?")
+        == LGBTQIA
+    )
+    assert classify_lever_question("Pronouns", name="pronouns") == PRONOUNS
+    pron = pick_eeo_radio_option(
+        PRONOUNS,
+        "Prefer not to say",
+        [
+            {"label": "He/him", "value": "He/him"},
+            {"label": "She/her", "value": "She/her"},
+            {"label": "Prefer not to say", "value": "Prefer not to say"},
+        ],
+    )
+    assert pron and "prefer not" in pron["label"].lower()
     # Decline is fallback when preferred label absent
     dec = pick_eeo_select_option(
         GENDER,

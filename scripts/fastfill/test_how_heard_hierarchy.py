@@ -126,13 +126,13 @@ def test_category_helpers_and_candidates() -> None:
     assert not is_how_heard_category_option("LinkedIn")
 
     leaves = how_heard_leaf_candidates({"HOW_HEARD": "Internet job board"})
-    assert leaves[0] == "Indeed"
+    assert leaves[0] == "LinkedIn"
     assert "Internet job board" not in leaves
 
     cands = how_heard_candidates({"HOW_HEARD": "Internet job board"})
-    assert cands[0] == "Indeed"
+    assert cands[0] == "LinkedIn"
     assert "Internet job board" in cands
-    assert cands.index("Indeed") < cands.index("Internet job board")
+    assert cands.index("LinkedIn") < cands.index("Internet job board")
 
     cats = how_heard_category_candidates({"HOW_HEARD": "Internet job board"})
     assert "Internet job board" in cats
@@ -185,13 +185,13 @@ async def _run_fixture() -> None:
         hier = await fill_hierarchical_how_heard(
             page,
             inp,
-            leaf_candidates=["Indeed", "LinkedIn"],
+            leaf_candidates=["LinkedIn", "Indeed"],
             category_candidates=["Internet job board", "Job Board"],
         )
         assert hier.get("ok") and hier.get("committed"), hier
-        assert "Indeed" in str(hier.get("picked") or hier.get("readback") or "")
+        assert "LinkedIn" in str(hier.get("picked") or hier.get("readback") or "")
         chrome = await page.locator("#chip-chrome").inner_text()
-        assert how_heard_source_committed(chrome, ["Indeed"])
+        assert how_heard_source_committed(chrome, ["LinkedIn"])
         assert "1 item selected" in chrome.lower()
 
         # Fresh page — Playwright set_content twice on one page drops inline JS
@@ -208,7 +208,7 @@ async def _run_fixture() -> None:
         assert _is_verified_fill(hh), hh
         assert hh.get("mode") == "hierarchical_how_heard" or hh.get("verified")
         rb = str(hh.get("readback") or "")
-        assert "indeed" in rb.lower() or "1 item selected" in rb.lower(), hh
+        assert "linkedin" in rb.lower() or "1 item selected" in rb.lower(), hh
         assert "0 items selected" not in rb.lower()
 
         attach_footer_primary(report, kind="ADVANCE", label="Save and Continue")
@@ -232,9 +232,43 @@ async def _run_fixture() -> None:
     print("test_how_heard_hierarchy fixture: OK")
 
 
+def test_how_heard_lock_skip_second_attempt() -> None:
+    """After hierarchical commit, second _fill_how_heard must lock_skip — thrash 0."""
+    import asyncio
+    from exp_workday_selectors import _fill_how_heard, _is_verified_fill
+    from field_lock import attach_field_locks, gate_field_action
+
+    async def _run():
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.set_content(HIERARCHY_HTML)
+            report: dict = {"platform": "workday", "coverage_path": "workday_multipage"}
+            attach_field_locks(report)
+            hh1 = await _fill_how_heard(
+                page, {"HOW_HEARD": "Internet job board"}, report=report
+            )
+            assert _is_verified_fill(hh1), hh1
+            hh2 = await _fill_how_heard(
+                page, {"HOW_HEARD": "Internet job board"}, report=report
+            )
+            assert hh2.get("skipped_locked") or hh2.get("reason") in (
+                "field_locked_skip",
+                "already_correct_keep",
+            ), hh2
+            thrash2 = int(getattr(report.get("_field_locks"), "thrash_retouches", 0) or 0)
+            assert thrash2 == 1, f"expected one lock_skip retouch, got {thrash2}"
+            await browser.close()
+
+    asyncio.run(_run())
+
+
 def main() -> None:
     test_category_helpers_and_candidates()
     test_false_hold_refused_on_advance_footer()
+    test_how_heard_lock_skip_second_attempt()
     asyncio.run(_run_fixture())
     print("test_how_heard_hierarchy: OK")
 

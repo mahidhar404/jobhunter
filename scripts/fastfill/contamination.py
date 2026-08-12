@@ -6,7 +6,23 @@ false drift — only flags demotions for the orchestrator to repair once.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Awaitable
+from typing import Any, Awaitable, Callable
+
+
+def _default_soft_match(expected: str, got: str) -> bool:
+    """Polarity-aware match — never Male⊂Female / IL⊂Idaho via raw ``in``."""
+    try:
+        from verified_select import soft_value_match
+
+        return soft_value_match(expected, got)
+    except Exception:
+        e = (expected or "").strip().lower()
+        g = (got or "").strip().lower()
+        if not e:
+            return True
+        if not g:
+            return False
+        return e == g
 
 
 async def contamination_sweep(
@@ -22,17 +38,7 @@ async def contamination_sweep(
     """
     drifts: list[dict] = []
     ok_rows: list[dict] = []
-
-    def _match(expected: str, got: str) -> bool:
-        if soft_match:
-            return soft_match(expected, got)
-        e = (expected or "").strip().lower()
-        g = (got or "").strip().lower()
-        if not e:
-            return True
-        if not g:
-            return False
-        return e == g or e in g or g in e
+    match_fn = soft_match or _default_soft_match
 
     for row in committed_rows or []:
         if not isinstance(row, dict):
@@ -48,7 +54,8 @@ async def contamination_sweep(
         if not expected:
             continue
         ftype = str(row.get("type") or "").upper()
-        # Skip widgets ChamPro warns not to reopen on false drift
+        # Skip widgets ChamPro warns not to reopen on false chip-chrome drift.
+        # (soft_value_match still applies to gender/state/phone rows below.)
         if ftype in ("HOW_HEARD", "SOURCE", "SCHOOL", "LOCATION"):
             ok_rows.append(row)
             continue
@@ -82,7 +89,7 @@ async def contamination_sweep(
                 }
             )
             continue
-        if _match(expected, got):
+        if match_fn(expected, got):
             ok_rows.append(row)
         else:
             drifts.append(

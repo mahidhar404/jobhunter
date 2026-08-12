@@ -1,4 +1,12 @@
 {
+ "are you legally authorized to work in the united states for": {
+  "label_example": "Are you legally authorized to work in the United States for ",
+  "platforms": [
+   "lever"
+  ],
+  "seen": 8,
+  "value": "Yes"
+ },
  "are you legally authorized to work in the united states?": {
   "label_example": "Are you legally authorized to work in the United States?",
   "platforms": [
@@ -12,8 +20,16 @@
   "platforms": [
    "greenhouse"
   ],
-  "seen": 2,
+  "seen": 6,
   "value": "Yes"
+ },
+ "do you now or will you in the future, require sponsorship fo": {
+  "label_example": "Do you now or will you in the future, require sponsorship fo",
+  "platforms": [
+   "greenhouse"
+  ],
+  "seen": 1,
+  "value": "No visa required"
  },
  "gender select one": {
   "label_example": "Gender Select One",
@@ -73,12 +89,20 @@
   "seen": 1,
   "value": "Decline to self identify"
  },
+ "raceselect ...hispanic or latinowhite (not hispanic or latin": {
+  "label_example": "RaceSelect ...Hispanic or LatinoWhite (Not Hispanic or Latin",
+  "platforms": [
+   "lever"
+  ],
+  "seen": 1,
+  "value": "Decline to self-identify"
+ },
  "veteran status": {
   "label_example": "Veteran Status",
   "platforms": [
    "greenhouse"
   ],
-  "seen": 14,
+  "seen": 17,
   "value": "I am not a protected veteran"
  },
  "veteran status select one": {
@@ -88,6 +112,14 @@
   ],
   "seen": 1,
   "value": "I am not a protected veteran"
+ },
+ "veteran statusselect ...i am a veterani am not a veterandecl": {
+  "label_example": "Veteran statusSelect ...I am a veteranI am not a veteranDecl",
+  "platforms": [
+   "lever"
+  ],
+  "seen": 1,
+  "value": "I am not a veteran"
  },
  "what is your notice period/when is the earliest you could start?": {
   "label_example": "What is your notice period/when is the earliest you could start?",
@@ -105,12 +137,28 @@
   "seen": 1,
   "value": "Immediately available"
  },
+ "will you now or in the future require sponsorship for employ": {
+  "label_example": "Will you now or in the future require sponsorship for employ",
+  "platforms": [
+   "lever"
+  ],
+  "seen": 4,
+  "value": "No"
+ },
+ "will you now or in the future require sponsorship for employment visa status (e.": {
+  "label_example": "Will you now or in the future require sponsorship for employment visa status (e.",
+  "platforms": [
+   "lever"
+  ],
+  "seen": 1,
+  "value": "No"
+ },
  "will you now or in the future require sponsorship to work in the united states?": {
   "label_example": "Will you now or in the future require sponsorship to work in the United States?*",
   "platforms": [
    "greenhouse"
   ],
-  "seen": 12,
+  "seen": 14,
   "value": "No"
  },
  "will you now or in the future require sponsorship?": {
@@ -129,12 +177,20 @@
   "seen": 1,
   "value": "No"
  },
+ "will you require sponsorship now or in the future for employment in the us?": {
+  "label_example": "Will you require sponsorship now or in the future for employment in the US?",
+  "platforms": [
+   "ashby"
+  ],
+  "seen": 4,
+  "value": "No"
+ },
  "would you require relocation to irvine, ca?": {
   "label_example": "Would you require relocation to Irvine, CA? *",
   "platforms": [
    "greenhouse"
   ],
-  "seen": 2,
+  "seen": 6,
   "value": "Yes, willing to relocate"
  }
 }

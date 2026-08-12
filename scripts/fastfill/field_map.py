@@ -66,6 +66,10 @@ EMAIL = "EMAIL"
 PHONE = "PHONE"
 # Optional Workday/ATS dial extension — leave blank; never essay/phone reclaim.
 PHONE_EXTENSION = "PHONE_EXTENSION"
+# Workday / GH "Country Phone Code" / dial-code combobox (United States (+1)).
+PHONE_COUNTRY_CODE = "PHONE_COUNTRY_CODE"
+# Workday "Phone Device Type" (Mobile / Home) — not the number.
+PHONE_DEVICE = "PHONE_DEVICE"
 ADDRESS_LINE1 = "ADDRESS_LINE1"
 ADDRESS_LINE2 = "ADDRESS_LINE2"
 ADDRESS_CITY = "ADDRESS_CITY"
@@ -90,6 +94,10 @@ RACE = "RACE"
 HISPANIC = "HISPANIC"
 VETERAN = "VETERAN"
 DISABILITY = "DISABILITY"
+# LGBTQIA+ community identity — prefer-not-to-disclose per shared EEO policy
+LGBTQIA = "LGBTQIA"
+# Pronouns — policy-safe prefer-not-to-disclose (never invent He/him / She/her)
+PRONOUNS = "PRONOUNS"
 # Security clearance Yes/No (TS/SCI, polygraph, "do you have a clearance?")
 CLEARANCE = "CLEARANCE"
 # Closed list: "Security Clearance Type" → None / No Clearance
@@ -132,6 +140,14 @@ PASSWORD = "PASSWORD"
 PASSWORD_CONFIRM = "PASSWORD_CONFIRM"
 TERMS_CONSENT = "TERMS_CONSENT"
 MARKETING_CONSENT = "MARKETING_CONSENT"
+# "Do you require reasonable accommodations / adjustments?" → No
+ACCOMMODATIONS = "ACCOMMODATIONS"
+# Follow-up "if yes provide details; if not enter N/A" → N/A
+ACCOMMODATIONS_DETAILS = "ACCOMMODATIONS_DETAILS"
+# Capco GH: "Were you referred… by a current Employee?" → No
+EMPLOYEE_REFERRAL = "EMPLOYEE_REFERRAL"
+# Conditional "employee's Capco email" when referral=No → N/A (never reopen Yes/No)
+REFERRAL_EMAIL = "REFERRAL_EMAIL"
 # Short "why interested / why this company" — dummy-safe canned line only.
 INTEREST = "INTEREST"
 # "Do you live within N miles of a talent hub / office?" (Ashby Socure-style)
@@ -158,6 +174,7 @@ AUTOCOMPLETE_MAP = {
     "postal-code": ADDRESS_ZIP,
     "country": ADDRESS_COUNTRY,
     "country-name": ADDRESS_COUNTRY,
+    "tel-country-code": PHONE_COUNTRY_CODE,
     "candidate-location": LOCATION,
     "candidate_location": LOCATION,
     "organization-title": CURRENT_TITLE,  # Lever/GH current role
@@ -207,15 +224,57 @@ PATTERNS = {
                        r"opt[\s_-]*in|subscribe|"
                        r"recruiting[\s_-]*events?|invited[\s_-]*to[\s_-]*our|"
                        r"receive[\s_-]*information[\s_-]*about",
+    # Capco GH live bug: "Do you require reasonable accommodations or
+    # adjustments?" was stolen by TERMS_CONSENT → Yes. Require/need questions
+    # and their N/A follow-ups must win BEFORE consent checkboxes.
+    # Details BEFORE the Yes/No type so "If you answered yes to the Reasonable
+    # Adjustments question… enter N/A" never becomes ACCOMMODATIONS=No.
+    ACCOMMODATIONS_DETAILS: (
+        r"(if\s+you\s+answered\s+yes|if\s+yes|if\s+not[, ]*\s*enter\s+n/?a|"
+        r"enter\s+n/?a|additional\s+details).{0,120}"
+        r"(accommodation|adjustment|reasonable)|"
+        r"(accommodation|adjustment|reasonable).{0,120}"
+        r"(if\s+you\s+answered\s+yes|if\s+yes|if\s+not|enter\s+n/?a|"
+        r"additional\s+details|provide\s+(more\s+)?details)|"
+        r"reasonable[\s_-]*adjustments?\s+question"
+    ),
+    ACCOMMODATIONS: (
+        r"(require|need|request|seeking).{0,40}"
+        r"(reasonable[\s_-]*)?(accommodations?|adjustments?)|"
+        r"(reasonable[\s_-]*)?(accommodations?|adjustments?).{0,40}"
+        r"(require|need|request|seeking)|"
+        r"do\s+you\s+(require|need).{0,40}(accommodation|adjustment)|"
+        r"reasonable[\s_-]*accommodations?\s+or\s+adjustments?"
+    ),
+    # Capco: referral Yes/No BEFORE email follow-up so the combined label
+    # "Were you referred…? If yes, confirm employee's Capco email" stays No —
+    # not N/A into a Yes/No select.
+    EMPLOYEE_REFERRAL: (
+        r"were\s+you\s+referred|referred\s+to\s+this\s+(role|job|position)|"
+        r"referred\s+by\s+(a\s+)?(current\s+)?(capco\s+)?employee|"
+        r"employee\s+referral|current\s+\w+\s+employee.{0,40}refer"
+    ),
+    # Conditional email when referral=No → N/A (never thrash parent Yes/No).
+    REFERRAL_EMAIL: (
+        r"(employee'?s?|referral).{0,40}(e[\s_-]*mail)|"
+        r"(capco|company).{0,30}employee.{0,30}(e[\s_-]*mail)|"
+        r"(e[\s_-]*mail).{0,40}(employee|referr\w*|capco)|"
+        r"confirm\s+the\s+employee'?s?.{0,40}(e[\s_-]*mail)"
+    ),
     # "Check the box to confirm you wish to move forward with creating an
     # account" (a real Workday tenant, no mention of "terms" at all) was found
     # live, timing out on Create Account because this gate stayed unticked -
     # it reads as a generic instruction rather than the usual terms phrasing.
+    # ADA *policy acknowledgment* only — not "do you require accommodations".
     TERMS_CONSENT: r"terms\s*(and|&)\s*conditions|terms\s*of\s*(use|service)|"
                    r"privacy\s*(policy|notice|statement)|data\s+privacy|"
+                   r"privacy[\s_-]*acknowledge?ment|"
+                   r"candidate[\s_-]*privacy|"
                    r"recruiting\s+privacy|processing\s+your\s+data|"
                    r"data[\s_-]*consent|consent[\s_-]*ack|"
+                   r"(provide|offers?|policy|understand|acknowledge|ada).{0,60}"
                    r"reasonable[\s_-]*accommodation|"
+                   r"reasonable[\s_-]*accommodation.{0,40}(policy|notice|ada)|"
                    r"i\s+agree|i\s+consent|"
                    r"read\s+and\s+(accept|agree|consent)|acknowledge\s+and\s+agree|"
                    r"data\s+processing\s+consent|"
@@ -252,6 +311,14 @@ PATTERNS = {
                      r"(?:^|[\s_/|-])ext(?:ension)?(?:[\s_.-]*(?:#|no\.?|num(?:ber)?))?\s*$|"
                      r"\bext\.(?:\s*(?:#|no|num|number))?|"
                      r"\bext\s*#\b",
+    # Country phone / dial code BEFORE PHONE and ADDRESS_COUNTRY.
+    PHONE_COUNTRY_CODE: r"country[\s_-]*phone[\s_-]*code|phone[\s_-]*country[\s_-]*code|"
+                        r"country[\s_-]*calling[\s_-]*code|calling[\s_-]*code|"
+                        r"dial[\s_-]*code|phone[\s_-]*dial|"
+                        r"countryPhoneCode|phoneNumber--countryPhoneCode|"
+                        r"phonenumber--countryphonecode",
+    PHONE_DEVICE: r"phone[\s_-]*device[\s_-]*type|device[\s_-]*type|"
+                  r"phone[\s_-]*type|phoneType",
     PHONE: r"phone|mobile|telephone|\btel\b|cell|contact[\s_-]*number",
 
     # -- links: named platforms before the generic url catch-all -------------
@@ -375,6 +442,11 @@ PATTERNS = {
     # matches HISPANIC first and fills the wrong select.
     RACE: r"race|ethnic",
     HISPANIC: r"hispanic|latino|latinx",
+    # Before GENDER — "LGBTQIA+ community" must not fall through unclassified.
+    LGBTQIA: r"lgbtq|lgbtqia|lgbtq\+|sexual[\s_-]*orientation|"
+             r"identify[\s_-]*as[\s_-]*part[\s_-]*of[\s_-]*the[\s_-]*lgbt",
+    # Before GENDER — pronouns are optional on many Lever forms but still fill decline.
+    PRONOUNS: r"\bpronouns?\b",
     GENDER: r"gender|\bsex\b",
     VETERAN: r"veteran|military|protected[\s_-]*veteran",
     DISABILITY: r"disabilit|disabled",
@@ -443,11 +515,23 @@ PATTERNS = {
                       r"agree\s+to\s+(a\s+)?background\s+check",
     FELONY: r"felony|convicted|criminal[\s_-]*(record|conviction)|background[\s_-]*check[\s_-]*consent",
     # GH: "worked for this company…", "relatives or friends currently working…"
-    WORKED_HERE_BEFORE: r"worked[\s_-]*(here|for[\s_-]*(us|this[\s_-]*company)|for[\s_-]*this)|"
+    # Capco GH: "Do you know anyone or are you related to anyone who works at
+    # Capco?" was unclassified → required field left blank. It is a
+    # relation/acquaintance-at-employer screening question → No (dummy), same
+    # family as "relatives currently working here".
+    WORKED_HERE_BEFORE: r"worked[\s_-]*(here|with|for[\s_-]*(us|this[\s_-]*company)|for[\s_-]*this)|"
+                        r"ever[\s_-]*worked[\s_-]*with|worked[\s_-]*with[\s_-]*(the[\s_-]*)?|"
                         r"worked[\s_-]*for[\s_-]*this[\s_-]*company|"
-                        r"previously[\s_-]*(employed|held)|former[\s_-]*employee|held[\s_-]*a[\s_-]*position|"
+                        r"previously[\s_-]*(employed|held)|"
+                        r"ever[\s_-]*been[\s_-]*employed|employed[\s_-]*by|"
+                        r"prior[\s_-]*worker|previous[\s_-]*worker|"
+                        r"candidateispreviousworker|"
+                        r"former[\s_-]*employee|held[\s_-]*a[\s_-]*position|"
                         r"relatives?[\s_-]*(or[\s_-]*friends?[\s_-]*)?(currently[\s_-]*)?(work|employ)|"
                         r"friends?[\s_-]*currently[\s_-]*working|"
+                        r"know[\s_-]*anyone.{0,60}\bworks?\b|"
+                        r"related[\s_-]*to[\s_-]*(anyone|someone).{0,60}\bworks?\b|"
+                        r"know[\s_-]*(anyone|someone)[\s_-]*(who[\s_-]*)?(currently[\s_-]*)?works?|"
                         r"family[\s_-]*member[\s_-]*(employed|work)|related[\s_-]*entities",
     # Include "how you heard" / "If Other, please specify how you heard…" (GH)
     # Lever: "If Industry Conference or Other, please provide more details"
@@ -462,8 +546,15 @@ PATTERNS = {
                r"formfield[\s_-]*source\b|"
                r"candidate[\s_-]*source|"
                r"\bhow[\s_-]*did[\s_-]*you[\s_-]*hear\b|"
+               # "If Other" / expand only when hear/source/referral also present
+               r"(?:hear|heard|source|referral).{0,40}"
                r"if[\s_-]*(you[\s_-]*selected[\s_-]*)?other|"
-               r"industry[\s_-]*conference.*other|"
+               r"if[\s_-]*(you[\s_-]*selected[\s_-]*)?other.{0,40}"
+               r"(?:hear|heard|source|referral)|"
+               r"industry[\s_-]*conference.*(?:other|hear|source)|"
+               r"expand[\s_-]*on[\s_-]*the[\s_-]*above.{0,40}"
+               r"(?:hear|heard|source|referral)|"
+               r"(?:hear|heard|source|referral).{0,40}"
                r"expand[\s_-]*on[\s_-]*the[\s_-]*above",
     # Short interest / motivation + experience-example essays (canned / Flash)
     INTEREST: r"why\s+(are\s+you\s+)?interested|why\s+do\s+you\s+want|"
@@ -523,6 +614,17 @@ def classify_layer0(field: dict) -> str | None:
         emailish = bool(re.search(r"e[\s_-]*mail|\bemail\b", blob))
         if phoneish and not emailish:
             return None
+    # autocomplete=country on dial widgets → PHONE_COUNTRY_CODE (or fall through)
+    if mapped == ADDRESS_COUNTRY:
+        phone_codeish = bool(
+            re.search(
+                r"country[\s_-]*phone|phone[\s_-]*country|calling[\s_-]*code|"
+                r"dial[\s_-]*code|countryphonecode|tel-country",
+                blob,
+            )
+        )
+        if phone_codeish:
+            return PHONE_COUNTRY_CODE
     return mapped
 
 
@@ -581,6 +683,18 @@ GUARD_WORDS: dict[str, tuple[re.Pattern[str], ...]] = {
     ),
     NAME_FULL: (
         re.compile(r"emergency|relative|referral|contact[\s_-]*name", re.I),
+        # Capco GH live bug: NAME_FULL's `\backnowledgement\b` token stole
+        # "Capco Job Candidate Privacy Notice Acknowledgement*" (a consent
+        # checkbox) before TERMS_CONSENT could claim it, so a name was pushed
+        # into a consent widget → no_matching_option → required field left
+        # blank. Refuse NAME_FULL when the acknowledgement is about a
+        # privacy/terms/consent policy so it falls through to TERMS_CONSENT.
+        re.compile(
+            r"privacy|data[\s_-]*(privacy|protection)|\bgdpr\b|\bconsent\b|"
+            r"terms\s*(and|&)\s*conditions|terms\s+of\s+(use|service)|"
+            r"privacy[\s_-]*(notice|policy|statement)",
+            re.I,
+        ),
     ),
     PHONE: (
         re.compile(
@@ -606,8 +720,42 @@ GUARD_WORDS: dict[str, tuple[re.Pattern[str], ...]] = {
             re.I,
         ),
     ),
+    # Capco GH live bug: "Have you signed a noncompete agreement with any
+    # previous employer?" was semantically matched to WORK_AUTH and answered
+    # "Yes" — a wrong, policy-risky answer. A noncompete / NDA / restrictive
+    # covenant question is never work authorization; refuse the map so it stays
+    # a leftover (honest blank) instead of a fabricated affirmative.
+    WORK_AUTH: (
+        re.compile(
+            r"non[\s_-]*compete|noncompete|restrictive[\s_-]*covenant|"
+            r"non[\s_-]*(disclosure|solicit(ation)?)|\bnda\b|"
+            r"confidentiality[\s_-]*agreement|garden[\s_-]*leave",
+            re.I,
+        ),
+    ),
+    # Same family: a noncompete/NDA must never masquerade as a sponsorship
+    # question either (both are employment-legal phrasing an embed model
+    # conflates).
+    SPONSORSHIP: (
+        re.compile(
+            r"non[\s_-]*compete|noncompete|restrictive[\s_-]*covenant|"
+            r"non[\s_-]*(disclosure|solicit(ation)?)|\bnda\b|"
+            r"confidentiality[\s_-]*agreement|garden[\s_-]*leave",
+            re.I,
+        ),
+    ),
     EMAIL: (
         re.compile(r"confirm|verify|re[\s_-]*enter|secondary|alternate", re.I),
+    ),
+    # Capco GH: never treat "require accommodations?" as consent=Yes
+    TERMS_CONSENT: (
+        re.compile(
+            r"(require|need|request|seeking).{0,40}"
+            r"(reasonable[\s_-]*)?(accommodation|adjustment)|"
+            r"do\s+you\s+(require|need).{0,40}(accommodation|adjustment)|"
+            r"if\s+you\s+answered\s+yes.{0,40}(accommodation|adjustment)",
+            re.I,
+        ),
     ),
 }
 
@@ -648,6 +796,19 @@ HONEYPOT_TEXT = re.compile(
     r"|if\s+you\s+are\s+human|ignore\s+this\s+field|anti-?spam",
     re.I,
 )
+
+
+def is_worked_here_label(label: str = "", *, name: str = "", automation_id: str = "") -> bool:
+    """True for prior-employer / worked-here screening questions (Sandoz, Owens, etc.)."""
+    blob = " ".join(
+        str(x or "") for x in (label, name, automation_id)
+    ).strip()
+    if not blob:
+        return False
+    if re.search(r"candidateispreviousworker|previousworker|worked_here", blob, re.I):
+        return True
+    ftype, _ = classify_field({"label": label, "name": name, "id": automation_id})
+    return ftype == WORKED_HERE_BEFORE
 
 
 def is_honeypot(field: dict) -> bool:
@@ -741,7 +902,8 @@ def classify_semantic(field: dict) -> str | None:
 
     Additive only — callers invoke it after the deterministic layers return
     None, so it can never override an existing resolution. Returns a type only
-    above _SEMANTIC_CLASSIFY_THRESHOLD.
+    above _SEMANTIC_CLASSIFY_THRESHOLD. Guard-words still refuse dangerous maps
+    (Emergency Contact First Name ↛ NAME_FIRST).
     """
     label = " ".join(
         str(field.get(a) or "")
@@ -760,6 +922,8 @@ def classify_semantic(field: dict) -> str | None:
             if s > best_score:
                 best_type, best_score = ftype, s
     if best_type and best_score >= _SEMANTIC_CLASSIFY_THRESHOLD:
+        if guard_words_reject(best_type, label):
+            return None
         return best_type
     return None
 
@@ -1188,6 +1352,7 @@ def apply_resolved_address(values: dict, address: dict) -> dict:
             ADDRESS_STATE: state,
             ADDRESS_ZIP: zip_code,
             ADDRESS_COUNTRY: "United States",
+            PHONE_COUNTRY_CODE: "United States (+1)",
             LOCATION: f"{city}, {state}, USA",
         }
     )
@@ -1414,6 +1579,8 @@ def build_unique_values(profile: dict, address_text: str = "") -> dict:
         NAME_MIDDLE: "",
         RELATIVE_NAME: "",
         PHONE_EXTENSION: "",
+        PHONE_COUNTRY_CODE: "United States (+1)",
+        PHONE_DEVICE: "Mobile",
         EMAIL: profile.get("contact", {}).get("email", ""),
         PHONE: profile.get("contact", {}).get("phone", ""),
         LINKEDIN: profile.get("links", {}).get("linkedin", ""),
@@ -1643,6 +1810,20 @@ def value_ok_for_field_shape(
     t = str(ftype or "").strip().upper()
     if t in OPTIONAL_LEAVE_BLANK_TYPES and not stripped:
         return True
+    # Crossfill: visa/sponsorship strings must never land in worked-here textareas
+    # (Lindblad Lever: "No visa required" in "worked with Lindblad…").
+    wh = (
+        t == WORKED_HERE_BEFORE
+        or is_worked_here_label(label)
+    )
+    if wh and stripped:
+        low = stripped.lower()
+        if re.search(
+            r"visa|sponsor|immigration|h1b|h-1b|work[\s_-]*auth|citizen|"
+            r"green[\s_-]*card|permanent[\s_-]*resident|employment[\s_-]*eligibility",
+            low,
+        ):
+            return False
     if t and t in _VALIDATORS:
         return validate_filled(t, stripped) if stripped else True
     return True

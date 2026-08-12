@@ -1,0 +1,7 @@
+{
+  "id": "crossfill_phone_country",
+  "platform": "workday",
+  "fail_class": "cross_fill_phone",
+  "playbook": "react_select_portal",
+  "description": "Adjacent phone-country and how-heard selects; fill must not cross-contaminate (phone≠jobboard)."
+}

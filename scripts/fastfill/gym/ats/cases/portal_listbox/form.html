@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — Portal Listbox</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 2rem auto; }
+    label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+    .select-trigger {
+      border: 1px solid #ccc; border-radius: 4px; padding: 8px 12px;
+      cursor: pointer; background: #fff; min-height: 20px;
+    }
+    .select-trigger:focus { outline: 2px solid #2684ff; }
+    .placeholder { color: #999; }
+    .single-value { color: #333; }
+    /* Listbox is NOT styled here — it lives on document.body */
+    button { margin-top: 1.5rem; padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <h1>Department Selection</h1>
+  <p>Applicant: Ada Lovelace · test+gym@example.com</p>
+
+  <div class="field">
+    <label for="dept-trigger">Department</label>
+    <div id="dept-trigger" class="select-trigger" role="combobox" aria-expanded="false"
+         aria-haspopup="listbox" tabindex="0" data-committed="">
+      <span class="placeholder">Choose department…</span>
+    </div>
+  </div>
+
+  <button type="button" id="btn-submit">Submit application</button>
+
+  <script>
+    (function () {
+      var DEPTS = [
+        { value: 'eng', label: 'Engineering' },
+        { value: 'design', label: 'Product Design' },
+        { value: 'ops', label: 'Operations' }
+      ];
+      var trigger = document.getElementById('dept-trigger');
+      var portalListbox = null;
+
+      function destroyPortal() {
+        if (portalListbox) {
+          portalListbox.remove();
+          portalListbox = null;
+        }
+        trigger.setAttribute('aria-expanded', 'false');
+      }
+
+      function openPortal() {
+        destroyPortal();
+        portalListbox = document.createElement('div');
+        portalListbox.id = 'dept-portal-listbox';
+        portalListbox.setAttribute('role', 'listbox');
+        portalListbox.style.cssText =
+          'position:fixed;background:#fff;border:1px solid #ccc;border-radius:4px;' +
+          'box-shadow:0 4px 16px rgba(0,0,0,.15);z-index:10000;min-width:220px;';
+
+        var rect = trigger.getBoundingClientRect();
+        portalListbox.style.top = rect.bottom + 4 + 'px';
+        portalListbox.style.left = rect.left + 'px';
+        portalListbox.style.width = rect.width + 'px';
+
+        DEPTS.forEach(function (d, i) {
+          var opt = document.createElement('div');
+          opt.setAttribute('role', 'option');
+          opt.id = 'dept-opt-' + i;
+          opt.textContent = d.label;
+          opt.style.padding = '8px 12px';
+          opt.style.cursor = 'pointer';
+          opt.addEventListener('mouseenter', function () { opt.style.background = '#eef'; });
+          opt.addEventListener('mouseleave', function () { opt.style.background = ''; });
+          opt.addEventListener('click', function (e) {
+            e.stopPropagation();
+            trigger.innerHTML = '<span class="single-value">' + d.label + '</span>';
+            trigger.dataset.committed = d.label;
+            trigger.setAttribute('data-committed', d.label);
+            destroyPortal();
+          });
+          portalListbox.appendChild(opt);
+        });
+
+        // Portal to body — outside the combobox container
+        document.body.appendChild(portalListbox);
+        trigger.setAttribute('aria-expanded', 'true');
+      }
+
+      trigger.addEventListener('click', function () {
+        if (portalListbox) destroyPortal(); else openPortal();
+      });
+
+      document.addEventListener('click', function (e) {
+        if (portalListbox &&
+            !trigger.contains(e.target) &&
+            !portalListbox.contains(e.target)) {
+          destroyPortal();
+        }
+      });
+
+      document.getElementById('btn-submit').addEventListener('click', function (e) {
+        e.preventDefault();
+        alert('Gym fixture — submit blocked.');
+      });
+    })();
+  </script>
+</body>
+</html>

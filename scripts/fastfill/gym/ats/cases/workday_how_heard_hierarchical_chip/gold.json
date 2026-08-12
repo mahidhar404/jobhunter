@@ -1,0 +1,13 @@
+{
+  "fields": [
+    {
+      "key": "how_heard",
+      "selector": "#chip-chrome",
+      "committed": "1 item selected LinkedIn",
+      "required": true
+    }
+  ],
+  "footer_kind": "ADVANCE",
+  "expect_advance": true,
+  "notes": "Workday hierarchical how-heard: chip must show picked leaf (LinkedIn priority). Category filter text alone must NOT pass gold. Empty form fails (0 items selected)."
+}

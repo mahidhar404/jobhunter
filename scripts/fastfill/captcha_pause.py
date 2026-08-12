@@ -35,8 +35,29 @@ CAPTCHA_WAIT_MESSAGE = (
     "(top-right overlay) or press Enter here to continue "
     "(or: touch .captcha_continue / .fill_continue)"
 )
-DEFAULT_CAPTCHA_TIMEOUT_S = 600  # 10 minutes
+DEFAULT_CAPTCHA_TIMEOUT_S = 600  # standalone CLI default; attended cycle uses budget ≤120s
 CAPTCHA_BLOCKERS = frozenset({"captcha", "cloudflare"})
+
+
+def resolve_captcha_timeout_s(explicit: float | None = None) -> float:
+    """Prefer explicit arg; else ``FASTFILL_CAPTCHA_TIMEOUT_S``; else DEFAULT.
+
+    Attended improvement cycles set env to ~90–120 so one CAPTCHA job cannot
+    sit for 10 minutes. Standalone ``fast_fill`` keeps the 600s default unless
+    env/flag overrides.
+    """
+    if explicit is not None:
+        try:
+            return max(5.0, float(explicit))
+        except (TypeError, ValueError):
+            pass
+    raw = (os.environ.get("FASTFILL_CAPTCHA_TIMEOUT_S") or "").strip()
+    if raw:
+        try:
+            return max(5.0, float(raw))
+        except (TypeError, ValueError):
+            pass
+    return float(DEFAULT_CAPTCHA_TIMEOUT_S)
 
 # Workspace-relative default; override with FASTFILL_CAPTCHA_CONTINUE_FILE
 _RESULTS_DIR = (
@@ -115,7 +136,8 @@ def write_captcha_waiting_marker(
             f"- Timeout: {timeout_s:.0f}s → blocker kept; orchestrator must **not** "
             "burn BLOCKED×3 — next variety URL.\n"
             "- Refill leftovers auto-loop without Enter; Enter / overlay Continue "
-            "are CAPTCHA resume controls (FILL-008: challenge must be gone).\n"
+            "are CAPTCHA resume controls (challenge gone → resume; 2nd Continue "
+            "force-resumes if the detector is sticky).\n"
             "- Overlay shows **Continue** during CAPTCHA wait (never auto-solves).\n"
             f"- Or touch `.fill_continue` (also accepted during CAPTCHA wait).\n"
             f"- pid={os.getpid()} blocker={blocker}\n"
@@ -397,8 +419,8 @@ async def wait_for_human_captcha(
     )
     _bring_chrome_testing_to_front()
 
-    # Show Continue on the pause overlay (visible). CAPTCHA wait owns resume;
-    # FILL-008 still requires the challenge to be gone before clearing blocker.
+    # Show Continue on the pause overlay (visible). CAPTCHA wait owns resume.
+    # Resume when challenge gone, or on 2nd Continue if the detector is sticky.
     try:
         from fill_pause import set_fill_pause_captcha_gate
 
@@ -413,12 +435,25 @@ async def wait_for_human_captcha(
     if has_tty:
         enter_fut = loop.run_in_executor(None, sys.stdin.readline)
     end = time.monotonic() + max(5.0, float(timeout_s))
+    # Sticky-detector override: 1st Continue while "visible" keeps waiting;
+    # 2nd (overlay / Enter / sentinel) force-resumes (user intent).
+    continue_while_visible = 0
+    last_overlay_continue_count = 0
 
-    def _finish(via: str, *, continued: bool, solved_gone: bool, timed_out: bool = False):
+    def _finish(
+        via: str,
+        *,
+        continued: bool,
+        solved_gone: bool,
+        timed_out: bool = False,
+        force_resume: bool = False,
+    ):
         out["via"] = via
         out["continued"] = continued
         out["solved_gone"] = solved_gone
         out["timed_out"] = timed_out
+        if force_resume:
+            out["force_resume"] = True
         clear_captcha_waiting_marker()
         if enter_fut is not None and not enter_fut.done():
             enter_fut.cancel()
@@ -434,12 +469,29 @@ async def wait_for_human_captcha(
             pass
 
     async def _try_human_continue(via: str) -> dict[str, Any] | None:
-        """FILL-008: only finish when challenge is gone; else re-arm Continue."""
+        """Resume when challenge gone; 2nd Continue force-resumes if sticky."""
+        nonlocal continue_while_visible
         still = await page_shows_interactive_captcha(page)
         if still:
+            continue_while_visible += 1
+            if continue_while_visible >= 2:
+                print(
+                    f"[captcha] {via} ×{continue_while_visible} — force-resume "
+                    "(challenge detector still sticky; trusting user Continue). "
+                    "Never auto-solved.",
+                    flush=True,
+                )
+                await _ungate_pause_overlay()
+                return _finish(
+                    f"{via}_force",
+                    continued=True,
+                    solved_gone=True,
+                    force_resume=True,
+                )
             print(
                 f"[captcha] {via} received but challenge still visible — "
-                "keep waiting (solve in browser, then Continue again)…",
+                "keep waiting (solve in browser, then click Continue again "
+                "to force-resume if already solved)…",
                 flush=True,
             )
             try:
@@ -449,6 +501,7 @@ async def wait_for_human_captcha(
             except Exception:
                 pass
             return None
+        continue_while_visible = 0
         print(
             f"[captcha] {via} — resuming fill (challenge_visible={still})…",
             flush=True,
@@ -471,6 +524,30 @@ async def wait_for_human_captcha(
                 await asyncio.sleep(0.75)
                 continue
 
+            # Stale-skip sentinel (.job_skip) — leave CAPTCHA, advance queue
+            # (never solve). Prefer skip over burning the full attended budget.
+            try:
+                from stale_skip import consume_job_skip_sentinel
+
+                skip_payload = consume_job_skip_sentinel()
+            except Exception:
+                skip_payload = None
+            if skip_payload is not None:
+                print(
+                    "[captcha] job_skip sentinel — leaving CAPTCHA "
+                    f"(class={skip_payload.get('fail_class') or 'BLOCKED'}; "
+                    "never solved) → next job",
+                    flush=True,
+                )
+                await _ungate_pause_overlay()
+                out["job_skip"] = skip_payload
+                return _finish(
+                    "job_skip",
+                    continued=False,
+                    solved_gone=False,
+                    timed_out=True,
+                )
+
             # Sentinel files (.captcha_continue / .fill_continue)
             fill_sentinel_hit = False
             try:
@@ -487,12 +564,22 @@ async def wait_for_human_captcha(
                 await asyncio.sleep(0.75)
                 continue
 
-            # Overlay Continue click (paused flipped to false while gated)
+            # Overlay Continue: prefer continueCount (survives gate re-arm race
+            # that resets paused=true) plus !paused while gated.
             try:
                 from fill_pause import read_fill_pause_state
 
                 st = await read_fill_pause_state(page, assume_paused_on_error=True)
-                if st.get("captcha_gated") and not st.get("paused"):
+                try:
+                    cc = int(st.get("continueCount") or 0)
+                except (TypeError, ValueError):
+                    cc = 0
+                overlay_hit = bool(st.get("captcha_gated")) and (
+                    (not st.get("paused")) or (cc > last_overlay_continue_count)
+                )
+                if overlay_hit:
+                    if cc > last_overlay_continue_count:
+                        last_overlay_continue_count = cc
                     finished = await _try_human_continue("overlay_continue")
                     if finished is not None:
                         return finished
@@ -522,11 +609,17 @@ async def wait_for_human_captcha(
                     "timeout", continued=False, solved_gone=False, timed_out=True
                 )
 
-            # Re-assert Continue mode in case remount dropped state
+            # Re-assert gate only when dropped (remount). Do NOT call every tick —
+            # set_fill_pause_captcha_gate(True) resets paused=true and can swallow
+            # a Continue click that landed between the overlay poll and sleep.
             try:
-                from fill_pause import set_fill_pause_captcha_gate
+                from fill_pause import read_fill_pause_state, set_fill_pause_captcha_gate
 
-                await set_fill_pause_captcha_gate(page, True)
+                st_gate = await read_fill_pause_state(
+                    page, assume_paused_on_error=True
+                )
+                if not st_gate.get("captcha_gated") or not st_gate.get("installed"):
+                    await set_fill_pause_captcha_gate(page, True)
             except Exception:
                 pass
 
@@ -579,8 +672,9 @@ async def handle_captcha_blocker(
     )
     report["captcha_wait"] = result
     if result.get("continued"):
-        # FILL-008: only clear blocker / mark solved when challenge is gone
-        if result.get("solved_gone") is False:
+        # Only clear blocker when challenge is gone, or user force-resumed
+        # (2nd Continue while sticky detector still reports visible).
+        if result.get("solved_gone") is False and not result.get("force_resume"):
             report["blocker"] = blocker
             report["captcha_human_solved"] = False
             try:
@@ -604,6 +698,8 @@ async def handle_captcha_blocker(
         if report.get("blocker") in CAPTCHA_BLOCKERS:
             report["blocker"] = None
         report.pop("blocker", None)
+        if result.get("force_resume"):
+            report["captcha_force_resume"] = True
         # Drop leftover rows that only exist to mark the gate
         report["leftovers"] = [
             u
@@ -630,6 +726,14 @@ async def handle_captcha_blocker(
         return "continued"
 
     report["blocker"] = blocker
+    if result.get("via") == "job_skip" or result.get("job_skip"):
+        report["job_skipped"] = True
+        report["skipped_stale"] = True
+        report["skip_reason"] = (
+            (result.get("job_skip") or {}).get("reason")
+            if isinstance(result.get("job_skip"), dict)
+            else "job_skip"
+        )
     try:
         from fill_step_log import note_step
 

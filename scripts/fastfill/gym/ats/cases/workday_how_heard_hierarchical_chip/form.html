@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — Workday Hierarchical How-Heard Chip</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 580px; margin: 2rem auto; }
+    label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+    .field { margin-bottom: 1.25rem; }
+    .hint { color: #666; font-size: 0.9rem; }
+    button { margin-top: 1.5rem; padding: 8px 16px; }
+    #menu { border: 1px solid #ccc; border-radius: 4px; padding: 8px; margin-top: 4px; }
+    [role="option"] { padding: 6px 8px; cursor: pointer; border-radius: 3px; }
+    [role="option"]:hover { background: #eef; }
+  </style>
+</head>
+<body>
+  <h1>My Information — Workday</h1>
+  <p>Applicant: Test Dummy · randommail6969@gmail.com</p>
+  <p class="hint">
+    Walmart-shaped hierarchy: type → Job Board subsection → leaf chip.
+    Category filter text without chip must NOT count as committed.
+  </p>
+
+  <nav aria-label="progress">
+    Autofill completed My Information current My Experience Application Questions
+    Voluntary Disclosures Review
+  </nav>
+
+  <div data-automation-id="contactInformationPage">
+    <div class="field" data-automation-id="formField-source" id="hh-wrap">
+      <label for="hh-input">How Did You Hear About Us?*</label>
+      <div data-automation-id="multiSelectContainer">
+        <span id="chip-chrome">0 items selected</span>
+        <input id="hh-input" name="source--source" data-automation-id="source--source"
+               role="combobox" aria-required="true" aria-expanded="false" value="" />
+      </div>
+      <div id="menu" role="listbox" style="display:none;">
+        <div id="subsection-hdr" style="display:none;">
+          <button id="back-btn" type="button" aria-label="back">←</button>
+          <strong>Job Board</strong>
+        </div>
+        <div id="top-opts"></div>
+        <div id="sub-opts" style="display:none;"></div>
+      </div>
+    </div>
+    <button type="button" data-automation-id="bottom-navigation-next-button">Save and Continue</button>
+  </div>
+
+  <script>
+    (function () {
+      // Dummy profile value is NOT a leaf — filler must navigate category → leaf.
+      var CATEGORIES = ["Internet job board", "Job Board", "Social Media"];
+      var LEAVES = ["CareerBuilder", "Comparably", "Getting Hired", "Google For Jobs",
+                    "Indeed", "Jobillico", "LinkedIn"];
+      var input = document.getElementById("hh-input");
+      var menu = document.getElementById("menu");
+      var topOpts = document.getElementById("top-opts");
+      var subOpts = document.getElementById("sub-opts");
+      var subHdr = document.getElementById("subsection-hdr");
+      var chrome = document.getElementById("chip-chrome");
+      var inSub = false;
+
+      function renderTop(q) {
+        topOpts.innerHTML = "";
+        subOpts.style.display = "none";
+        subHdr.style.display = "none";
+        inSub = false;
+        var qq = (q || "").toLowerCase();
+        var cats = CATEGORIES.filter(function (c) {
+          return !qq || c.toLowerCase().indexOf(qq) >= 0
+            || (qq === "indeed" && c.toLowerCase().indexOf("job board") >= 0)
+            || (qq === "linkedin" && c.toLowerCase().indexOf("job board") >= 0);
+        });
+        var show = cats.length ? cats : CATEGORIES;
+        show.forEach(function (c) {
+          var el = document.createElement("div");
+          el.setAttribute("role", "option");
+          el.setAttribute("data-automation-id", "promptOption");
+          el.setAttribute("aria-expanded", "false");
+          el.textContent = c;
+          el.onclick = function () { openSub(c); };
+          topOpts.appendChild(el);
+        });
+        LEAVES.filter(function (l) { return qq && l.toLowerCase().indexOf(qq) >= 0; })
+          .forEach(function (l) {
+            var el = document.createElement("div");
+            el.setAttribute("role", "option");
+            el.setAttribute("data-automation-id", "promptOption");
+            el.textContent = l;
+            el.onclick = function () { pickLeaf(l); };
+            topOpts.appendChild(el);
+          });
+        menu.style.display = "block";
+        input.setAttribute("aria-expanded", "true");
+      }
+
+      function openSub(cat) {
+        inSub = true;
+        topOpts.innerHTML = "";
+        subHdr.style.display = "block";
+        subOpts.style.display = "block";
+        subOpts.innerHTML = "";
+        LEAVES.forEach(function (l) {
+          var el = document.createElement("div");
+          el.setAttribute("role", "option");
+          el.setAttribute("data-automation-id", "promptOption");
+          el.textContent = l;
+          el.onclick = function () { pickLeaf(l); };
+          subOpts.appendChild(el);
+        });
+      }
+
+      function pickLeaf(l) {
+        chrome.textContent = "1 item selected, " + l;
+        input.value = "1 item selected, " + l;
+        input.dataset.committed = l;
+        input.setAttribute("data-committed", l);
+        menu.style.display = "none";
+        input.setAttribute("aria-expanded", "false");
+      }
+
+      document.getElementById("back-btn").onclick = function () { renderTop(input.value); };
+      input.addEventListener("focus", function () { renderTop(input.value); });
+      input.addEventListener("input", function () { renderTop(input.value); });
+      input.addEventListener("click", function () { renderTop(input.value); });
+
+      document.querySelector('[data-automation-id="bottom-navigation-next-button"]')
+        .addEventListener("click", function (e) {
+          e.preventDefault();
+          alert("Gym fixture — submit blocked (no navigation).");
+        });
+    })();
+  </script>
+</body>
+</html>

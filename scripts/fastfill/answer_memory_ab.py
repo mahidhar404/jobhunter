@@ -41,7 +41,7 @@ MEMORY_ENV_VARS = ("FASTFILL_SEMANTIC_MEMORY", "FASTFILL_ANSWER_MEMORY")
 def compare(baseline: dict, treatment: dict) -> dict:
     """Decide whether the treatment (memory ON) should be promoted.
 
-    Promote iff: treatment pass_rate >= baseline pass_rate (memory must not hurt),
+    Promote iff: treatment pass_rate **strictly greater** than baseline,
     treatment has zero safety fails and never_submit_all holds, and it introduces
     no fail reason absent from baseline.
     """
@@ -51,8 +51,8 @@ def compare(baseline: dict, treatment: dict) -> dict:
 
     b_rate = b.get("pass_rate") or 0.0
     t_rate = t.get("pass_rate") or 0.0
-    if t_rate < b_rate:
-        reasons.append(f"pass_rate regressed {t_rate:.4f}<{b_rate:.4f}")
+    if t_rate <= b_rate:
+        reasons.append(f"pass_rate did not beat baseline {t_rate:.4f}<={b_rate:.4f}")
 
     if int(t.get("safety_fail_n") or 0) > 0:
         reasons.append(f"treatment safety_fail_n={t['safety_fail_n']}")
@@ -99,10 +99,13 @@ def _default_runner(suite: str, out_dir: Path) -> Callable[[dict[str, str]], dic
         cmd = [
             sys.executable,
             str(HERE / "eval_suite.py"),
-            "--suite", suite,
-            "--out", str(run_out),
+            "--out-dir",
+            str(run_out),
             "--strict",
         ]
+        # Optional platform filter encoded in suite path name is ignored; eval_suite
+        # always loads eval_urls.json. Keep suite arg for logging only.
+        _ = suite
         subprocess.run(cmd, env=env, check=False)
         summary_path = run_out / "eval_summary.json"
         return json.loads(summary_path.read_text(encoding="utf-8"))
@@ -120,6 +123,9 @@ def _self_test() -> int:
     v = compare(baseline, worse)
     assert v["promote"] is False and v["reasons"]
     assert compare(baseline, unsafe)["promote"] is False
+    # Tied pass_rate must NOT promote (strict beat required)
+    tied = {"n": 4, "passed": 2, "slo_rollup": {"safety_fail_n": 0, "fail_reasons": {}, "safety": {"never_submit_all": True}}}
+    assert compare(baseline, tied)["promote"] is False
 
     # run_ab wiring with an injected runner
     seq = {"0": worse, "1": better}

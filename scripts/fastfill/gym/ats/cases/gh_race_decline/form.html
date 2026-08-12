@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — Greenhouse Race/Ethnicity Decline</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 560px; margin: 2rem auto; }
+    .select__label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+    .select__control {
+      border: 1px solid #ccc; border-radius: 4px; padding: 8px 12px;
+      cursor: pointer; min-height: 20px; background: #fff;
+    }
+    .select__menu {
+      position: absolute; background: #fff; border: 1px solid #ccc;
+      border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.12); z-index: 9999;
+      min-width: 260px; max-height: 240px; overflow-y: auto;
+    }
+    .select__option { padding: 8px 12px; cursor: pointer; }
+    .select__option:hover { background: #deebff; }
+    .actions { margin-top: 1.5rem; }
+    button { padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <h1>Voluntary Self-Identification — Greenhouse</h1>
+  <p>Applicant: Test Dummy · randommail6969@gmail.com</p>
+
+  <div class="field">
+    <label class="select__label" for="race-control">Race / Ethnicity*</label>
+    <div class="select__container">
+      <div id="race-control" class="select__control" role="combobox"
+           aria-expanded="false" aria-haspopup="listbox" tabindex="0">
+        <div class="select__value-container">
+          <div class="select__placeholder">Select...</div>
+          <input class="select__input" role="combobox" aria-expanded="false" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button type="button" id="btn-submit">Submit application</button>
+  </div>
+
+  <script>
+    (function () {
+      // Real GH OFCCP race question: concrete categories + a decline option.
+      // Fill must NEVER invent a race — only the decline option is safe.
+      var OPTIONS = [
+        'American Indian or Alaska Native',
+        'Asian',
+        'Black or African American',
+        'Hispanic or Latino',
+        'Native Hawaiian or Other Pacific Islander',
+        'White',
+        'Two or More Races',
+        "I don't wish to answer"
+      ];
+      var control = document.getElementById('race-control');
+      var container = control.parentNode;
+      var valueContainer = control.querySelector('.select__value-container');
+      var input = control.querySelector('.select__input');
+      var menu = null;
+      function render(label) {
+        var ph = valueContainer.querySelector('.select__placeholder');
+        if (ph) ph.style.display = 'none';
+        var old = valueContainer.querySelector('.select__single-value');
+        if (old) old.remove();
+        var sv = document.createElement('div');
+        sv.className = 'select__single-value';
+        sv.textContent = label;
+        valueContainer.insertBefore(sv, input);
+      }
+      function close() { if (menu) { menu.remove(); menu = null; } control.setAttribute('aria-expanded', 'false'); }
+      function open() {
+        close();
+        menu = document.createElement('div');
+        menu.className = 'select__menu';
+        var q = (input.value || '').toLowerCase();
+        OPTIONS.filter(function (o) { return o.toLowerCase().indexOf(q) >= 0; })
+          .forEach(function (o, i) {
+            var d = document.createElement('div');
+            d.className = 'select__option';
+            d.id = 'react-select-2-option-' + i;
+            d.textContent = o;
+            d.addEventListener('mousedown', function (e) {
+              e.preventDefault(); render(o); close();
+            });
+            menu.appendChild(d);
+          });
+        container.appendChild(menu);
+        control.setAttribute('aria-expanded', 'true');
+      }
+      control.addEventListener('click', function () { if (menu) close(); else open(); });
+      input.addEventListener('input', function () { if (menu) open(); });
+      input.addEventListener('focus', open);
+      document.getElementById('btn-submit').addEventListener('click', function (e) {
+        e.preventDefault();
+        alert('Gym fixture — submit blocked (no navigation).');
+      });
+    })();
+  </script>
+</body>
+</html>

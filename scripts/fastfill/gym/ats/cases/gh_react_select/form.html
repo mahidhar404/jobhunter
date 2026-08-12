@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — Greenhouse React Select</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 2rem auto; }
+    .select__label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+    .select__control {
+      border: 1px solid #ccc; border-radius: 4px; padding: 8px 12px;
+      cursor: pointer; min-height: 20px; background: #fff;
+    }
+    .select__menu {
+      position: absolute; background: #fff; border: 1px solid #ccc;
+      border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.12); z-index: 9999;
+      min-width: 260px; max-height: 240px; overflow-y: auto;
+    }
+    .select__option { padding: 8px 12px; cursor: pointer; }
+    .select__option:hover { background: #deebff; }
+    .actions { margin-top: 1.5rem; }
+    button { padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <h1>Application — Greenhouse</h1>
+  <p>Applicant: Ada Lovelace · test+gym@example.com</p>
+
+  <div class="field">
+    <label class="select__label" for="school-control">School</label>
+    <div class="select__container">
+      <div id="school-control" class="select__control" role="combobox"
+           aria-expanded="false" aria-haspopup="listbox" tabindex="0">
+        <div class="select__value-container">
+          <div class="select__placeholder">Select a school…</div>
+          <input class="select__input" role="combobox" aria-expanded="false" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button type="button" id="btn-submit">Submit application</button>
+  </div>
+
+  <script>
+    (function () {
+      var OPTIONS = [
+        'University of Cambridge',
+        'University of Oxford',
+        'Massachusetts Institute of Technology'
+      ];
+      var control = document.getElementById('school-control');
+      var container = control.parentNode;
+      var valueContainer = control.querySelector('.select__value-container');
+      var input = control.querySelector('.select__input');
+      var menu = null;
+      var selected = null;
+      function render() {
+        valueContainer.querySelectorAll('.select__single-value').forEach(function (n) { n.remove(); });
+        var ph = valueContainer.querySelector('.select__placeholder');
+        if (!selected) { if (ph) ph.style.display = ''; return; }
+        if (ph) ph.style.display = 'none';
+        var sv = document.createElement('div');
+        sv.className = 'select__single-value';
+        sv.textContent = selected;
+        valueContainer.insertBefore(sv, input);
+        control.dataset.committed = selected;
+      }
+      function closeMenu() { if (menu) { menu.remove(); menu = null; } control.setAttribute('aria-expanded', 'false'); }
+      function openMenu() {
+        closeMenu();
+        menu = document.createElement('div');
+        menu.className = 'select__menu';
+        menu.setAttribute('role', 'listbox');
+        OPTIONS.forEach(function (o, i) {
+          var d = document.createElement('div');
+          d.className = 'select__option';
+          d.id = 'react-select-1-option-' + i;
+          d.setAttribute('role', 'option');
+          d.textContent = o;
+          d.addEventListener('mousedown', function (e) {
+            e.preventDefault();
+            selected = o;
+            input.value = '';
+            render();
+            closeMenu();
+          });
+          menu.appendChild(d);
+        });
+        container.appendChild(menu);
+        control.setAttribute('aria-expanded', 'true');
+      }
+      control.addEventListener('click', function () { if (menu) closeMenu(); else openMenu(); });
+      input.addEventListener('focus', openMenu);
+      document.getElementById('btn-submit').addEventListener('click', function (e) {
+        e.preventDefault();
+        alert('Gym fixture — submit blocked (no navigation).');
+      });
+    })();
+  </script>
+</body>
+</html>

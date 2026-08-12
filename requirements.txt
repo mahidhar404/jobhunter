@@ -33,9 +33,14 @@ trafilatura==2.1.0         # scripts/extract_job_posting.py (JD text extraction)
 #
 # pdfplumber                 # scripts/fastfill/resume_parser.py — nicer PDF text extraction; falls back to pypdf if absent (guarded import).
 # psycopg[binary]            # scripts/fastfill/learning.py — reads the Skyvern Postgres DB (function-local import; only used by the learn-from-Skyvern path).
+#
+# Fastfill LLM/ML stack (Instructor, sentence-transformers, optional Langfuse /
+# DeepEval / DSPy) lives in skyvern_runtime/venv (CPython 3.12), NOT here:
+#   skyvern_runtime/venv/bin/python -m pip install -r skyvern_runtime/requirements-fastfill.txt
 
 # --- NOT part of this file (out-of-band) ---
 # Skyvern runtime: skyvern_runtime/ ships its own venv (CPython 3.12) with the
 # `skyvern` package + its heavy deps, plus a Postgres instance and
 # skyvern_runtime/.env / .secrets.env. Reinstall it per Skyvern's own docs; do
-# NOT merge its dependency set into this file.
+# NOT merge its dependency set into this file. Fastfill extras:
+# skyvern_runtime/requirements-fastfill.txt.

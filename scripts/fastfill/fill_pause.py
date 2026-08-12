@@ -8,8 +8,8 @@ Hard rules:
     human-filled / previously filled values are not thrashed
   - CAPTCHA wait: overlay stays **visible** with play (▶) / aria **Continue**
     (human solved → click to resume). Same resume path as Enter /
-    ``.captcha_continue``; FILL-008 still requires the challenge to be gone
-    before clearing blocker. ``__jhCaptchaGate`` marks CAPTCHA ownership of
+    ``.captcha_continue``. Challenge gone → resume; 2nd Continue force-resumes
+    if the detector is sticky. ``__jhCaptchaGate`` marks CAPTCHA ownership of
     resume (pause-wait yields) but does **not** hide the button.
   - Hold (review or incomplete): overlay switches to play (▶) / aria
     **Continue**. Clicking clears hold so the fill loop can resume / advance
@@ -398,7 +398,7 @@ _SYNC_UI_JS = f"""
       btn.classList.add('jh-paused');
       if (hint) {{
         if (window[CGATE]) {{
-          hint.textContent = 'CAPTCHA — solve in browser, then click Continue (or Enter / .captcha_continue). Never auto-solved.';
+          hint.textContent = 'CAPTCHA — solve in browser, then Continue (again to force-resume if sticky). Never auto-solved.';
         }} else if (c.holdMode) {{
           hint.textContent = 'On hold — Continue resumes fill / Next (never submits).';
         }} else {{

@@ -86,12 +86,42 @@ OPTION_ALIASES: dict[str, list[str]] = {
         "Consent",
         "Accept",
     ],
+    "ACCOMMODATIONS": [
+        "No",
+        "No, I do not",
+        "I do not require",
+        "I do not need",
+        "Do not require",
+        "No accommodations needed",
+    ],
+    "ACCOMMODATIONS_DETAILS": [
+        "N/A",
+        "NA",
+        "n/a",
+        "Not applicable",
+        "None",
+    ],
+    "EMPLOYEE_REFERRAL": ["No", "No, I was not", "I was not referred", "N/A"],
+    "REFERRAL_EMAIL": [
+        "N/A",
+        "NA",
+        "n/a",
+        "Not applicable",
+        "None",
+        "No",
+    ],
     "HOW_HEARD": [
-        "Internet job board",
-        "Internet",
-        "Job board",
+        "LinkedIn",
         "Indeed",
-        "Online",
+        "BuiltIn",
+        "Built In",
+        "Glassdoor",
+        "ZipRecruiter",
+        "Monster",
+        "CareerBuilder",
+        "Company Website",
+        "Job Board",
+        "Internet job board",
         "Other",
     ],
     "WORKED_HERE_BEFORE": ["No", "No, I have not", "I have not"],
@@ -233,6 +263,27 @@ OPTION_ALIASES: dict[str, list[str]] = {
         "I don't wish to answer",
         "Choose not to disclose",
     ],
+    "LGBTQIA": [
+        "Prefer not to disclose",
+        "Prefer not to say",
+        "Prefer not to answer",
+        "Decline to self identify",
+        "Decline to answer",
+        "I don't wish to answer",
+        "I do not wish to answer",
+        "Choose not to disclose",
+        "Decline",
+    ],
+    "PRONOUNS": [
+        "Prefer not to say",
+        "Prefer not to disclose",
+        "Prefer not to answer",
+        "Decline to answer",
+        "I prefer not to say",
+        "I prefer not to disclose",
+        "Choose not to disclose",
+        "Decline",
+    ],
     # Dummy EEO: preferred answers first; Decline kept as fallback when missing.
     "GENDER": [
         "Male",
@@ -359,7 +410,7 @@ OPTION_ALIASES: dict[str, list[str]] = {
 # EEO types: typing the canonical "Decline…" string often filters the menu to
 # zero (options use "I do not want to answer" / "I don't wish…"). Prefer a
 # short fragment that appears in those options, or skip typing.
-_EEO_TYPES = frozenset({"GENDER", "HISPANIC", "RACE", "VETERAN", "DISABILITY"})
+_EEO_TYPES = frozenset({"GENDER", "HISPANIC", "RACE", "VETERAN", "DISABILITY", "LGBTQIA", "PRONOUNS"})
 
 # Yes/No policy selects — always word-by-word via verified_select (Yes / No),
 # never custom filter fragments like "authorized" that fail to commit.
@@ -378,6 +429,8 @@ _YESNO_SELECT_TYPES = frozenset(
         "MARKETING_CONSENT",
         "NOTICE_PERIOD",
         "FELONY",
+        "EMPLOYEE_REFERRAL",
+        "ACCOMMODATIONS",
     }
 )
 
@@ -393,7 +446,16 @@ def aliases_for(field_type: str, value: str) -> list[str]:
 
     For DEGREE: when value indicates Master's, drop Bachelor aliases so they
     cannot soft-match-tie and win by option-list index (live grvty bug).
+    For HOW_HEARD: use shared priority list (LinkedIn → Indeed → …).
     """
+    if field_type == "HOW_HEARD":
+        try:
+            from field_map import HOW_HEARD
+            from fill_verify import how_heard_candidates
+
+            return how_heard_candidates({HOW_HEARD: value} if value else None)
+        except Exception:
+            pass
     out: list[str] = []
     raw_aliases = list(OPTION_ALIASES.get(field_type or "", []))
     vlow = (value or "").lower()
@@ -401,30 +463,46 @@ def aliases_for(field_type: str, value: str) -> list[str]:
         wants_doctorate = bool(
             re.search(r"\bph\.?d\.?\b|\bdoctorate\b|\bdoctoral\b|\bdoctor\s+of\b", vlow)
         )
+        wants_associate = bool(
+            re.search(
+                r"\bassociates?\b|\ba\.?\s*a\.?\b|\ba\.?\s*s\.?\b|\bassoc\.?\b",
+                vlow,
+            )
+        ) and not wants_doctorate
         wants_master = (
             bool(re.search(r"\bm\.?s\.?\b|\bmasters?\b|\bgraduate\b", vlow))
             and not wants_doctorate
+            and not wants_associate
             and not bool(re.search(r"\bb\.?s\.?\b|\bbachelors?\b", vlow))
         )
         wants_bachelor = (
             bool(re.search(r"\bb\.?s\.?\b|\bbachelors?\b", vlow))
             and not wants_doctorate
+            and not wants_associate
             and not bool(re.search(r"\bm\.?s\.?\b|\bmasters?\b", vlow))
         )
+        _drop_assoc = r"associate|\ba\.?\s*a\.?\b|\ba\.?\s*s\.?\b|\bassoc\.?\b"
+        _drop_doc = r"ph\.?d|doctorate|doctoral|doctor\s+of"
         if wants_doctorate:
-            # Keep doctorate aliases + value; drop Master/Bachelor soft matches
+            # Keep doctorate aliases + value; drop Master/Bachelor/Associate
             raw_aliases = [
                 a
                 for a in raw_aliases
                 if re.search(r"ph\.?d|doctorate|doctoral|doctor\s+of", a, re.I)
-                or not re.search(r"master|bachelor|\bm\.?s\.?\b|\bb\.?s\.?\b|graduate", a, re.I)
+                or not re.search(
+                    rf"master|bachelor|\bm\.?s\.?\b|\bb\.?s\.?\b|graduate|{_drop_assoc}",
+                    a,
+                    re.I,
+                )
             ]
         elif wants_master:
             raw_aliases = [
                 a
                 for a in raw_aliases
                 if not re.search(
-                    r"bachelor|\bb\.?s\.?\b|ph\.?d|doctorate|doctoral", a, re.I
+                    rf"bachelor|\bb\.?s\.?\b|{_drop_doc}|{_drop_assoc}",
+                    a,
+                    re.I,
                 )
             ]
         elif wants_bachelor:
@@ -432,7 +510,19 @@ def aliases_for(field_type: str, value: str) -> list[str]:
                 a
                 for a in raw_aliases
                 if not re.search(
-                    r"master|\bm\.?s\.?\b|graduate|ph\.?d|doctorate|doctoral", a, re.I
+                    rf"master|\bm\.?s\.?\b|graduate|{_drop_doc}|{_drop_assoc}",
+                    a,
+                    re.I,
+                )
+            ]
+        elif wants_associate:
+            raw_aliases = [
+                a
+                for a in raw_aliases
+                if not re.search(
+                    rf"master|bachelor|\bm\.?s\.?\b|\bb\.?s\.?\b|graduate|{_drop_doc}",
+                    a,
+                    re.I,
                 )
             ]
     for cand in [value, *raw_aliases]:
@@ -635,16 +725,33 @@ def _score_option(opt_text: str, alias: str) -> int:
         if sch:
             return sch
 
-    # Degree polarity: Doctorate≠Master≠Bachelor (live grvty: Master/Bachelor tie)
-    a_doc = bool(re.search(r"\bph\.?d\b|\bdoctorate\b|\bdoctoral\b|\bdoctor\s+of\b", a))
-    o_doc = bool(re.search(r"\bph\.?d\b|\bdoctorate\b|\bdoctoral\b|\bdoctor\s+of\b", o))
-    a_master = bool(re.search(r"\bmasters?\b|\bm\.?s\.?\b|graduate", a)) and not a_doc
-    a_bach = bool(re.search(r"\bbachelors?\b|\bb\.?s\.?\b", a))
-    o_master = bool(re.search(r"\bmasters?\b|\bm\.?s\.?\b|graduate", o)) and not o_doc
-    o_bach = bool(re.search(r"\bbachelors?\b|\bb\.?s\.?\b", o))
-    if (a_master and o_bach) or (a_bach and o_master):
+    # Degree polarity: Doctorate≠Master≠Bachelor≠Associate
+    # Live Elanco Workday: "Master's Degree" soft-matched "Associate … Degree"
+    # via shared token "degree" (score 65) when Master's rows were not yet
+    # virtualized — never allow Associate/A.A. to score against Master's.
+    def _degree_level(s: str) -> str | None:
+        sl = (s or "").lower()
+        if re.search(r"\bph\.?d\b|\bdoctorate\b|\bdoctoral\b|\bdoctor\s+of\b", sl):
+            return "doc"
+        if re.search(
+            r"\bassociates?\b|\ba\.a\.?\b|\ba\.s\.?\b|\bassoc\.?\b|"
+            r"associate\s+of\s+(arts|science)",
+            sl,
+        ):
+            return "assoc"
+        if re.search(r"\bmasters?\b|\bm\.?s\.?\b|\bm\.?a\.?\b|\bgraduate\b", sl):
+            return "master"
+        if re.search(r"\bbachelors?\b|\bb\.?s\.?\b|\bb\.?a\.?\b", sl):
+            return "bach"
+        return None
+
+    a_lvl, o_lvl = _degree_level(a), _degree_level(o)
+    if a_lvl and o_lvl and a_lvl != o_lvl:
         return 0
-    if (a_doc and (o_master or o_bach)) or (o_doc and (a_master or a_bach)):
+    # Bare "degree" must not soft-match across levels when one side is leveled
+    if (a_lvl or o_lvl) and (
+        re.fullmatch(r"degrees?", a) or re.fullmatch(r"degrees?", o)
+    ):
         return 0
 
     # Polarity: Never score a Yes-* option against a No-* alias (and vice versa).
@@ -776,6 +883,23 @@ def _score_option(opt_text: str, alias: str) -> int:
                 "employment",
             )
         ]
+    # Degree labels: drop generic "degree"/"science"/"arts" so "Master's Degree"
+    # cannot soft-match "Associate of Arts Degree" via shared tail tokens.
+    if a_lvl or o_lvl:
+        words = [
+            w
+            for w in words
+            if w
+            not in (
+                "degree",
+                "degrees",
+                "science",
+                "arts",
+                "of",
+                "the",
+                "and",
+            )
+        ]
     if words and all(w in o for w in words):
         return 60
     # School / institution: significant token (Alabama, Stanford) beats virtualized lists
@@ -789,6 +913,9 @@ def _score_option(opt_text: str, alias: str) -> int:
         "of",
         "at",
         "in",
+        # Never let bare "degree" promote Associate when Master's is intended
+        "degree",
+        "degrees",
     }
     sig = [w for w in words if len(w) > 3 and w not in stop]
     if sig and any(w in o for w in sig):
@@ -889,6 +1016,39 @@ def _type_fragment_for(field_type: str, cands: list[str]) -> str:
                 return "authorized"
             if al == "yes":
                 return "Yes"
+        return ""
+    if field_type == "HOW_HEARD":
+        # Walk priority order for type-filter tokens (never full "Internet job board").
+        try:
+            from fill_verify import how_heard_leaf_candidates
+
+            for a in how_heard_leaf_candidates():
+                al = (a or "").lower()
+                if al in (
+                    "linkedin",
+                    "indeed",
+                    "builtin",
+                    "built in",
+                    "glassdoor",
+                    "ziprecruiter",
+                    "monster",
+                    "careerbuilder",
+                ):
+                    return a[:16]
+        except Exception:
+            pass
+        for a in cands:
+            al = (a or "").lower()
+            if al in ("linkedin", "indeed", "glassdoor", "builtin", "built in"):
+                return a[:16]
+        for a in cands:
+            al = (a or "").lower()
+            if "job board" in al or al == "job boards":
+                return "Job Board"
+            if al == "online":
+                return "Online"
+            if al == "other":
+                return "Other"
         return ""
     if field_type == "SCHOOL":
         # Long "University of X, City" fragments often zero GH school menus
@@ -1228,7 +1388,13 @@ async def fill_gh_select(
             # Prefer alias text for word split ("will" → "not" → "require" …).
             primary = cands[0] if cands else value
         elif field_type == "HOW_HEARD":
-            primary = cands[0] if cands else value
+            try:
+                from fill_verify import how_heard_leaf_candidates
+
+                leaves = how_heard_leaf_candidates()
+                primary = leaves[0] if leaves else (cands[0] if cands else value)
+            except Exception:
+                primary = cands[0] if cands else value
         elif field_type == "SALARY_EXPECTED":
             # Full band text for word-by-word narrow (not bare numeric fill-only)
             for c in cands:
@@ -1258,6 +1424,9 @@ async def fill_gh_select(
             # menu at once, so a page-wide click on "Decline To Self Identify"
             # (shared by Hispanic + Race) clobbered the sibling select.
             root=container,
+            field_type=field_type or "",
+            label=label or "",
+            report=report,
         )
         texts_note = list(click.get("options") or [])
         typed_frag = str(click.get("typed_frag") or "")
@@ -1282,6 +1451,9 @@ async def fill_gh_select(
                     use_type=False,
                     option_selectors=[".select__option", "[role='option']"],
                     root=container,
+                    field_type=field_type or "",
+                    label=label or "",
+                    report=report,
                 )
                 texts_note = list(click.get("options") or texts_note)
                 best_s = int(click.get("score") or best_s)
@@ -1529,6 +1701,9 @@ def self_test() -> None:
     assert _score_option("Bachelor's Degree", "Master") == 0
     assert _score_option("Master's Degree", "Master") >= 70
     assert _score_option("Bachelor's Degree", "Bachelor") >= 70
+    assert _score_option("Associate Degree", "Master's Degree") == 0
+    assert _score_option("A.A.", "Master's Degree") == 0
+    assert _score_option("Associate of Arts Degree", "Master") == 0
     # EEO type fragment must NOT filter to Decline when preferred exists
     dis_cands = aliases_for("DISABILITY", "I do not have a disability")
     frag = _type_fragment_for("DISABILITY", dis_cands)

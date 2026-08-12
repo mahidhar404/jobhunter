@@ -1,0 +1,7 @@
+{
+  "id": "wd_radio_aria_checked",
+  "platform": "workday",
+  "fail_class": "false_incomplete_radio",
+  "playbook": "radio",
+  "description": "Workday radio answered via aria-checked only (No selected); sibling CURRENT TEAMMATES instruction must not create false incomplete gaps or leftover misses."
+}

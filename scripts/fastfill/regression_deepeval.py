@@ -143,6 +143,162 @@ def _case_metrics_ratchet_catches_regression() -> None:
     assert not ok and v
 
 
+def _case_answer_memory_default_off() -> None:
+    """Phase 3b: semantic answer-memory stays OFF until A/B promotes it."""
+    import continuous_learn as cl
+    import semantic_match as sm
+
+    prev_a = os.environ.pop("FASTFILL_ANSWER_MEMORY", None)
+    prev_s = os.environ.pop("FASTFILL_SEMANTIC_MEMORY", None)
+    prev_m = os.environ.pop("FASTFILL_SEMANTIC_MATCH", None)
+    try:
+        called = {"n": 0}
+
+        def boom(a, b):
+            called["n"] += 1
+            raise AssertionError("semantic_sim must not run when memory default-off")
+
+        orig_sim = sm.semantic_sim
+        sm.semantic_sim = boom  # type: ignore[assignment]
+        orig_load = cl.load_experience
+        cl.load_experience = lambda *a, **k: [  # type: ignore[assignment]
+            {
+                "ok": True,
+                "type": "",
+                "label": "Desired compensation",
+                "value": "$120,000",
+                "platform": "greenhouse",
+            }
+        ]
+        try:
+            out = cl.similar_leftover_answers(
+                [{"label": "Salary expectation", "type": ""}], platform="greenhouse"
+            )
+            assert out == [], out
+            assert called["n"] == 0
+        finally:
+            sm.semantic_sim = orig_sim  # type: ignore[assignment]
+            cl.load_experience = orig_load  # type: ignore[assignment]
+    finally:
+        if prev_a is None:
+            os.environ.pop("FASTFILL_ANSWER_MEMORY", None)
+        else:
+            os.environ["FASTFILL_ANSWER_MEMORY"] = prev_a
+        if prev_s is None:
+            os.environ.pop("FASTFILL_SEMANTIC_MEMORY", None)
+        else:
+            os.environ["FASTFILL_SEMANTIC_MEMORY"] = prev_s
+        if prev_m is None:
+            os.environ.pop("FASTFILL_SEMANTIC_MATCH", None)
+        else:
+            os.environ["FASTFILL_SEMANTIC_MATCH"] = prev_m
+
+
+def _case_midwizard_demotes_success() -> None:
+    """Improvement cycle: ADVANCE footer + ready cannot stay SUCCESS."""
+    from fail_taxonomy import apply_midwizard_to_decision
+
+    d = apply_midwizard_to_decision(
+        {
+            "ready_for_review": True,
+            "footer_kind": "ADVANCE",
+            "never_submit": True,
+            "platform": "workday",
+        },
+        {"success": True, "verdict": "SUCCESS", "reasons": []},
+    )
+    assert d["success"] is False and d["verdict"] == "FAIL_MIDWIZARD", d
+
+
+def _case_captcha_burst_triggers_cooldown() -> None:
+    """Bot pressure: 3 BLOCKED hits → cooldown action."""
+    from captcha_cooldown import CaptchaCooldownState
+
+    st = CaptchaCooldownState(burst_n=3, cooldown_s=180)
+    now = 5_000_000.0
+    for i in range(3):
+        st.record_blocked(now=now + i)
+    act = st.next_action(now=now + 10)
+    assert act["action"] == "cooldown" and act["sleep_s"] >= 120, act
+
+
+def _case_salary_already_correct_still_live_verified() -> None:
+    """GH salary already_correct_skip must not skip live demote path forever.
+
+    Characterization: a post-resume gh_select salary row tagged already_correct_skip
+    is treated as select-like (falls through) so SPA wipe can demote it.
+    Blank salary remount must force demote (no EEO-style remount trust).
+    Leftover salary types must leave `_already_types_skip_refill`.
+    """
+    mode = "gh_select"
+    ftype_chk = "SALARY_EXPECTED"
+    skip_live = mode not in (
+        "gh_select",
+        "select",
+        "combobox",
+        "typable_dropdown",
+    ) and ftype_chk not in (
+        "SALARY_EXPECTED",
+        "SALARY_CURRENT",
+        "SCHOOL",
+        "DEGREE",
+    )
+    assert skip_live is False
+    force_blank_demote = ftype_chk in (
+        "SALARY_EXPECTED",
+        "SALARY_CURRENT",
+        "SCHOOL",
+        "DEGREE",
+    )
+    assert force_blank_demote is True
+    from fast_fill import _already_types_skip_refill
+
+    already = _already_types_skip_refill(
+        {
+            "filled": [
+                {
+                    "type": "SALARY_EXPECTED",
+                    "ok": True,
+                    "verified": True,
+                    "reason": "already_correct_skip",
+                    "skipped_already_correct": True,
+                }
+            ],
+            "leftovers": [
+                {
+                    "type": "SALARY_EXPECTED",
+                    "reason": "already_correct_skip",
+                    "label": "What is your desired salary?*",
+                }
+            ],
+        }
+    )
+    assert "SALARY_EXPECTED" not in already
+
+
+def _case_playbook_allowlist() -> None:
+    """Playbook library: detect_playbook heuristics + allowlist + cache reject."""
+    from playbooks import detect_playbook, is_allowed_playbook
+    import record_replay as rr
+
+    assert detect_playbook({"tag": "select"}) == "native_select"
+    assert not is_allowed_playbook("free_form_click")
+    assert rr.record_playbook_hit(
+        "https://boards.greenhouse.io/acme/jobs/1",
+        "greenhouse",
+        "SCHOOL",
+        "free_form_click",
+    ) is False
+    assert (
+        rr.lookup_playbook(
+            "https://boards.greenhouse.io/acme/jobs/1",
+            "greenhouse",
+            "SCHOOL",
+        )
+        is None
+    )
+
+
 REGRESSION_CASES = {
     "completion_gate_demotes_external_success": _case_completion_gate_demotes_external_success,
     "completion_gate_allows_essay_only_success": _case_completion_gate_allows_essay_only_success,
@@ -151,6 +307,11 @@ REGRESSION_CASES = {
     "semantic_option_bonus_never_outranks_soft": _case_semantic_option_bonus_never_outranks_soft,
     "gateway_guard_blocks_real_mode": _case_gateway_guard_blocks_real_mode,
     "metrics_ratchet_catches_regression": _case_metrics_ratchet_catches_regression,
+    "answer_memory_default_off": _case_answer_memory_default_off,
+    "midwizard_demotes_success": _case_midwizard_demotes_success,
+    "captcha_burst_triggers_cooldown": _case_captcha_burst_triggers_cooldown,
+    "salary_already_correct_still_live_verified": _case_salary_already_correct_still_live_verified,
+    "playbook_allowlist": _case_playbook_allowlist,
 }
 
 

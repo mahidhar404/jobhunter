@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — Workday Auth Gate</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 480px; margin: 2rem auto; }
+    h1 { font-size: 1.35rem; }
+    button, a { display: block; margin: 10px 0; padding: 10px 14px; font-size: 1rem; }
+    button { background: #005cb9; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+    a { color: #005cb9; text-decoration: underline; cursor: pointer; background: none; border: none; }
+    label { display: block; margin: 8px 0; }
+    input { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; }
+    #sso { margin-bottom: 1rem; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div id="sso">
+    <h1>Sign In to Apply</h1>
+    <p>Applicant: Test Dummy · randommail6969@gmail.com</p>
+    <button type="button" data-automation-id="ssoGoogle">Sign in with Google</button>
+    <button type="button" data-automation-id="signInWithEmail"
+            onclick="revealEmail()">Sign in with email</button>
+  </div>
+
+  <div id="formhost"></div>
+
+  <script>
+    function revealEmail() {
+      document.getElementById('sso').style.display = 'none';
+      document.getElementById('formhost').innerHTML =
+        '<label>Email <input data-automation-id="email" type="email"></label>' +
+        '<label>Password <input data-automation-id="password" type="password"></label>' +
+        '<button type="button" data-automation-id="signInSubmitButton">Sign In</button>' +
+        '<a href="#" data-automation-id="createAccountLink" ' +
+        'onclick="revealCreate();return false;">Create Account</a>';
+    }
+    function revealCreate() {
+      document.getElementById('formhost').innerHTML =
+        '<label>Email <input data-automation-id="email" type="email"></label>' +
+        '<label>Password <input data-automation-id="password" type="password"></label>' +
+        '<label>Verify Password ' +
+        '<input data-automation-id="verifyPassword" type="password"></label>' +
+        '<div data-automation-id="createAccountCheckbox" role="checkbox" ' +
+        'aria-checked="false" ' +
+        "onclick=\"this.setAttribute('aria-checked','true')\">I agree</div>" +
+        '<button type="button" data-automation-id="createAccountSubmitButton">' +
+        'Create Account</button>';
+    }
+  </script>
+</body>
+</html>

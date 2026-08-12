@@ -11,8 +11,10 @@ Never submits. Callers still gate every click via button_gate.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 # Common apply-iframe signatures (src / id / name / title)
@@ -400,13 +402,142 @@ _AUTH_EMAIL_SELS = [
 _AUTH_ADVANCE_PRIORITY = (
     "create account",
     "create an account",
-    "register",
+    "create your account",
     "sign up",
+    "register",
     "next",
     "continue",
     "sign in",
     "log in",
 )
+
+# Labels that mean "leave Sign in, go create a throwaway account" (Stripe /
+# MyGreenhouse / Phenom). Prefer these over filling/clicking Sign in.
+_CREATE_ACCOUNT_LINK_PRIORITY = (
+    "create account",
+    "create an account",
+    "create your account",
+    "sign up",
+    "register",
+    "don't have an account",
+    "dont have an account",
+    "new to stripe",
+    "new here",
+)
+
+# Body / title phrases that mean "you are on Sign in, not the job application".
+_SIGN_IN_WALL_BODY_HINTS = (
+    "sign in to your account",
+    "sign in to continue",
+    "log in to your account",
+    "already have an account",
+    "forgot your password",
+    "remember me",
+    "remember me on this device",
+    "or sign in with",
+)
+
+# Hosts that are product auth, never the ATS application form.
+_PRODUCT_AUTH_HOST_RE = re.compile(
+    r"(?:^|\.)dashboard\.stripe\.com$|(?:^|\.)account\.stripe\.com$",
+    re.I,
+)
+
+
+def normalize_auth_label(text: str) -> str:
+    """Lowercase label; strip trailing punctuation (Stripe uses ``Sign in.``)."""
+    low = (text or "").lower().strip()
+    return re.sub(r"[.\u2026]+$", "", low).strip()
+
+
+def create_account_link_priority(text: str, href: str = "") -> int | None:
+    """Return priority (lower=better) if label/href is a create-account control.
+
+    Returns None for pure Sign-in controls or unrelated text.
+    """
+    low = normalize_auth_label(text)
+    if not low and not href:
+        return None
+    # Skip pure Sign in / SSO buttons
+    if low in ("sign in", "log in", "sign-in", "log-in") or low.startswith(
+        ("sign in with", "log in with", "continue with")
+    ):
+        return None
+    if low in ("google", "passkey", "sso", "apple", "microsoft"):
+        return None
+    pri: int | None = None
+    for i, needle in enumerate(_CREATE_ACCOUNT_LINK_PRIORITY):
+        if needle in low or low == needle or low.startswith(needle):
+            pri = i if pri is None else min(pri, i)
+            break
+    href_l = str(href or "").lower()
+    if any(h in href_l for h in ("/register", "/signup", "/sign-up", "create", "join")):
+        pri = 2 if pri is None else min(pri, 2)
+    return pri
+
+
+def auth_advance_priority(text: str) -> int | None:
+    """Priority for auth ADVANCE controls; Sign in demoted so Create wins."""
+    low = normalize_auth_label(text)
+    if not low:
+        return None
+    pri: int | None = None
+    for i, needle in enumerate(_AUTH_ADVANCE_PRIORITY):
+        if (
+            low == needle
+            or low.startswith(needle + " ")
+        ):
+            pri = i
+            break
+    if pri is None:
+        return None
+    # Demote Sign in / Log in so create-account always wins when both present
+    if low in ("sign in", "log in") or low.startswith(("sign in ", "log in ")):
+        pri = 80 + pri
+    return pri
+
+
+def sign_in_wall_from_signals(
+    *,
+    body: str = "",
+    url: str = "",
+    title: str = "",
+    email_count: int = 0,
+    password_count: int = 0,
+    appish_count: int = 0,
+) -> bool:
+    """True for Sign-in-only gates (Stripe / MyGreenhouse): not the app form.
+
+    Pure helper for tests + ``is_password_sign_in_wall``. Email-only walls with
+    ``Sign in to your account`` count even before the password field paints.
+    """
+    if int(appish_count or 0) >= 1:
+        return False
+    url_l = (url or "").lower()
+    host = ""
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url_l).hostname or "").lower()
+    except Exception:
+        host = ""
+    if host and _PRODUCT_AUTH_HOST_RE.search(host):
+        # dashboard.stripe.com/login — never treat as application pack target
+        return True
+    if _LOGIN_URL_HINT.search(url_l) and int(password_count or 0) >= 1:
+        return True
+    blob = f"{title}\n{body}".lower()
+    has_wall_copy = any(h in blob for h in _SIGN_IN_WALL_BODY_HINTS)
+    if has_wall_copy and int(appish_count or 0) == 0:
+        # Email-only (password not painted yet) or email+password auth card
+        if int(email_count or 0) >= 1 or int(password_count or 0) >= 1:
+            return True
+        # Heading alone on a login URL (fields still loading)
+        if _LOGIN_URL_HINT.search(url_l) or "sign in to your account" in blob:
+            return True
+    if int(password_count or 0) >= 1 and int(email_count or 0) >= 1:
+        return True
+    return False
 
 
 def looks_like_login_context(
@@ -415,6 +546,14 @@ def looks_like_login_context(
     """True when the fill target is an auth gate (login/create), not the app form."""
     if _LOGIN_URL_HINT.search(url or ""):
         return True
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url or "").hostname or "").lower()
+        if host and _PRODUCT_AUTH_HOST_RE.search(host):
+            return True
+    except Exception:
+        pass
     if password_count >= 1 and email_count >= 1 and password_count + email_count <= 4:
         return True
     return False
@@ -448,27 +587,39 @@ def detect_auth_blocker(page_text: str, title: str = "", url: str = "") -> str |
 
 
 async def visible_captcha_challenge(frame) -> bool:
-    """True when an interactive CAPTCHA challenge widget is on-screen."""
+    """True when an interactive CAPTCHA *challenge* overlay is on-screen.
+
+    Checkbox / anchor widgets (``.h-captcha iframe``, reCAPTCHA anchor,
+    dormant Turnstile) stay on Lever/iCIMS/GH after solve and must NOT count —
+    otherwise Continue is stuck forever with ``challenge still visible``.
+    Only challenge/bframe/cf-challenge iframes that are laid out + visible.
+    """
     try:
         return bool(
             await frame.evaluate(
                 """() => {
-                  const bigEnough = (el) => {
+                  const visibleBox = (el) => {
                     if (!el) return false;
                     const r = el.getBoundingClientRect();
-                    return r.width >= 80 && r.height >= 40;
+                    if (r.width < 120 || r.height < 60) return false;
+                    if (r.bottom <= 0 || r.right <= 0) return false;
+                    try {
+                      const s = window.getComputedStyle(el);
+                      if (s.display === 'none' || s.visibility === 'hidden') return false;
+                      if (Number(s.opacity) === 0) return false;
+                    } catch (_) {}
+                    return true;
                   };
+                  const isChallengeSrc = (blob) =>
+                    /hcaptcha\\.com[^\\s]*challenge|recaptcha[^\\s]*\\/bframe|challenges\\.cloudflare|cf-challenge|turnstile.*challenge/i
+                      .test(blob || '');
                   for (const f of document.querySelectorAll('iframe')) {
-                    const src = (f.src || '') + ' ' + (f.title || '');
-                    if (/hcaptcha\\.com.*challenge|recaptcha.*bframe|challenges\\.cloudflare/i.test(src)
-                        && bigEnough(f)) return true;
-                    if (/hcaptcha|recaptcha|captcha/i.test(src) && /challenge/i.test(src)
-                        && bigEnough(f)) return true;
-                  }
-                  for (const el of document.querySelectorAll(
-                    '.h-captcha iframe, .g-recaptcha iframe, [data-hcaptcha-widget-id] iframe'
-                  )) {
-                    if (bigEnough(el)) return true;
+                    const src = ((f.src || '') + ' ' + (f.title || '')).trim();
+                    if (isChallengeSrc(src) && visibleBox(f)) return true;
+                    // Generic: captcha vendor + challenge token in src/title
+                    if (/hcaptcha|recaptcha|captcha|turnstile/i.test(src)
+                        && /challenge|bframe/i.test(src)
+                        && visibleBox(f)) return true;
                   }
                   return false;
                 }"""
@@ -624,13 +775,9 @@ async def _pick_auth_advance(frame) -> dict | None:
         )
         if not gate.get("ok") or kind != ADVANCE:
             continue
-        low = text.lower().strip()
-        pri = 99
-        for i, needle in enumerate(_AUTH_ADVANCE_PRIORITY):
-            # Exact or word-boundary prefix — not "continue to submit".startswith("continue")
-            if low == needle or low.startswith(needle + " "):
-                pri = i
-                break
+        pri = auth_advance_priority(text)
+        if pri is None:
+            continue
         scored.append((pri, {**c, "kind": kind, "gate_ok": True}))
     if not scored:
         return None
@@ -638,16 +785,19 @@ async def _pick_auth_advance(frame) -> dict | None:
     return scored[0][1]
 
 
-async def _gated_auth_click(frame, host_page, ctrl: dict) -> bool:
+async def _gated_auth_click(
+    frame, host_page, ctrl: dict, *, allow_unknown: bool = False
+) -> bool:
     """Click ADVANCE auth control; re-gate resolved node. Never FINAL.
 
     ``has-text("Continue")`` can match ``Continue to Submit`` — refuse via
     ``gate_locator_click`` on the actual element before any click.
+    ``allow_unknown``: create-account links like \"Don't have an account?\".
     """
     import json as _json
 
     from button_gate import gate_click, gate_locator_click
-    from button_map import ADVANCE, FINAL
+    from button_map import ADVANCE, FINAL, UNKNOWN
 
     text = ctrl.get("text") or ""
     gate = gate_click(
@@ -657,6 +807,8 @@ async def _gated_auth_click(frame, host_page, ctrl: dict) -> bool:
     )
     if not gate.get("ok") or gate.get("kind") == FINAL:
         return False
+
+    allow = (ADVANCE, UNKNOWN) if allow_unknown else (ADVANCE,)
 
     candidates = [
         frame.get_by_role("button", name=re.compile(rf"^\s*{re.escape(text)}\s*$", re.I)),
@@ -677,7 +829,7 @@ async def _gated_auth_click(frame, host_page, ctrl: dict) -> bool:
                 if not await target.is_visible(timeout=800):
                     continue
                 resolved = await gate_locator_click(
-                    target, intent_label=text, allow_kinds=(ADVANCE,)
+                    target, intent_label=text, allow_kinds=allow
                 )
                 if not resolved.get("ok") or resolved.get("kind") == FINAL:
                     continue
@@ -691,6 +843,282 @@ async def _gated_auth_click(frame, host_page, ctrl: dict) -> bool:
             except Exception:
                 continue
     return False
+
+
+async def is_password_sign_in_wall(frame) -> bool:
+    """True for Sign-in-only gates (Stripe / MyGreenhouse): not the app form.
+
+    Includes email-only ``Sign in to your account`` walls (password not painted
+    yet) and product hosts like ``dashboard.stripe.com``.
+    """
+    counts = await _count_auth_inputs(frame)
+    if int(counts.get("appish") or 0) >= 1:
+        return False
+    try:
+        url = frame.url or ""
+    except Exception:
+        url = ""
+    body = await _frame_body_snip(frame, 1800)
+    title = ""
+    try:
+        # Frame may be a Page
+        if hasattr(frame, "title"):
+            title = await frame.title()
+        elif hasattr(frame, "page") and frame.page is not None:
+            title = await frame.page.title()
+    except Exception:
+        title = ""
+    return sign_in_wall_from_signals(
+        body=body,
+        url=url,
+        title=title,
+        email_count=int(counts.get("email") or 0),
+        password_count=int(counts.get("password") or 0),
+        appish_count=int(counts.get("appish") or 0),
+    )
+
+
+async def _pick_create_account_link(frame) -> dict | None:
+    """Find Create account / Sign up control (link or button), never Sign in."""
+    from button_gate import gate_click
+    from button_map import ADVANCE, classify_button
+
+    try:
+        raw = await frame.evaluate(
+            """() => {
+              const sel = 'button, a[href], input[type=button], input[type=submit], [role=button], span[role=link]';
+              const out = [];
+              const seen = new Set();
+              for (const el of document.querySelectorAll(sel)) {
+                const s = window.getComputedStyle(el);
+                if (s.display === 'none' || s.visibility === 'hidden') continue;
+                const r = el.getBoundingClientRect();
+                if (r.width < 2 || r.height < 2) continue;
+                let label = (el.innerText || el.value || el.getAttribute('aria-label')
+                             || el.getAttribute('title') || '').trim();
+                label = label.replace(/\\s+/g, ' ').slice(0, 120);
+                if (!label) continue;
+                const key = label.toLowerCase();
+                if (seen.has(key)) continue;
+                seen.add(key);
+                out.push({
+                  text: label,
+                  type: (el.getAttribute('type') || ''),
+                  aria_label: (el.getAttribute('aria-label') || ''),
+                  href: (el.getAttribute('href') || ''),
+                });
+              }
+              return out;
+            }"""
+        )
+    except Exception:
+        return None
+
+    scored: list[tuple[int, dict]] = []
+    for c in raw or []:
+        text = c.get("text") or ""
+        href = str(c.get("href") or "")
+        pri = create_account_link_priority(text, href)
+        if pri is None:
+            continue
+        kind = classify_button(
+            text, button_type=c.get("type") or "", aria_label=c.get("aria_label") or ""
+        )
+        gate = gate_click(
+            text, button_type=c.get("type") or "", aria_label=c.get("aria_label") or ""
+        )
+        # Create-account links may classify as ADVANCE or UNKNOWN — allow both if gated ok
+        # or text clearly create-account (gate_click may refuse UNKNOWN).
+        if gate.get("ok") or kind == ADVANCE or pri <= 4:
+            scored.append((pri, {**c, "kind": kind or ADVANCE, "gate_ok": True}))
+    if not scored:
+        return None
+    scored.sort(key=lambda x: x[0])
+    return scored[0][1]
+
+
+async def ensure_create_account_over_sign_in(
+    page,
+    fill_target=None,
+) -> dict:
+    """If stuck on Sign in wall, click Create account before filling credentials.
+
+    Stripe careers / dashboard auth and similar gates default to Sign in; dummy
+    runs must create a throwaway account instead of signing into a missing one.
+    """
+    out: dict[str, Any] = {
+        "ran": False,
+        "is_sign_in_wall": False,
+        "switched": False,
+        "clicked": None,
+        "skipped": None,
+    }
+    target = fill_target or page
+    try:
+        if fill_target is None:
+            ctx = await pick_fill_context(page)
+            target = ctx.get("frame") or page
+    except Exception:
+        target = fill_target or page
+
+    if not await is_password_sign_in_wall(target):
+        # Also check top page (auth may be main frame while fill_target is stale)
+        if target is not page and await is_password_sign_in_wall(page):
+            target = page
+        else:
+            out["skipped"] = "not_sign_in_wall"
+            return out
+
+    out["is_sign_in_wall"] = True
+    out["ran"] = True
+    ctrl = await _pick_create_account_link(target)
+    if not ctrl and target is not page:
+        ctrl = await _pick_create_account_link(page)
+        if ctrl:
+            target = page
+    if not ctrl:
+        out["skipped"] = "no_create_account_control"
+        return out
+
+    host = page
+    try:
+        if hasattr(target, "page") and target.page is not None:
+            host = target.page
+    except Exception:
+        pass
+
+    ok = await _gated_auth_click(target, host, ctrl, allow_unknown=True)
+    out["clicked"] = {"text": ctrl.get("text"), "href": ctrl.get("href"), "ok": bool(ok)}
+    out["switched"] = bool(ok)
+    if ok:
+        try:
+            await host.wait_for_timeout(1800)
+            await host.wait_for_load_state("domcontentloaded", timeout=8000)
+        except Exception:
+            pass
+        try:
+            ctx = await pick_fill_context(host)
+            out["fill_target"] = ctx.get("frame") or host
+        except Exception:
+            out["fill_target"] = host
+    return out
+
+
+def create_account_sentinel_path() -> Path:
+    """Optional monitor/corrector sentinel: force create-account click path."""
+    env = (os.environ.get("FASTFILL_CREATE_ACCOUNT_FILE") or "").strip()
+    if env:
+        return Path(env).expanduser()
+    # Prefer attempt-scoped captcha continue sibling when set
+    cap = (os.environ.get("FASTFILL_CAPTCHA_CONTINUE_FILE") or "").strip()
+    if cap:
+        return Path(cap).expanduser().parent / ".force_create_account"
+    root = Path(__file__).resolve().parents[2] / "skyvern_runtime" / "real_job_results"
+    return root / ".force_create_account"
+
+
+def consume_create_account_sentinel() -> bool:
+    """True once if monitor/human requested create-account corrective click."""
+    path = create_account_sentinel_path()
+    try:
+        if path.is_file():
+            path.unlink(missing_ok=True)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+async def run_auth_gate_before_pack(
+    page,
+    values: dict,
+    *,
+    fill_target=None,
+    max_rounds: int = 2,
+    force: bool = False,
+) -> dict:
+    """Pre-pack auth gate: Create account over Sign in, then fill credentials.
+
+    When still on a pure password/sign-in wall with no app fields, callers must
+    **skip the application selector pack** (``skip_app_pack``).
+    Never submits. Never solves CAPTCHA.
+    """
+    out: dict[str, Any] = {
+        "ran": False,
+        "create_account": None,
+        "iframe_login": None,
+        "skip_app_pack": False,
+        "is_sign_in_wall": False,
+        "fill_target": fill_target,
+        "forced": bool(force),
+    }
+    target = fill_target or page
+    wall = False
+    try:
+        wall = await is_password_sign_in_wall(target)
+        if not wall and target is not page:
+            wall = await is_password_sign_in_wall(page)
+            if wall:
+                target = page
+    except Exception:
+        wall = False
+
+    # Also treat classic login URL + email/password as auth (iCIMS iframe)
+    if not wall:
+        try:
+            url = getattr(target, "url", None) or page.url or ""
+        except Exception:
+            url = ""
+        counts = await _count_auth_inputs(target)
+        if looks_like_login_context(
+            url,
+            password_count=counts.get("password", 0),
+            email_count=counts.get("email", 0),
+        ):
+            wall = True
+
+    if not wall and not force:
+        out["skipped"] = "not_auth_wall"
+        return out
+
+    out["ran"] = True
+    out["is_sign_in_wall"] = bool(wall) or bool(force)
+
+    ca = await ensure_create_account_over_sign_in(page, fill_target=target)
+    out["create_account"] = {
+        k: v for k, v in ca.items() if k != "fill_target"
+    }
+    if ca.get("fill_target") is not None:
+        target = ca["fill_target"]
+        out["fill_target"] = target
+
+    auth = await continue_iframe_login(
+        page, values, fill_target=target, max_rounds=max_rounds
+    )
+    out["iframe_login"] = {k: v for k, v in auth.items() if k != "fill_target"}
+    if auth.get("fill_target") is not None:
+        target = auth["fill_target"]
+        out["fill_target"] = target
+
+    # Still a pure sign-in wall → do not run Greenhouse/app selector pack
+    still_wall = False
+    try:
+        still_wall = await is_password_sign_in_wall(target)
+        if not still_wall and target is not page:
+            still_wall = await is_password_sign_in_wall(page)
+    except Exception:
+        still_wall = False
+    reached_app = bool(auth.get("reached_app_fields"))
+    out["skip_app_pack"] = bool(still_wall and not reached_app)
+    if out["skip_app_pack"] and not auth.get("blocker"):
+        # Honest stop: dummy has no Stripe product account to sign into
+        if ca.get("skipped") == "no_create_account_control":
+            out.setdefault("blocker", "sign_in_only_no_create")
+        else:
+            out.setdefault("blocker", "login_wall")
+    if auth.get("blocker"):
+        out["blocker"] = auth["blocker"]
+    return out
 
 
 async def continue_iframe_login(
