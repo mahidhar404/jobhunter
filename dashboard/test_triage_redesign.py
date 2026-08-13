@@ -328,6 +328,44 @@ class TestCancelResetAndSkipDelete(unittest.TestCase):
         self.assertEqual(payload.get("status"), "discovered")
         self.assertTrue(payload.get("resume_kept"))
 
+    def test_handle_cancel_stuck_resets_to_discovered(self):
+        srv = self.srv
+        jobs = {
+            "jobs": [
+                {
+                    "id": "stuck1",
+                    "status": "stuck",
+                    "session_key": "agent:job-hunter:job-stuck1",
+                    "resume_path": str(ROOT / "scripts/fastfill/fixtures/dummy_resume_de.pdf"),
+                    "status_detail": "Agent needs help",
+                    "question": "Which option should I pick?",
+                    "timeline": [],
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ]
+        }
+        handler = srv.Handler.__new__(srv.Handler)
+        writes = []
+
+        def write_jobs(data):
+            writes.append(data)
+
+        with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
+            srv, "write_jobs", side_effect=write_jobs
+        ), mock.patch.object(srv, "_kill_process_tree"), mock.patch.object(
+            srv, "abort_gateway_session"
+        ), mock.patch.object(srv, "clear_fill_activity"), mock.patch.object(
+            srv, "close_job_partyrock_tab", return_value={}
+        ), mock.patch.object(handler, "_send_json") as send:
+            handler._handle_cancel("stuck1")
+        job = jobs["jobs"][0]
+        self.assertEqual(job["status"], "discovered")
+        self.assertTrue(job.get("resume_path"))
+        self.assertIsNone(job.get("question"))
+        payload = send.call_args[0][0]
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(payload.get("status"), "discovered")
+
     def test_handle_skip_soft_deletes(self):
         srv = self.srv
         jobs = {

@@ -6199,7 +6199,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"ok": True})
 
     def _handle_cancel(self, job_id):
-        """Abort in-flight fill/tailor and return the job to Open.
+        """Abort in-flight fill/tailor (or reset stuck/CAPTCHA) and return to Open.
 
         Does not leave status=cancelled in a Skipped pile. Keeps resume_path /
         on-disk resume so Fill can restart cleanly after clearing proc/hold state.
@@ -6212,9 +6212,10 @@ class Handler(BaseHTTPRequestHandler):
             session_key = job.get("session_key")
             proc = _running_procs.get(session_key) if session_key else None
             proc_alive = proc is not None and proc.poll() is None
-            # UI only offers Cancel for in-progress runs; refuse clobbering
-            # applied / ready / deleted / discovered via stale or direct calls.
-            if status not in IN_PROGRESS_STATUSES and not proc_alive:
+            # UI offers Cancel for in-progress runs and stuck/CAPTCHA jobs; refuse
+            # clobbering applied / ready / deleted / discovered via stale calls.
+            cancellable = status in IN_PROGRESS_STATUSES | NOTIFY_STATUSES or proc_alive
+            if not cancellable:
                 self._send_json(
                     {
                         "error": f"job is not running (status={status})",
@@ -6245,9 +6246,9 @@ class Handler(BaseHTTPRequestHandler):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
-            # Only reset if Cancel still owns the abort (or race left in-progress).
+            # Only reset if Cancel still owns the abort (or race left cancellable).
             cur = job.get("status")
-            if cur in ("cancelled",) or cur in IN_PROGRESS_STATUSES:
+            if cur in ("cancelled",) or cur in IN_PROGRESS_STATUSES | NOTIFY_STATUSES:
                 _reset_job_to_open_after_cancel(job)
                 write_jobs(data)
             out_status = job.get("status")

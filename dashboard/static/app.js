@@ -2705,6 +2705,7 @@ function renderDossier() {
   const outcome = fillOutcome(job, { full: true });
   const appHref = applicationHref(job);
   const runInProgress = PROGRESS_STATUSES.has(job.status);
+  const canCancel = runInProgress || STUCK_STATUSES.has(job.status);
   const holdBusySame = HOLD_BUSY_STATUSES.has(job.status);
   const otherBusy = anyOtherJobInProgress(job.id);
   const jid = jsStringEscape(job.id);
@@ -2802,7 +2803,7 @@ function renderDossier() {
         ? `<button class="act quiet" type="button" onclick="${escapeAttr(`skipJob('${jid}')`)}"
             title="Soft-delete — moves to Deleted (Restore anytime)">Skip</button>`
         : ""}
-      ${(runInProgress)
+      ${canCancel
         ? `<button class="act danger" type="button" onclick="${escapeAttr(`cancelJob('${jid}')`)}">Cancel</button>` : ""}
       <button class="act quiet" type="button" onclick="${escapeAttr(`deleteJob('${jid}')`)}"
         title="${bucket === "applied" ? "Soft-delete an applied record (asks for confirmation)" : "Move to Deleted"}">Delete</button>

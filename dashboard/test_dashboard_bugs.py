@@ -184,10 +184,11 @@ def test_fill_abort_statuses_cover_hunt_set():
 
 
 def test_app_js_cancel_not_for_ready():
-    """DASH-008: Cancel only when runInProgress (not Ready bucket)."""
+    """DASH-008: Cancel when runInProgress or stuck (not Ready bucket)."""
     src = APP_JS.read_text(encoding="utf-8")
     assert "runInProgress || bucket === \"ready\"" not in src
-    assert "(runInProgress)" in src or "${(runInProgress)" in src
+    assert "canCancel" in src
+    assert "STUCK_STATUSES.has(job.status)" in src
 
 
 def test_app_js_hybrid_fill_409_mentions_another_job():
@@ -205,12 +206,13 @@ def test_app_js_start_fill_mode_no_false_skip_without_pdf():
 
 
 def test_app_js_escapes_question_and_cancel_gate():
-    """DASH-007 / DASH-009: escapeHtml question; Cancel only in-progress (Ops)."""
+    """DASH-007 / DASH-009: escapeHtml question; Cancel for in-progress + stuck."""
     src = APP_JS.read_text(encoding="utf-8")
     assert "escapeHtml(job.question" in src
-    assert "runInProgress" in src
-    # Cancel must stay gated on runInProgress, not shown for every non-terminal job.
-    assert "(runInProgress)" in src
+    assert "canCancel" in src
+    assert "STUCK_STATUSES.has(job.status)" in src
+    # Cancel must not show for every non-terminal job (e.g. open/applied).
+    assert "${canCancel" in src or "(canCancel)" in src
 
 
 def test_app_js_uses_js_string_escape_on_detail_actions():
@@ -236,6 +238,14 @@ def test_delete_kills_running_proc_in_source():
     delete_chunk = src.split("def do_DELETE", 1)[1].split("def _handle_answer", 1)[0]
     assert "_kill_process_tree" in delete_chunk
     assert "abort_gateway_session" in delete_chunk
+
+
+def test_handle_cancel_allows_stuck_in_source():
+    """Stuck/CAPTCHA jobs can cancel even without a live proc."""
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    chunk = src.split("def _handle_cancel", 1)[1].split("def _handle_skip", 1)[0]
+    assert "NOTIFY_STATUSES" in chunk
+    assert "IN_PROGRESS_STATUSES | NOTIFY_STATUSES" in chunk
 
 
 def test_partyrock_lock_aborts_when_cancelled():
@@ -472,6 +482,7 @@ if __name__ == "__main__":
     test_app_js_uses_js_string_escape_on_detail_actions()
     test_restore_handler_accepts_deleted_in_source()
     test_delete_kills_running_proc_in_source()
+    test_handle_cancel_allows_stuck_in_source()
     test_partyrock_lock_aborts_when_cancelled()
     test_partyrock_lock_acquire_source_polls_abort()
     test_force_stuck_orphaned_in_progress_ignores_age_on_startup()
