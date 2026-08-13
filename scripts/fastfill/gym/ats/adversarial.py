@@ -58,6 +58,10 @@ COVERAGE_MATRIX: list[dict[str, str]] = [
      "case": "unit", "test": "test_thrash_demotes_success"},
     {"class": "thrash", "taxonomy": "FAIL_THRASH", "playbook": "workday_how_heard",
      "case": "unit", "test": "test_how_heard_priority_no_alias_thrash"},
+    {"class": "thrash", "taxonomy": "FAIL_WRONG_VALUE", "playbook": "react_select_portal",
+     "case": "workday_wrong_autofill_relock", "test": "test_wrong_autofill_relock_not_lock"},
+    {"class": "thrash", "taxonomy": "FAIL_WRONG_VALUE", "playbook": "react_select_portal",
+     "case": "workday_education_fos_wrong_chip", "test": "test_education_fos_wrong_chip_reclaim"},
     # Select commit
     {"class": "select_commit", "taxonomy": "FAIL_BLANK", "playbook": "react_select_portal",
      "case": "gh_race_decline", "test": "test_fill_gh_race_decline"},
@@ -94,6 +98,10 @@ COVERAGE_MATRIX: list[dict[str, str]] = [
     # Advance honesty
     {"class": "advance_honesty", "taxonomy": "FAIL_MIDWIZARD", "playbook": "native_select",
      "case": "midwizard_sticky_submit", "test": "test_midwizard_footer_advance"},
+    {"class": "advance_honesty", "taxonomy": "FAIL_MIDWIZARD", "playbook": "native_select",
+     "case": "workday_multipage_to_review", "test": "test_multipage_chain_reaches_review"},
+    {"class": "advance_honesty", "taxonomy": "FAIL_MIDWIZARD", "playbook": "native_select",
+     "case": "workday_battle_multipage", "test": "test_battle_multipage_chain_reaches_review"},
     {"class": "advance_honesty", "taxonomy": "FAIL_MIDWIZARD", "playbook": "react_select_portal",
      "case": "unit", "test": "test_fail_taxonomy_demotes_midwizard_success"},
     {"class": "advance_honesty", "taxonomy": "FAIL_BLANK", "playbook": "native_select",
@@ -402,7 +410,7 @@ async def _async_fill_workday_how_heard_hierarchical_chip() -> None:
             page,
             inp,
             leaf_candidates=["LinkedIn", "Indeed"],
-            category_candidates=["Internet job board", "Job Board"],
+            category_candidates=["Website", "Job Board", "Internet job board"],
         )
         assert hier.get("ok") and hier.get("committed"), hier
         picked = str(hier.get("picked") or hier.get("value") or "")
@@ -1004,6 +1012,268 @@ def test_fail_taxonomy_captcha_blocked() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 9. Wrong autofill re-lock + multipage to review
+# ---------------------------------------------------------------------------
+
+
+async def _async_wrong_autofill_relock_not_lock() -> None:
+    """Arts-Other chip + CS intent: probe must not skip; reclaim must not lock."""
+    import exp_workday_selectors as wd
+    from field_done import field_is_done_from_readback
+    from field_lock import attach_field_locks, gate_field_action, lock_verified_field
+    from field_map import FIELD_OF_STUDY
+    from score import score_page
+
+    case_id = "workday_wrong_autofill_relock"
+    html = await _load_case_html(case_id)
+    gold = json.loads((CASES / case_id / "gold.json").read_text(encoding="utf-8"))
+    pw, browser, page = await _page_with_html(html)
+    try:
+        chip = await page.locator("#fos-chip").inner_text()
+        assert "arts-other" in chip.lower(), chip
+        v = field_is_done_from_readback(
+            chip,
+            {"type": FIELD_OF_STUDY, "dom_chip": True},
+            "Computer Science",
+        )
+        assert not v.ok, f"Arts-Other must not count done for CS: {v.reason}"
+
+        report: dict = {"platform": "workday", "coverage_path": "workday_multipage"}
+        skip = await wd._probe_fos_already_correct(
+            page, ["Computer Science", "Science-Computer"], "Computer Science", report
+        )
+        assert skip is None, "wrong chip must not already_correct_skip"
+
+        attach_field_locks(report)
+        lock_verified_field(
+            report,
+            field_type=FIELD_OF_STUDY,
+            automation_id="education/fieldOfStudy",
+            readback="Arts-Other",
+            via="test_wrong_lock",
+        )
+        g = gate_field_action(
+            report,
+            field_type=FIELD_OF_STUDY,
+            automation_id="education/fieldOfStudy",
+        )
+        assert g and g.get("action") == "lock_skip", "simulated wrong lock would skip"
+
+        values = {FIELD_OF_STUDY: "Computer Science"}
+        phase: dict = {"filled": [], "missed": []}
+        await wd._fill_education_field_of_study(page, values, phase, report=report)
+        chip_after = await page.locator("#fos-chip").inner_text()
+        assert "science" in chip_after.lower() and "computer" in chip_after.lower(), chip_after
+        filled = phase.get("filled") or []
+        assert any(f.get("verified") for f in filled), filled
+
+        scored = await score_page(page, gold)
+        assert scored.get("ok"), scored
+    finally:
+        await _close(pw, browser)
+
+
+def test_wrong_autofill_relock_not_lock() -> None:
+    sync_run(_async_wrong_autofill_relock_not_lock())
+
+
+def test_education_fos_wrong_chip_reclaim() -> None:
+    """Delegate to education FoS wrong-chip regression module."""
+    from test_workday_education_fos_chip import test_education_fos_wrong_chip_reclaim as _reclaim
+
+    _reclaim()
+
+
+async def _async_multipage_chain_reaches_review() -> None:
+    from page_progress import footer_primary_wizard_incomplete, probe_footer_primary
+    from score import score_page
+
+    case_id = "workday_multipage_to_review"
+    html = await _load_case_html(case_id)
+    gold = json.loads((CASES / case_id / "gold.json").read_text(encoding="utf-8"))
+    pw, browser, page = await _page_with_html(html)
+    try:
+        report: dict = {"platform": "workday", "coverage_path": "workday_multipage"}
+        footer = await probe_footer_primary(page, report)
+        assert footer.get("kind") == "ADVANCE", "contact step must be ADVANCE"
+
+        await page.fill("#first-name", "Test")
+        await page.fill("#last-name", "Dummy")
+        await page.fill("#email", "test+gym@example.com")
+        await page.click('[data-automation-id="bottom-navigation-next-button"]')
+        await page.wait_for_timeout(80)
+        assert await page.locator("#step-experience.active").count() == 1
+
+        await page.fill("#job-title", "Engineer")
+        await page.fill("#company", "Acme")
+        await page.locator("#btn-exp-next").click()
+        await page.wait_for_timeout(80)
+        assert await page.locator("#step-education.active").count() == 1
+
+        await page.fill("#school", "State University")
+        await page.fill("#degree", "Bachelor's")
+        await page.locator("#btn-edu-next").click()
+        await page.wait_for_timeout(80)
+        assert await page.locator("#step-review.active").count() == 1
+
+        report = {"platform": "workday", "coverage_path": "workday_multipage"}
+        footer_r = await probe_footer_primary(page, report)
+        assert footer_r.get("kind") == "FINAL", footer_r
+        assert footer_primary_wizard_incomplete("FINAL", "Submit") is False
+
+        scored = await score_page(page, gold)
+        assert scored.get("ok"), scored
+        assert scored.get("footer_ok"), scored
+    finally:
+        await _close(pw, browser)
+
+
+def test_multipage_chain_reaches_review() -> None:
+    sync_run(_async_multipage_chain_reaches_review())
+
+
+async def _async_battle_multipage_chain_reaches_review() -> None:
+    """High-fidelity-intent battle gym: traps + 5-step chain → Review FINAL."""
+    from page_progress import footer_primary_wizard_incomplete, probe_footer_primary
+    from score import score_page
+
+    case_id = "workday_battle_multipage"
+    html = await _load_case_html(case_id)
+    gold = json.loads((CASES / case_id / "gold.json").read_text(encoding="utf-8"))
+    pw, browser, page = await _page_with_html(html)
+    try:
+        report: dict = {"platform": "workday", "coverage_path": "workday_multipage"}
+        footer = await probe_footer_primary(page, report)
+        assert footer.get("kind") == "ADVANCE", "contact step must be ADVANCE"
+
+        # Empty score must fail (ADVANCE + required empties/wrong + open listbox)
+        empty = await score_page(page, gold)
+        assert not empty.get("ok"), "empty battle gym must fail gold"
+
+        # Sticky mid-wizard Submit decoy must not advance or submit
+        assert await page.locator("#sticky-decoy:not(.hidden)").count() == 1
+        await page.click("#btn-decoy-submit")
+        await page.wait_for_timeout(40)
+        assert await page.locator("#step-contact.active").count() == 1
+        assert await page.locator("#step-review.active").count() == 0
+
+        # Wrong last-name autofill "Test" must be reclaimed (not lock-skipped)
+        assert await page.input_value("#last-name") == "Test"
+        await page.fill("#first-name", "Test")
+        await page.fill("#last-name", "Dummy")
+        await page.fill("#email", "randommail6969@gmail.com")
+        await page.evaluate("window.__battleGym.commitFiber('100 Test Street')")
+
+        # Phone country vs number (never LinkedIn / dial code in the number)
+        await page.click("#phone-country-control")
+        await page.locator(
+            '#phone-country-menu [role="option"]:has-text("United States of America (+1)")'
+        ).click()
+        await page.fill("#phone-num", "405-555-0100")
+
+        # Empty-cycle fingerprint: Next does nothing while How-Heard listbox is open
+        fp_before = await page.get_attribute("#progress", "data-fingerprint")
+        await page.click("#btn-contact-next")
+        await page.wait_for_timeout(60)
+        assert await page.locator("#validation-banner.visible").count() == 1
+        assert await page.locator("#step-contact.active").count() == 1
+        fp_after = await page.get_attribute("#progress", "data-fingerprint")
+        assert fp_after == fp_before, (fp_before, fp_after)
+
+        # Cycle 2 interacting trap: Illinois commit must NOT close How-Heard
+        assert await page.get_attribute("#hh-input", "aria-expanded") == "true"
+        await page.click("#state-btn")
+        await page.locator('[data-automation-label="Illinois"]').click()
+        await page.wait_for_timeout(40)
+        assert await page.get_attribute("#state-btn", "data-committed") == "Illinois"
+        assert await page.get_attribute("#hh-input", "aria-expanded") == "true", (
+            "How-Heard must stay open after State fill"
+        )
+        await page.fill("#county", "Sangamon")
+        fp_state = await page.get_attribute("#progress", "data-fingerprint")
+        await page.click("#btn-contact-next")
+        await page.wait_for_timeout(60)
+        assert await page.locator("#step-contact.active").count() == 1
+        assert await page.get_attribute("#progress", "data-fingerprint") == fp_state
+
+        # Close HH + pick hierarchical leaf (Website > Web - LinkedIn)
+        await page.click("#hh-input")
+        await page.wait_for_timeout(40)
+        await page.locator('[data-automation-id="promptOption"]:has-text("Website")').first.click()
+        await page.locator('[data-automation-id="promptOption"]:has-text("Web - LinkedIn")').click()
+        await page.wait_for_timeout(40)
+        assert await page.get_attribute("#hh-input", "aria-expanded") == "false"
+
+        await page.click("#btn-contact-next")
+        await page.wait_for_timeout(80)
+        assert await page.locator("#step-experience.active").count() == 1
+
+        await page.fill("#job-title", "Applied AI/ML Analyst")
+        await page.fill("#company", "Example Corp")
+        # Date spin skip: do not touch 08/2017 or Present/end-date
+        assert await page.input_value("#start-month") == "08"
+        assert await page.input_value("#start-year") == "2017"
+        assert await page.is_checked("#currently-work")
+        await page.locator("#btn-exp-next").click()
+        await page.wait_for_timeout(80)
+        assert await page.locator("#step-education.active").count() == 1
+        assert await page.input_value("#start-month") == "08"
+        assert await page.input_value("#start-year") == "2017"
+
+        # Dual FoS: Major Arts-Other blocks even when Discipline is Science-Computer
+        await page.fill("#school", "University of Alabama, Tuscaloosa")
+        await page.locator("#btn-edu-next").click()
+        await page.wait_for_timeout(60)
+        assert await page.locator("#validation-banner.visible").count() == 1
+        assert await page.locator("#step-education.active").count() == 1
+
+        await page.locator('#major-chip-wrap [data-automation-id="deleteSelected"]').click()
+        await page.click("#major-filter")
+        await page.locator('#major-menu [role="option"]:has-text("Science-Computer")').click()
+        await page.wait_for_timeout(40)
+        # Discipline matching chip must remain
+        disc = await page.locator(
+            '#disc-chip-wrap [data-automation-id="selectedItem"]'
+        ).inner_text()
+        assert "Science-Computer" in disc.replace("×", "")
+        await page.locator("#btn-edu-next").click()
+        await page.wait_for_timeout(80)
+        assert await page.locator("#step-questions.active").count() == 1
+
+        # Open work-auth listbox blocks Next (empty-cycle again)
+        q_fp = await page.get_attribute("#progress", "data-fingerprint")
+        await page.locator("#btn-q-next").click()
+        await page.wait_for_timeout(60)
+        assert await page.locator("#validation-banner.visible").count() == 1
+        assert await page.locator("#step-questions.active").count() == 1
+        assert await page.get_attribute("#progress", "data-fingerprint") == q_fp
+
+        await page.locator('#work-auth-menu [role="option"]:has-text("Yes")').click()
+        await page.wait_for_timeout(40)
+        await page.locator("#btn-q-next").click()
+        await page.wait_for_timeout(80)
+        assert await page.locator("#step-review.active").count() == 1
+        assert await page.locator("#sticky-decoy.hidden").count() == 1
+
+        report = {"platform": "workday", "coverage_path": "workday_multipage"}
+        footer_r = await probe_footer_primary(page, report)
+        assert footer_r.get("kind") == "FINAL", footer_r
+        assert footer_primary_wizard_incomplete("FINAL", "Submit") is False
+
+        scored = await score_page(page, gold)
+        assert scored.get("ok"), scored
+        assert scored.get("footer_ok"), scored
+        assert scored.get("spa_ok", True), scored
+        assert scored.get("listbox_ok", True), scored
+    finally:
+        await _close(pw, browser)
+
+
+def test_battle_multipage_chain_reaches_review() -> None:
+    sync_run(_async_battle_multipage_chain_reaches_review())
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -1049,6 +1319,10 @@ _ALL_TESTS: list[tuple[str, Callable[[], None]]] = [
     ("test_fill_steps_single_how_heard_attempt", test_fill_steps_single_how_heard_attempt),
     ("test_playbooks_allowed_detect", test_playbooks_allowed_detect),
     ("test_fail_taxonomy_captcha_blocked", test_fail_taxonomy_captcha_blocked),
+    ("test_wrong_autofill_relock_not_lock", test_wrong_autofill_relock_not_lock),
+    ("test_education_fos_wrong_chip_reclaim", test_education_fos_wrong_chip_reclaim),
+    ("test_multipage_chain_reaches_review", test_multipage_chain_reaches_review),
+    ("test_battle_multipage_chain_reaches_review", test_battle_multipage_chain_reaches_review),
 ]
 
 

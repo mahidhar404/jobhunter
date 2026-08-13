@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — NXP Phone Contact</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 560px; margin: 2rem auto; }
+    label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+    .field { margin-bottom: 1.25rem; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: #e8f0fe; border: 1px solid #c6dafc; border-radius: 16px;
+      padding: 4px 10px; font-size: 14px;
+    }
+    .chip button {
+      border: none; background: transparent; cursor: pointer;
+      font-size: 16px; line-height: 1; padding: 0 2px; color: #555;
+    }
+    input[type=text] {
+      border: 1px solid #ccc; border-radius: 4px; padding: 8px 12px; width: 100%;
+      box-sizing: border-box;
+    }
+    .device-val { padding: 8px 0; }
+    button.nav { margin-top: 1.5rem; padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <h1>My Information — Phone (NXP-shaped)</h1>
+  <p>Dummy applicant · never submit</p>
+
+  <div class="field" data-automation-id="formField-phoneType">
+    <label>Phone Device Type*</label>
+    <div class="device-val" id="phone-device">Mobile</div>
+  </div>
+
+  <div class="field" data-automation-id="formField-phoneNumber--countryPhoneCode" id="country-field">
+    <label for="country-filter">Country Phone Code*</label>
+    <div id="country-chip-wrap">
+      <span class="chip" id="country-chip">
+        United States of America (+1)
+        <button type="button" aria-label="delete selected" data-automation-id="deleteSelected">×</button>
+      </span>
+    </div>
+    <input id="country-filter" type="text" name="phoneNumber--countryPhoneCode"
+           aria-required="true" value="" autocomplete="off" style="display:none" />
+  </div>
+
+  <div class="field" data-automation-id="formField-phoneNumber">
+    <label for="phone-num">Phone Number*</label>
+    <input id="phone-num" type="text" name="phoneNumber" aria-required="true"
+           value="405-555-0100" data-automation-id="phone-number" />
+  </div>
+
+  <button class="nav" data-automation-id="bottom-navigation-next-button">Save and Continue</button>
+
+  <script>
+    const chipWrap = document.getElementById('country-chip-wrap');
+    const filter = document.getElementById('country-filter');
+    const field = document.getElementById('country-field');
+    document.getElementById('country-chip').querySelector('button').addEventListener('click', () => {
+      chipWrap.innerHTML = '';
+      filter.style.display = 'block';
+      field.dataset.empty = '1';
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "fields": [
+    {
+      "key": "field_of_study",
+      "selector": "#fos-chip-wrap",
+      "committed": "Science-Computer",
+      "required": true,
+      "notes": "Chip committed; listbox must close after settle (no leftover listbox_still_open)."
+    }
+  ],
+  "required_empty": [],
+  "gaps": [],
+  "listbox_closed_after_settle": true,
+  "notes": "NXP 1301Z: correct Science-Computer chip with Expanded dropdown — settle must force-close."
+}

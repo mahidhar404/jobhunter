@@ -1,0 +1,26 @@
+{
+  "fields": [
+    {
+      "key": "first_name",
+      "selector": "#first-name",
+      "committed": "Test",
+      "required": true
+    },
+    {
+      "key": "job_title",
+      "selector": "#job-title",
+      "committed": "Engineer",
+      "required": true
+    },
+    {
+      "key": "school",
+      "selector": "#school",
+      "committed": "State University",
+      "required": true
+    }
+  ],
+  "footer_kind": "FINAL",
+  "step": "review",
+  "wizard_steps": ["contact", "experience", "education", "review"],
+  "notes": "Static chain contact→experience→education→review; Review step shows Submit (FINAL footer)."
+}

@@ -1,0 +1,206 @@
+{
+  "timestamp": "2026-08-13T09:41Z",
+  "dummy": true,
+  "never_submit": true,
+  "production_ready": false,
+  "gym_pass": true,
+  "live_pass": false,
+  "honesty": "gym_pass \u2260 live_pass \u2014 gym green is not a live win",
+  "last_run": {
+    "gate_timestamp": "2026-08-13T09:40Z",
+    "gate_verdict": "FAIL",
+    "gate_out_dir": "skyvern_runtime/real_job_results/nxp_reliability_gate_20260813T0925Z",
+    "status_as_of": "2026-08-12 ~23:02Z  ",
+    "flight_log": "/Users/job/.openclaw/workspace/job-hunter/skyvern_runtime/real_job_results/nxp_reliability_gate_20260813T0925Z/flight.log",
+    "battle_last_ok": true,
+    "reached_review": false
+  },
+  "blockers": [
+    "overwrite",
+    "pack_incomplete",
+    "no_matching_option",
+    "thrash",
+    "empty_readback",
+    "addressline2",
+    "regionsubdivision1"
+  ],
+  "code_gaps": {
+    "tighten_commit_fill_lock": false,
+    "wire_empty_cycle_workday": false,
+    "fiber_text_commit_addr2_county": false,
+    "illinois_state_pack": false,
+    "fos_ontology_unlock": false,
+    "keep_batch_fill": false,
+    "live_headed_flight_log": false
+  },
+  "batch_fill_wired": true,
+  "next_action": {
+    "id": "live_headed_flight_log",
+    "title": "live headed flight.log required \u2014 gym cannot prove remaining live Fiber/auth",
+    "reason": "empty_readback addr2/county needs headed flight.log \u2014 source strings do not prove live Fiber commit",
+    "live_only": true,
+    "code_gap": false
+  },
+  "sources": {
+    "flight": {
+      "flight_log": "/Users/job/.openclaw/workspace/job-hunter/skyvern_runtime/real_job_results/nxp_reliability_gate_20260813T0925Z/flight.log",
+      "flight_jsonl": "/Users/job/.openclaw/workspace/job-hunter/skyvern_runtime/real_job_results/nxp_reliability_gate_20260813T0925Z/flight.jsonl",
+      "present": true,
+      "live_headed_flight": true,
+      "gym_flight": false
+    },
+    "reliability_status": {
+      "path": "/Users/job/.openclaw/workspace/job-hunter/scripts/fastfill/RELIABILITY_STATUS.md",
+      "present": true,
+      "live_fail": true
+    },
+    "reliability_gate": {
+      "path": "/Users/job/.openclaw/workspace/job-hunter/scripts/fastfill/reliability_gate.json",
+      "present": true,
+      "live_pass": false,
+      "gym_pass": null,
+      "verdict": "FAIL"
+    },
+    "battle_gym": {
+      "gym_pass": true,
+      "live_signoff": false,
+      "fidelity": "high",
+      "honesty": "gym_green_is_not_live_win"
+    },
+    "gym_vs_live": "/Users/job/.openclaw/workspace/job-hunter/scripts/fastfill/GYM_VS_LIVE.md"
+  },
+  "ticks": [
+    {
+      "timestamp": "2026-08-13T00:33Z",
+      "action_id": "tighten_commit_fill_lock",
+      "live_only": false,
+      "blockers": [
+        "pack_incomplete",
+        "empty_readback",
+        "lock_skip",
+        "illinois",
+        "countryregion",
+        "addressline2",
+        "regionsubdivision1",
+        "overwrite",
+        "no_matching_option",
+        "listbox_still_open",
+        "thrash"
+      ],
+      "gym_pass": true,
+      "live_pass": false
+    },
+    {
+      "timestamp": "2026-08-13T00:34Z",
+      "action_id": "wire_empty_cycle_workday",
+      "live_only": false,
+      "blockers": [
+        "pack_incomplete",
+        "empty_readback",
+        "lock_skip",
+        "illinois",
+        "countryregion",
+        "addressline2",
+        "regionsubdivision1",
+        "overwrite",
+        "no_matching_option",
+        "listbox_still_open",
+        "thrash"
+      ],
+      "gym_pass": true,
+      "live_pass": false
+    },
+    {
+      "timestamp": "2026-08-13T00:36Z",
+      "action_id": "live_headed_flight_log",
+      "live_only": true,
+      "blockers": [
+        "pack_incomplete",
+        "empty_readback",
+        "lock_skip",
+        "illinois",
+        "countryregion",
+        "addressline2",
+        "regionsubdivision1",
+        "overwrite",
+        "no_matching_option",
+        "listbox_still_open",
+        "thrash"
+      ],
+      "gym_pass": true,
+      "live_pass": false
+    },
+    {
+      "timestamp": "2026-08-13T00:38Z",
+      "action_id": "live_headed_flight_log",
+      "live_only": true,
+      "blockers": [
+        "empty_readback",
+        "addressline2",
+        "countryregion",
+        "illinois",
+        "regionsubdivision1",
+        "pack_incomplete",
+        "lock_skip",
+        "empty_cycle",
+        "overwrite",
+        "no_matching_option",
+        "thrash"
+      ],
+      "gym_pass": true,
+      "live_pass": false
+    },
+    {
+      "timestamp": "2026-08-13T00:39Z",
+      "action_id": "live_headed_flight_log",
+      "live_only": true,
+      "blockers": [
+        "empty_readback",
+        "addressline2",
+        "countryregion",
+        "illinois",
+        "regionsubdivision1",
+        "pack_incomplete",
+        "lock_skip",
+        "empty_cycle",
+        "overwrite",
+        "no_matching_option",
+        "thrash"
+      ],
+      "gym_pass": true,
+      "live_pass": false
+    },
+    {
+      "timestamp": "2026-08-13T08:45Z",
+      "action_id": "live_headed_flight_log",
+      "live_only": true,
+      "blockers": [
+        "overwrite",
+        "pack_incomplete",
+        "no_matching_option",
+        "thrash",
+        "empty_readback",
+        "addressline2",
+        "regionsubdivision1"
+      ],
+      "gym_pass": true,
+      "live_pass": false
+    },
+    {
+      "timestamp": "2026-08-13T09:41Z",
+      "action_id": "live_headed_flight_log",
+      "live_only": true,
+      "blockers": [
+        "overwrite",
+        "pack_incomplete",
+        "no_matching_option",
+        "thrash",
+        "empty_readback",
+        "addressline2",
+        "regionsubdivision1"
+      ],
+      "gym_pass": true,
+      "live_pass": false
+    }
+  ]
+}

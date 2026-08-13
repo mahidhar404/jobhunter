@@ -321,8 +321,8 @@
       "label_pattern": "preferred first name",
       "platform": "greenhouse",
       "reason": "UNFILLABLE_AFTER_2: live_empty_after_claimed_verified",
-      "seen": 3,
-      "updated_at": "2026-08-08T10:26:56Z"
+      "seen": 4,
+      "updated_at": "2026-08-12T23:43:02Z"
     },
     {
       "avoid_strategy": "refill",
@@ -330,8 +330,8 @@
       "label_pattern": "preferred first name",
       "platform": "gh",
       "reason": "UNFILLABLE_AFTER_2: live_empty_after_claimed_verified",
-      "seen": 7,
-      "updated_at": "2026-08-11T18:28:23Z"
+      "seen": 12,
+      "updated_at": "2026-08-13T09:05:39Z"
     },
     {
       "avoid_strategy": "retry_same_selector",
@@ -339,8 +339,8 @@
       "label_pattern": "school*",
       "platform": "gh",
       "reason": "UNFILLABLE_AFTER_2: gh_select_failed",
-      "seen": 7,
-      "updated_at": "2026-08-11T18:28:23Z"
+      "seen": 12,
+      "updated_at": "2026-08-13T09:05:39Z"
     },
     {
       "avoid_strategy": "refill_pass_1",
@@ -1439,6 +1439,222 @@
       "reason": "UNFILLABLE_AFTER_2",
       "seen": 1,
       "updated_at": "2026-08-11T19:10:59Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "how_heard",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2: hierarchical_no_chip",
+      "seen": 1,
+      "updated_at": "2026-08-13T10:56:26Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "workexperience-1/startdate",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2: offscreen_skip",
+      "seen": 1,
+      "updated_at": "2026-08-13T10:56:26Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "workexperience-1/enddate",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2: offscreen_skip",
+      "seen": 1,
+      "updated_at": "2026-08-13T10:56:26Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "educationsection_fieldofstudy",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2: no_matching_option",
+      "seen": 1,
+      "updated_at": "2026-08-13T10:56:26Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "education/startdate",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2: offscreen_skip",
+      "seen": 1,
+      "updated_at": "2026-08-13T10:56:26Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "education/enddate",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2: offscreen_skip",
+      "seen": 1,
+      "updated_at": "2026-08-13T10:56:26Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "from*",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-13T10:56:26Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "formfield-enddate",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_date_field",
+      "seen": 1,
+      "updated_at": "2026-08-13T10:56:26Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "formfield-startdate",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_date_field",
+      "seen": 1,
+      "updated_at": "2026-08-13T10:56:26Z"
+    },
+    {
+      "avoid_strategy": "extract+classify",
+      "field_type": "HOW_HEARD",
+      "label_pattern": "role description",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2: multiselect_uncommitted",
+      "seen": 1,
+      "updated_at": "2026-08-13T10:56:26Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "HOW_HEARD",
+      "label_pattern": "role description",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-13T11:03:55Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "education/enddate",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-13T11:03:55Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "education/startdate",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-13T11:03:55Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "educationsection_fieldofstudy",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-13T11:03:55Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "formfield-enddate",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-13T11:03:55Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "formfield-startdate",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-13T11:03:55Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "from*",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-13T11:03:55Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "how_heard",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-13T11:03:55Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "workexperience-1/enddate",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-13T11:03:55Z"
+    },
+    {
+      "avoid_strategy": "retry_same_selector",
+      "field_type": "UNTYPED",
+      "label_pattern": "workexperience-1/startdate",
+      "platform": "workday",
+      "reason": "UNFILLABLE_AFTER_2",
+      "seen": 1,
+      "updated_at": "2026-08-13T11:03:55Z"
+    },
+    {
+      "avoid_strategy": "ashby_widgets",
+      "field_type": null,
+      "label_pattern": "what is your hands-on experience with deploying and executing ai systems in a li",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: empty_readback",
+      "seen": 1,
+      "updated_at": "2026-08-13T13:38:47Z"
+    },
+    {
+      "avoid_strategy": "ashby_widgets",
+      "field_type": null,
+      "label_pattern": "what is your level of english proficiency for professional and technical communi",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: empty_readback",
+      "seen": 1,
+      "updated_at": "2026-08-13T13:38:47Z"
+    },
+    {
+      "avoid_strategy": "ashby_location_zip",
+      "field_type": "ADDRESS_ZIP",
+      "label_pattern": "address_zip",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: empty_readback",
+      "seen": 1,
+      "updated_at": "2026-08-13T13:38:47Z"
+    },
+    {
+      "avoid_strategy": "enumerate_unanswered_choices",
+      "field_type": null,
+      "label_pattern": "which best describes your experience with machine learning systems?",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: unanswered_choice_group",
+      "seen": 1,
+      "updated_at": "2026-08-13T13:38:47Z"
     }
   ],
   "version": 1

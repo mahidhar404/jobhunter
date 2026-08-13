@@ -1,0 +1,16 @@
+{
+  "fields": [
+    {
+      "key": "field_of_study",
+      "selector": "#fos-chip-wrap",
+      "committed": "Science-Computer",
+      "required": true,
+      "notes": "Wrong Arts-Other autofill must be reclaimed to Science-Computer."
+    }
+  ],
+  "required_empty": [],
+  "gaps": [],
+  "wrong_autofill_start": "Arts-Other",
+  "listbox_open_start": true,
+  "notes": "Arts-Other chip + Expanded listbox → reclaim Science-Computer, close listbox."
+}

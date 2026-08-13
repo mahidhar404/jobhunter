@@ -66,6 +66,24 @@ FLASH_DEFAULT_ON = False
 FLASH_MAX_STEPS = 5
 FLASH_MAX_LEFTOVER_FIELDS = 5  # thin Skyvern default
 FLASH_MAX_STEPS_GROUNDED = 15  # cycle mode: answer all leftovers incl. essays
+# Historical skipped_reason only — leftover Flash is ON for Workday/NXP.
+FLASH_SKIP_WORKDAY_REASON = "workday_two_phase"
+
+
+def skip_flash_on_workday(
+    report: dict | None = None,
+    *,
+    platform: str = "",
+    url: str = "",
+) -> bool:
+    """Leftover Flash is ON for Workday/NXP (and every other ATS).
+
+    Previously returned True on Workday because Flash fought the two-phase pack
+    (rewriting contact / How-Heard). Leftover-only rules (cheat sheet,
+    field_lock, steal-blocklist) already refuse EMAIL/PHONE/name/address.
+    Always returns False so NXP gets DeepSeek leftovers after Layer 0/1 + pack.
+    """
+    return False
 
 NEVER_SUBMIT_SNIPPET = (
     "ABSOLUTE HARD RULE: never click Submit / Submit application / Apply-final / "
@@ -179,6 +197,21 @@ def _norm_key(value: Any) -> str:
     return " ".join(str(value or "").strip().lower().split())
 
 
+def _compact_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", _norm_key(value))
+
+
+def _compact_keys_overlap(a: str, b: str, *, min_len: int = 8) -> bool:
+    """True when compact ids share a distinctive substring (countryphonecode ⊂ phonenumbercountryphonecode)."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if len(a) < min_len or len(b) < min_len:
+        return False
+    return a in b or b in a
+
+
 def _filled_identity_keys(filled: list[dict]) -> set[str]:
     """Keys used to exclude already-filled fields from leftover prompts."""
     keys: set[str] = set()
@@ -192,10 +225,14 @@ def _filled_identity_keys(filled: list[dict]) -> set[str]:
             n = _norm_key(raw)
             if n and n not in ("?",):
                 keys.add(n)
+            c = _compact_key(raw)
+            if c and c not in ("?",):
+                keys.add(c)
     return keys
 
 
 def _row_matches_filled(row: dict, filled_keys: set[str]) -> bool:
+    filled_compacts = {_compact_key(k) for k in filled_keys if k}
     for raw in (
         row.get("selector"),
         row.get("type"),
@@ -205,6 +242,12 @@ def _row_matches_filled(row: dict, filled_keys: set[str]) -> bool:
         n = _norm_key(raw)
         if n and n in filled_keys:
             return True
+        c = _compact_key(raw)
+        if c and c in filled_keys:
+            return True
+        for fc in filled_compacts:
+            if _compact_keys_overlap(c, fc):
+                return True
     return False
 
 
@@ -809,6 +852,19 @@ def synthesize_grounded_answer(
         )
     if re.search(r"how\s+did\s+you\s+hear", label_l):
         return shared.get("HOW_HEARD") or "Internet job board"
+    # Ashby screening MCQs / consent — dummy catalog, never EEO.
+    if re.search(r"^\s*consent\s*\*?\s*$|i\s+(agree|consent)|terms\s*(and|&)\s*conditions", label_l):
+        if not re.search(r"marketing|newsletter|sms|promotional", label_l):
+            return shared.get("TERMS_CONSENT") or "Yes"
+    if re.search(r"english|proficiency|language\s+(skill|level)", label_l):
+        return "Fluent"
+    if re.search(r"production environment|built software in a production", label_l):
+        return "production"
+    if re.search(
+        r"experience with machine learning|enjoy most|best describes|best reflects",
+        label_l,
+    ):
+        return "production"
     if re.search(
         r"(?:additional|other|share|provide).{0,40}(?:links?|linkedin|github|portfolio)|"
         r"(?:linkedin|github|portfolio).{0,40}(?:links?|urls?)",
@@ -1661,6 +1717,12 @@ def build_leftovers_handoff(
     )
     run_vals = values if isinstance(values, dict) and values else _values_from_report(report)
     filled = _filled_rows(report)
+    try:
+        from field_lock import filter_locked_leftovers
+
+        filter_locked_leftovers(report)
+    except Exception:
+        pass
     leftovers_all = _leftover_rows(report, filled=filled)
     parts = partition_flash_leftovers(leftovers_all, values=run_vals)
     leftovers = list(parts["flash_leftovers"])
@@ -1880,6 +1942,21 @@ async def run_flash_leftovers(
         payload["leftovers"] = kept
         payload["leftover_count"] = len(kept)
         payload["eeo_held_for_catalog"] = eeo_held
+        try:
+            from flight_recorder import note_flight
+
+            note_flight(
+                report,
+                "flash_filter",
+                action="hold_eeo",
+                layer="flash",
+                gate_kind="flash_eeo_filter",
+                gate_result="held",
+                gate_reason=f"eeo_held={len(eeo_held)} kept={len(kept)}",
+                extra={"eeo_held": len(eeo_held), "kept": len(kept)},
+            )
+        except Exception:
+            pass
         # Rebuild prompt without EEO invent targets
         try:
             payload["prompt"] = build_leftovers_prompt(
@@ -2149,11 +2226,21 @@ def self_test_report(report: dict) -> dict[str, Any]:
     }
     mix_hand = build_leftovers_handoff(select_mix, grounded=True)
     by_label = {r.get("label"): r for r in mix_hand.get("leftovers") or []}
-    loc_row = by_label.get("Are you currently based in any of these states?")
+    # LOCATION is deterministic catalog → deferred reclaim (not Flash LLM).
+    # Still tagged select=True so inpage reclaim uses click-option, not essay paste.
+    deferred_by = {
+        r.get("label"): r for r in (mix_hand.get("deferred_deterministic") or [])
+    }
+    loc_row = deferred_by.get("Are you currently based in any of these states?")
     assert loc_row and loc_row.get("select") is True and not loc_row.get("essay")
+    assert loc_row.get("flash_skip_reason") == "deterministic_catalog"
+    assert "LOCATION" not in {
+        str(r.get("type") or "").upper() for r in (mix_hand.get("leftovers") or [])
+    }
     essay_row = by_label.get("Why do you want to join us?")
     assert essay_row and essay_row.get("essay") is True
-    assert "CLICK_OPTION" in mix_hand["prompt"] or "select=true" in mix_hand["prompt"]
+    # Essay-only Flash prompt may omit select tokens; deferred row carries select tag.
+    assert loc_row.get("select") is True
 
     return {
         "ok": True,

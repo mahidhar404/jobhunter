@@ -1,0 +1,16 @@
+{
+  "fields": [
+    {
+      "key": "field_of_study",
+      "selector": "#fos-chip-wrap",
+      "committed": "Science-Computer",
+      "required": true,
+      "notes": "NXP resume autofill chip — filter input stays empty."
+    }
+  ],
+  "required_empty": [],
+  "gaps": [],
+  "second_pass_fill_actions": 0,
+  "second_pass_filter_typing": 0,
+  "notes": "Science-Computer chip pre-selected → second pass must skip with 0 fill/filter actions."
+}

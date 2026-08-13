@@ -92,6 +92,29 @@ def test_sequential_api_dead() -> None:
         raise AssertionError("save_next_alias_index must raise")
 
 
+def test_keep_run_email_does_not_remint() -> None:
+    """0842: force_create must reuse prepare_dummy_run email (no mid-fill remint)."""
+    from field_map import EMAIL, allocate_random_run_email
+    from run_identity import keep_run_email, prepare_dummy_run
+
+    ident = prepare_dummy_run(compile_pdf=False)
+    values = dict(ident.values)
+    report = {"identity_email": ident.email, "email": ident.email}
+    kept = keep_run_email(values, report)
+    again = keep_run_email(values, report)
+    assert kept == ident.email
+    assert again == ident.email
+    assert values.get(EMAIL) == ident.email
+    other = allocate_random_run_email()["email"]
+    assert other != ident.email
+    assert keep_run_email(values, report) == ident.email
+    # Stored overlay must restore identity_email, not remint.
+    values[EMAIL] = "stored-host@example.com"
+    restored = keep_run_email(values, report)
+    assert restored == ident.email
+    assert values.get(EMAIL) == ident.email
+
+
 def test_form_email_matches_identity() -> dict:
     """Logical prepare (no tectonic): values[EMAIL] == identity.email."""
     a = prepare_dummy_run(compile_pdf=False)
@@ -121,6 +144,8 @@ def main() -> int:
     try:
         test_sequential_api_dead()
         out["sequential_api_dead"] = True
+        test_keep_run_email_does_not_remint()
+        out["keep_run_email"] = True
         out["rapid"] = test_two_rapid_allocates_differ()
         out["prepare"] = test_form_email_matches_identity()
         out["ok"] = True

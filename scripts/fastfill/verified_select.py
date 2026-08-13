@@ -83,7 +83,7 @@ def is_placeholder_select_value(text: str | None) -> bool:
 def is_location_field(field_type: str = "", label: str = "") -> bool:
     """True for Places / City+State+Country autocomplete fields."""
     ftype = (field_type or "").upper()
-    if ftype in ("ADDRESS_CITY", "LOCATION"):
+    if ftype in ("ADDRESS_CITY", "LOCATION", "EXPERIENCE_LOCATION"):
         return True
     lab = (label or "").lower()
     if re.search(r"\blocation\b|city\s*,\s*country|city\s+and\s+country", lab):
@@ -585,6 +585,38 @@ def _norm_digits(s: str) -> str:
     return "".join(c for c in (s or "") if c.isdigit())
 
 
+_WORKDAY_INTERNAL_ID_RE = re.compile(
+    r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+    re.I,
+)
+
+
+def looks_like_workday_internal_id(text: str) -> bool:
+    """True when readback is a Workday hash/UUID (not human label text)."""
+    t = (text or "").strip()
+    if not t or " " in t:
+        return False
+    if _WORKDAY_INTERNAL_ID_RE.match(t):
+        return True
+    if re.fullmatch(r"[a-f0-9]{32}", t, re.I):
+        return True
+    return False
+
+
+def degree_display_matches_intent(shown: str, intent: str) -> bool:
+    """Master's/Master shown value matches Master's intent — ignore hash-id readbacks."""
+    s = (shown or "").strip()
+    want = (intent or "").strip()
+    if not s or not want:
+        return False
+    if looks_like_workday_internal_id(s):
+        return False
+    sl, wl = s.lower(), want.lower()
+    if "master" in wl and re.search(r"\bmaster", sl):
+        return True
+    return value_matches_readback(want, s, mode="combobox")
+
+
 def value_matches_readback(expected: str, actual: str, *, mode: str = "fill") -> bool:
     """True if read-back is non-empty and soft-matches intended value.
 
@@ -637,6 +669,11 @@ def value_matches_readback(expected: str, actual: str, *, mode: str = "fill") ->
             return True
     if soft_value_match(exp, act):
         return True
+    try:
+        if field_of_study_taxonomy_match(exp, act):
+            return True
+    except Exception:
+        pass
     for cand in expand_state_value(exp):
         if cand != exp and soft_value_match(cand, act):
             return True
@@ -666,6 +703,217 @@ def multiselect_has_chip(shown: str | None) -> bool:
     if re.search(r"\b([1-9]\d*)\s+items?\s+selected\b", t):
         return True
     return False
+
+
+def workday_wrap_text_has_chip(wrap_text: str | None) -> bool:
+    """True when formField innerText shows committed chip chrome or a chip label."""
+    s = (shown or "").strip() if (shown := wrap_text) else ""
+    if not s or is_multiselect_uncommitted(s):
+        return False
+    if multiselect_has_chip(s):
+        return True
+    if is_placeholder_select_value(s):
+        return False
+    sl = s.lower()
+    if "select one" in sl or sl.startswith("search"):
+        return False
+    # NXP-class FoS: bare chip label at top (Science-Computer) without "N items selected"
+    if re.search(r"\bfield of study\b", sl):
+        tail = re.sub(r"(?i)^field of study\*?\s*", "", s).strip()
+        if tail and len(tail) <= 80 and "select" not in tail.lower():
+            return True
+    return False
+
+
+def _fos_taxonomy_tokens(text: str) -> set[str]:
+    return {
+        t
+        for t in re.split(r"[\s\-/&,]+", (text or "").lower())
+        if t and t not in {"of", "and", "the", "other"}
+    }
+
+
+def field_of_study_taxonomy_match(intent: str, shown: str) -> bool:
+    """Workday FoS taxonomy tokens (Science-Computer) ≈ Computer Science intent."""
+    if soft_value_match(intent, shown):
+        return True
+    it, st = _fos_taxonomy_tokens(intent), _fos_taxonomy_tokens(shown)
+    if not it or not st:
+        return False
+    if {"computer", "science"} <= it and {"computer", "science"} <= st:
+        return True
+    if len(it & st) >= 2:
+        return True
+    if "computer" in it and "computer" in st:
+        return True
+    return False
+
+
+_FOS_GENERIC_ALIASES = frozenset({"other", "cs"})
+
+
+def _fos_intent_matches_candidate(candidate: str, shown: str) -> bool:
+    """Match FoS chip readback to intent — never via bare ``Other`` ⊂ ``Arts-Other``.
+
+    Always score against the committed chip label only — open listbox option
+    soup must not fake a Science-Computer match while Arts-Other is selected.
+    """
+    c = (candidate or "").strip()
+    s_raw = (shown or "").strip()
+    if not c or not s_raw:
+        return False
+    s = fos_committed_chip_label(s_raw) or s_raw
+    cl = c.lower()
+    # ``Other`` alias is for typing fallback only — never verifies Arts-Other chip
+    if cl in _FOS_GENERIC_ALIASES:
+        return False
+    if field_of_study_taxonomy_match(c, s) or soft_value_match(c, s):
+        return True
+    if len(cl) <= 3:
+        return False
+    sl = s.lower()
+    # Hyphenated Workday taxonomy (Science-Computer, Arts-Other) — token match only
+    if re.search(r"[a-z]+-[a-z]+", sl, re.I):
+        return field_of_study_taxonomy_match(c, s)
+    return cl in sl
+
+
+def field_of_study_committed(
+    shown: str | None,
+    candidates: Iterable[str] | None = None,
+    *,
+    dom_chip: bool = False,
+) -> bool:
+    """True when Workday Field of Study shows a committed chip matching intent.
+
+    Delegates to ``field_done.field_is_done_from_readback`` — single source of truth.
+    """
+    from field_done import field_is_done_from_readback
+
+    cands = [str(c).strip() for c in (candidates or []) if str(c or "").strip()]
+    meta: dict = {"type": "FIELD_OF_STUDY", "dom_chip": dom_chip}
+    if cands:
+        meta["aliases_tried"] = cands
+    intent = cands[0] if cands else None
+    return field_is_done_from_readback(shown, meta, intent).ok
+
+
+def fos_committed_chip_label(shown: str | None) -> str:
+    """Extract committed FoS chip label; ignore open listbox option soup.
+
+    Live gym wrong-chip fixture wrap text looks like::
+      Field of Study* Arts-Other × Arts-Other Science-Computer Computer Science …
+    Matching intent against the full wrap falsely reports Science-Computer done
+    while Arts-Other is still the chip. Prefer the label before × / first token.
+    """
+    s = re.sub(r"\s+", " ", (shown or "").strip())
+    if not s:
+        return ""
+    s2 = re.sub(r"(?i)^field\s+of\s+study\*?\s*", "", s).strip()
+    s2 = re.sub(r"(?i)^discipline\*?\s*", "", s2).strip()
+    s2 = re.sub(r"(?i)^major\*?\s*", "", s2).strip()
+    m = re.search(r"(?i)\b\d+\s+items?\s+selected[,:]?\s*(.+)$", s2)
+    if m:
+        # "1 item selected, Arts-Other Arts-Other" → Arts-Other
+        tail = m.group(1).strip()
+        first = re.split(r"[,/|]", tail)[0].strip()
+        # Duplicate chip echo: "Arts-Other Arts-Other"
+        parts = first.split()
+        if len(parts) >= 2 and parts[0].lower() == parts[1].lower():
+            return parts[0][:80]
+        # Hyphenated taxonomy takes precedence over trailing option soup
+        hy = re.match(r"^([A-Za-z]+-[A-Za-z]+(?:-[A-Za-z]+)?)", first)
+        if hy:
+            return hy.group(1)[:80]
+        return first[:80]
+    if "×" in s2:
+        return s2.split("×", 1)[0].strip()[:80]
+    # Bare short chip (Science-Computer) — no option soup
+    if len(s2) <= 80 and s2.count(" ") <= 3:
+        return s2[:80]
+    # Option soup without ×: first taxonomy token only
+    hy = re.match(r"^([A-Za-z]+-[A-Za-z]+(?:-[A-Za-z]+)?)", s2)
+    if hy:
+        return hy.group(1)[:80]
+    return s2.split()[0][:80] if s2 else ""
+
+
+async def read_workday_formfield_chip(locator) -> str:
+    """Read formField wrap text when deleteSelected / selectedItem chip is present.
+
+    Prefers ``selectedItem`` / pill text only so open ``promptOption`` listbox
+    labels cannot pollute FoS intent matching (Arts-Other + open CS list).
+    Hidden chip wraps (display:none) must return empty — not a false commit.
+    """
+    try:
+        raw = await locator.evaluate(
+            """(el) => {
+              const wrap = el.closest('[data-automation-id*="formField"]') || el;
+              const isShown = (node) => {
+                if (!node) return false;
+                let p = node;
+                while (p && p.nodeType === 1) {
+                  const st = window.getComputedStyle(p);
+                  if (st.display === 'none' || st.visibility === 'hidden') return false;
+                  p = p.parentElement;
+                }
+                return true;
+              };
+              // Prefer committed chip node text — never full wrap with listbox soup.
+              const selected = wrap.querySelector(
+                '[data-automation-id*="selectedItem"], [data-automation-id*="selectedChip"], '
+                + '[data-automation-id*="pill"]'
+              );
+              if (selected && isShown(selected)) {
+                const clone = selected.cloneNode(true);
+                clone.querySelectorAll('button').forEach((b) => b.remove());
+                const t = (clone.innerText || clone.textContent || '')
+                  .replace(/\\s+/g, ' ').trim();
+                if (t) return t.slice(0, 120);
+              }
+              const chip = wrap.querySelector(
+                '[data-automation-id="deleteSelected"], '
+                + 'button[aria-label*="delete" i], button[aria-label*="remove" i], '
+                + '[aria-label*="clear selection" i]'
+              );
+              // Hidden delete chrome = no committed chip (empty / display:none wrap).
+              if (chip && !isShown(chip)) return '';
+              const inp = wrap.querySelector('input:not([type="hidden"])');
+              const filterEmpty = !inp || !(inp.value || '').trim();
+              // innerText excludes display:none descendants — preferred for soup-free read.
+              const wt = (wrap.innerText || wrap.textContent || '')
+                .replace(/\\s+/g, ' ').trim();
+              if (chip && isShown(chip) && wt) {
+                // Truncate at × so promptOption labels after delete chrome are ignored.
+                const beforeX = wt.split('×')[0].replace(/\\s+/g, ' ').trim();
+                return (beforeX || wt).slice(0, 240);
+              }
+              // NXP-class FoS: bare chip label (Science-Computer) with empty filter
+              if (filterEmpty && wt && !/select one/i.test(wt)) {
+                const tail = wt.replace(/^Field of Study\\*?\\s*/i, '').trim();
+                if (tail && tail.length <= 80 && !/^(search|type)/i.test(tail)
+                    && /[A-Za-z]-[A-Za-z]/.test(tail)) {
+                  return wt.slice(0, 240);
+                }
+              }
+              // How-Heard / source: "N items selected, Leaf" chrome without
+              // deleteSelected (battle gym + some tenants). Strip open listbox
+              // soup so promptOption labels cannot fake a chip.
+              const clone = wrap.cloneNode(true);
+              clone.querySelectorAll(
+                '[role="listbox"], [data-automation-id="promptLeafNode"], .menu'
+              ).forEach((n) => n.remove());
+              const clean = (clone.innerText || clone.textContent || '')
+                .replace(/\\s+/g, ' ').trim();
+              if (/\\b([1-9]\\d*)\\s+items?\\s+selected\\b/i.test(clean)) {
+                return clean.slice(0, 240);
+              }
+              return '';
+            }"""
+        )
+        return str(raw or "").strip()
+    except Exception:
+        return ""
 
 
 def is_uncommitted_filter_text(
@@ -782,6 +1030,137 @@ def looks_like_phone_country_or_address_chip(text: str | None) -> bool:
     return False
 
 
+_PHONE_COUNTRY_EMPTY_ROW_RE = re.compile(
+    r"countryphonecode|phonenumber--country|phone.?country|phonecountry|"
+    r"country\s*phone\s*code|dial\s*code|calling\s*code",
+    re.I,
+)
+
+# Shared Workday probe: Country Phone Code chip while filter input stays empty.
+PHONE_COUNTRY_WRAP_COMMITTED_JS = """(wrap) => {
+  if (!wrap) return false;
+  const aid = (wrap.getAttribute('data-automation-id') || '').toLowerCase();
+  const isPhoneCountry = /countryphonecode|phone.?country|phonenumber--country/.test(aid)
+    || /country\\s*phone\\s*code|phone\\s*country/i.test(
+      (wrap.innerText || wrap.textContent || '').slice(0, 140)
+    );
+  if (!isPhoneCountry) return false;
+  const wt = (wrap.innerText || wrap.textContent || '').replace(/\\s+/g, ' ');
+  if (/united\\s*states(\\s*of\\s*america)?\\s*\\(\\s*\\+\\s*1\\s*\\)/i.test(wt)) return true;
+  if (/united\\s*states(\\s*of\\s*america)?/i.test(wt) && /\\(\\s*\\+\\s*1\\s*\\)/.test(wt)) return true;
+  const chip = wrap.querySelector(
+    '[data-automation-id="deleteSelected"], [data-automation-id*="selectedItem"], '
+    + '[aria-label*="delete" i], [aria-label*="remove" i], button[aria-label*="clear" i]'
+  );
+  return !!(chip && /united\\s*states|\\(\\s*\\+\\d{1,4}/i.test(wt));
+}"""
+
+PHONE_COUNTRY_FIELD_PROBE_JS = """() => {
+  const probe = """ + PHONE_COUNTRY_WRAP_COMMITTED_JS + """;
+  const sels = [
+    '[data-automation-id*="formField-countryPhoneCode" i]',
+    '[data-automation-id*="formField-phoneNumber--countryPhoneCode" i]',
+    '[data-automation-id*="formField-phoneCountry" i]',
+    '[data-automation-id*="countryPhoneCode" i]',
+    '[data-automation-id*="phoneNumber--countryPhoneCode" i]',
+  ];
+  for (const sel of sels) {
+    for (const field of document.querySelectorAll(sel)) {
+      const wrap = field.closest('[data-automation-id*="formField"]') || field;
+      if (probe(wrap)) {
+        return (wrap.innerText || wrap.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 160);
+      }
+    }
+  }
+  return '';
+}"""
+
+
+def is_committed_us_phone_country_readback(text: str | None) -> bool:
+    """True when chip/readback is a committed US Country Phone Code (+1).
+
+    NXP/Markel-class Workday: ``United States of America (+1)`` with remove
+    chip — filter input stays empty but field is visually complete.
+    """
+    s = (text or "").strip()
+    if not s or not is_us_country_name(s):
+        return False
+    if re.search(r"\(\s*\+\s*1\s*\)", s):
+        return True
+    return bool(looks_like_phone_country_or_address_chip(s))
+
+
+def phone_country_empty_row(row: dict | None) -> bool:
+    """True when a required_empty / gap row refers to Country Phone Code."""
+    if not isinstance(row, dict):
+        return False
+    blob = " ".join(
+        [
+            str(row.get("id") or ""),
+            str(row.get("label") or ""),
+            str(row.get("automation_id") or ""),
+        ]
+    )
+    return bool(_PHONE_COUNTRY_EMPTY_ROW_RE.search(blob))
+
+
+def phone_country_verified_snips_from_report(report: dict | None) -> list[str]:
+    """Committed Country Phone Code readbacks from verified fill rows."""
+    if not isinstance(report, dict):
+        return []
+    out: list[str] = []
+    for f in report.get("filled") or []:
+        if not isinstance(f, dict):
+            continue
+        ftype = str(f.get("type") or "")
+        aid = str(f.get("automation_id") or "").lower()
+        if ftype not in ("PHONE_COUNTRY_CODE", "phone_country_code") and not (
+            "countryphonecode" in aid or "phonenumber--countryphonecode" in aid
+        ):
+            continue
+        if not f.get("verified"):
+            continue
+        rb = str(f.get("readback") or "").strip()
+        if rb and is_committed_us_phone_country_readback(rb):
+            out.append(rb)
+    return out
+
+
+def filter_phone_country_false_empties(
+    rows: list[dict] | None,
+    live_snip: str | None = None,
+    *,
+    fallback_snips: Iterable[str] | None = None,
+) -> list[dict]:
+    """Drop phone-country required_empty rows when live chip shows US (+1)."""
+    if not rows:
+        return []
+    committed = is_committed_us_phone_country_readback(live_snip)
+    if not committed and fallback_snips:
+        for snip in fallback_snips:
+            if is_committed_us_phone_country_readback(snip):
+                committed = True
+                break
+    if not committed:
+        for r in rows:
+            if phone_country_empty_row(r) and is_committed_us_phone_country_readback(
+                str(r.get("label") or "")
+            ):
+                committed = True
+                break
+    if not committed:
+        return list(rows)
+    return [r for r in rows if not phone_country_empty_row(r)]
+
+
+async def read_phone_country_field_snip(page) -> str:
+    """Live DOM: Country Phone Code wrap text when US (+1) chip is committed."""
+    try:
+        return str(await page.evaluate(PHONE_COUNTRY_FIELD_PROBE_JS) or "").strip()
+    except Exception:
+        return ""
+
+
 def how_heard_scope_reject_aid(automation_id: str | None) -> bool:
     """True when an automation-id is phone/address country — not how-heard."""
     aid = (automation_id or "").lower()
@@ -797,6 +1176,40 @@ def how_heard_scope_reject_aid(automation_id: str | None) -> bool:
     )
 
 
+def committed_how_heard_leaf(shown: str | None) -> str | None:
+    """Canonical valid source leaf if *shown* names one (CareerBuilder, Glassdoor, …).
+
+    Used to treat any known job-board chip as done — do not reopen to fight
+    CareerBuilder vs Glassdoor. Unknown agency chips (Antal Talent) return None.
+    """
+    s = (shown or "").strip()
+    if not s or is_multiselect_uncommitted(s):
+        return None
+    if looks_like_phone_country_or_address_chip(s):
+        return None
+    try:
+        from fill_verify import (
+            HOW_HEARD_SOURCE_PRIORITY,
+            how_heard_option_matches_priority,
+            is_how_heard_category_option as _cat,
+        )
+    except Exception:
+        return None
+    for canonical, _patterns in HOW_HEARD_SOURCE_PRIORITY:
+        try:
+            if not how_heard_option_matches_priority(canonical, s):
+                continue
+        except Exception:
+            continue
+        if _cat(canonical):
+            # GH may commit "Job Board" / "Other" as a chip; nav headers are not leaves.
+            if canonical.lower() in ("job board", "other") and multiselect_has_chip(s):
+                return canonical
+            continue
+        return canonical
+    return None
+
+
 def how_heard_source_committed(
     shown: str | None,
     candidates: Iterable[str] | None = None,
@@ -806,6 +1219,10 @@ def how_heard_source_committed(
     Requires ``N items selected`` chrome (≥1). Category headers and bare filter
     text (``Indeed`` typed into the search box, ``Internet job board``) are
     never enough — Walmart hierarchical menus leave that text without a chip.
+
+    Any *valid* source leaf (LinkedIn, Indeed, CareerBuilder, Glassdoor, …) is
+    done — do not reopen to swap siblings. Unknown chips (Antal Talent) still
+    fail when callers passed priority leaves.
 
     Country Phone Code / Address Country chips must never count as how-heard.
     """
@@ -817,7 +1234,9 @@ def how_heard_source_committed(
     if not multiselect_has_chip(s):
         # No chip chrome → typed filter / category header / single-value lookalike
         return False
-    # Chip present. Optional: prefer that it mentions an intended leaf when given.
+    # Chip present + known valid source → done (CareerBuilder vs Glassdoor: keep).
+    if committed_how_heard_leaf(s):
+        return True
     cands = [str(c).strip() for c in (candidates or []) if str(c or "").strip()]
     if not cands:
         return True
@@ -831,8 +1250,23 @@ def how_heard_source_committed(
     return False
 
 
+
 async def settle_open_listbox(page) -> None:
     """Close open prompt/listbox menus after a successful commit (never Submit)."""
+    try:
+        await page.evaluate(
+            """() => {
+              document.querySelectorAll('[aria-expanded="true"]').forEach((el) => {
+                if (el && el.blur) el.blur();
+              });
+              document.body.click();
+              const active = document.activeElement;
+              if (active && active.blur) active.blur();
+            }"""
+        )
+        await page.wait_for_timeout(120)
+    except Exception:
+        pass
     try:
         from captcha_pause import press_escape_unless_captcha
 
@@ -842,28 +1276,21 @@ async def settle_open_listbox(page) -> None:
         pass
 
 
-async def listbox_still_open(page) -> bool:
-    """True when a visible promptOption / listbox menu is still open mid-widget."""
+async def fos_widget_expanded(page) -> bool:
+    """True when a FoS/Major combobox still has aria-expanded=true."""
     try:
         return bool(
             await page.evaluate(
                 """() => {
-                  const vis = (el) => {
-                    if (!el) return false;
-                    const r = el.getBoundingClientRect();
-                    return r.width > 0 && r.height > 0
-                      && window.getComputedStyle(el).visibility !== 'hidden';
+                  const inFos = (el) => {
+                    const w = el.closest('[data-automation-id]');
+                    const id = (w && w.getAttribute('data-automation-id') || '').toLowerCase();
+                    const txt = (w && (w.innerText || w.textContent) || '').toLowerCase();
+                    return id.includes('fieldofstudy') || id.includes('discipline')
+                      || id.includes('major') || txt.includes('field of study');
                   };
-                  const opts = document.querySelectorAll(
-                    '[data-automation-id="promptOption"],[role="option"],'
-                    + '[role="listbox"] [role="option"]'
-                  );
-                  let n = 0;
-                  for (const o of opts) {
-                    if (vis(o)) { n++; if (n >= 2) return true; }
-                  }
-                  const lb = document.querySelector('[role="listbox"]');
-                  return !!(lb && vis(lb));
+                  return [...document.querySelectorAll('[aria-expanded="true"]')]
+                    .some(inFos);
                 }"""
             )
         )
@@ -871,24 +1298,447 @@ async def listbox_still_open(page) -> bool:
         return False
 
 
+async def force_close_fos_widget(page) -> None:
+    """Close FoS/Major dropdown chrome — Escape, blur, body click, Tab.
+
+    Workday portals ``promptOption`` listboxes under ``body`` (not inside
+    ``formField-major``). Nested-only hide left live NXP Expanded after a
+    correct Science-Computer chip (1301Z ``listbox_still_open``).
+
+    Settle may close chrome only — never rewrite a committed chip. Never
+    ``display:none`` listboxes/options here: that sticks and hangs reclaim
+    clicks on gym/live option portals.
+    """
+    try:
+        await page.evaluate(
+            """() => {
+              const inFos = (el) => {
+                if (!el) return false;
+                const w = el.closest('[data-automation-id]');
+                const id = (w && w.getAttribute('data-automation-id') || '').toLowerCase();
+                const txt = (w && (w.innerText || w.textContent) || '').toLowerCase();
+                return id.includes('fieldofstudy') || id.includes('discipline')
+                  || id.includes('major') || txt.includes('field of study')
+                  || txt.includes('major');
+              };
+              document.querySelectorAll('[aria-expanded="true"]').forEach((el) => {
+                if (inFos(el) || el.getAttribute('role') === 'combobox') {
+                  if (el.blur) el.blur();
+                  el.setAttribute('aria-expanded', 'false');
+                }
+              });
+              const active = document.activeElement;
+              if (active && (inFos(active) || active.getAttribute('role') === 'combobox')) {
+                if (active.blur) active.blur();
+                active.setAttribute('aria-expanded', 'false');
+              }
+              document.body.click();
+            }"""
+        )
+        await page.wait_for_timeout(120)
+    except Exception:
+        pass
+    try:
+        from captcha_pause import press_escape_unless_captcha
+
+        await press_escape_unless_captcha(page)
+        await page.wait_for_timeout(60)
+        await press_escape_unless_captcha(page)
+    except Exception:
+        pass
+    try:
+        await page.keyboard.press("Tab")
+        await page.wait_for_timeout(60)
+    except Exception:
+        pass
+    await settle_open_listbox(page)
+
+
+async def fos_chip_committed_on_page(
+    page,
+    candidates: list[str] | None = None,
+    intent: str | None = None,
+) -> bool:
+    """True when every visible FoS wrap shows a chip matching intent."""
+    from field_done import field_is_done_from_readback
+
+    cands = [str(c).strip() for c in (candidates or []) if str(c or "").strip()]
+    meta: dict = {"type": "FIELD_OF_STUDY", "dom_chip": True}
+    if cands:
+        meta["aliases_tried"] = cands
+    intent_val = intent or (cands[0] if cands else None)
+    try:
+        wraps = page.locator(
+            '[data-automation-id*="fieldOfStudy"],'
+            '[data-automation-id*="discipline"],'
+            '[data-automation-id*="major"],'
+            '[data-automation-id*="formField"]'
+        )
+        n = await wraps.count()
+    except Exception:
+        return False
+    saw_chip = False
+    for i in range(min(n, 12)):
+        wrap = wraps.nth(i)
+        try:
+            if not await wrap.count():
+                continue
+            wt = (await wrap.inner_text() or "").strip()
+            if "field of study" not in wt.lower() and not any(
+                k in (await wrap.get_attribute("data-automation-id") or "").lower()
+                for k in ("fieldofstudy", "discipline", "major")
+            ):
+                continue
+        except Exception:
+            continue
+        chip = (await read_workday_formfield_chip(wrap) or "").strip()
+        if not chip:
+            continue
+        saw_chip = True
+        if not field_is_done_from_readback(chip, meta, intent_val).ok:
+            return False
+    return saw_chip
+
+
+async def settle_fos_widget_until_closed(
+    page,
+    *,
+    max_rounds: int = 6,
+    candidates: list[str] | None = None,
+    intent: str | None = None,
+) -> bool:
+    """Close Workday FoS/listbox prompts — body-click + Escape until settled.
+
+    When the FoS chip already matches intent, stop after 2 chrome-close rounds
+    even if ``listbox_still_open`` still fires (stale portal chrome). Burning
+    6 full rounds per alias walk made live NXP look like page-cycling while
+    doing lock_skip no-ops (2227Z steps 028–038).
+    """
+    settled = False
+    chip_ok = False
+    rounds = max_rounds
+    for round_i in range(rounds):
+        await force_close_fos_widget(page)
+        try:
+            await page.wait_for_timeout(100)
+        except Exception:
+            pass
+        open_lb = await listbox_still_open(page)
+        expanded = await fos_widget_expanded(page)
+        if candidates or intent:
+            chip_ok = await fos_chip_committed_on_page(page, candidates, intent)
+        if not open_lb and not expanded:
+            settled = True
+            break
+        if chip_ok and not open_lb:
+            settled = True
+            break
+        if chip_ok:
+            # Committed chip: one more force-close then accept — do not thrash.
+            if round_i >= 1:
+                settled = True
+                break
+            await force_close_fos_widget(page)
+            try:
+                await page.wait_for_timeout(80)
+            except Exception:
+                pass
+            settled = True
+            break
+    return settled
+
+
+async def how_heard_widget_expanded(page) -> bool:
+    """True when How-Heard / source combobox still has aria-expanded=true."""
+    try:
+        return bool(
+            await page.evaluate(
+                """() => {
+                  const inHh = (el) => {
+                    if (!el) return false;
+                    const w = el.closest('[data-automation-id]');
+                    const id = (w && w.getAttribute('data-automation-id') || '').toLowerCase();
+                    const name = (el.getAttribute('name') || '').toLowerCase();
+                    const aid = (el.getAttribute('data-automation-id') || '').toLowerCase();
+                    const txt = (w && (w.innerText || w.textContent) || '').toLowerCase();
+                    return id.includes('formfield-source') || id.includes('how_heard')
+                      || id.includes('howdidyouhear') || id.includes('candidatesource')
+                      || aid.includes('source--source') || name.includes('source--source')
+                      || txt.includes('how did you hear');
+                  };
+                  return [...document.querySelectorAll('[aria-expanded="true"]')]
+                    .some(inHh);
+                }"""
+            )
+        )
+    except Exception:
+        return False
+
+
+async def force_close_how_heard_widget(page) -> None:
+    """Close How-Heard/source dropdown chrome so it cannot steal State/Next."""
+    try:
+        await page.evaluate(
+            """() => {
+              const inHh = (el) => {
+                if (!el) return false;
+                const w = el.closest('[data-automation-id]');
+                const id = (w && w.getAttribute('data-automation-id') || '').toLowerCase();
+                const name = (el.getAttribute('name') || '').toLowerCase();
+                const aid = (el.getAttribute('data-automation-id') || '').toLowerCase();
+                const txt = (w && (w.innerText || w.textContent) || '').toLowerCase();
+                return id.includes('formfield-source') || id.includes('how_heard')
+                  || id.includes('howdidyouhear') || id.includes('candidatesource')
+                  || aid.includes('source--source') || name.includes('source--source')
+                  || txt.includes('how did you hear');
+              };
+              document.querySelectorAll('[aria-expanded="true"]').forEach((el) => {
+                if (inHh(el) || el.getAttribute('role') === 'combobox') {
+                  if (el.blur) el.blur();
+                  el.setAttribute('aria-expanded', 'false');
+                }
+              });
+              const active = document.activeElement;
+              if (active && (inHh(active) || active.getAttribute('role') === 'combobox')) {
+                if (active.blur) active.blur();
+                active.setAttribute('aria-expanded', 'false');
+              }
+              document.body.click();
+            }"""
+        )
+        await page.wait_for_timeout(120)
+    except Exception:
+        pass
+    try:
+        from captcha_pause import press_escape_unless_captcha
+
+        await press_escape_unless_captcha(page)
+        await page.wait_for_timeout(60)
+    except Exception:
+        pass
+    await settle_open_listbox(page)
+
+
+async def how_heard_chip_committed_on_page(page) -> bool:
+    """True when How-Heard wrap shows a valid source leaf chip (any sibling)."""
+    try:
+        snip = await _read_how_heard_wrap_text(page)
+    except Exception:
+        snip = ""
+    if how_heard_source_committed(snip):
+        return True
+    return bool(committed_how_heard_leaf(snip))
+
+
+async def listbox_still_open(page) -> bool:
+    """True when a visible promptOption / listbox menu is still open mid-widget.
+
+    Chrome-closed (no ``aria-expanded`` + no visible listbox) is NOT open —
+    leftover Skills ``promptOption`` chips must not fake ``listbox_still_open``
+    after a FoS skip (NXP 1045Z).
+    """
+    try:
+        return bool(
+            await page.evaluate(
+                """() => {
+                  const vis = (el) => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    const cs = window.getComputedStyle(el);
+                    return r.width > 0 && r.height > 0
+                      && cs.visibility !== 'hidden' && cs.display !== 'none';
+                  };
+                  const isSkills = (el) => {
+                    let n = el;
+                    for (let i = 0; i < 8 && n; i++, n = n.parentElement) {
+                      const aid = ((n.getAttribute && n.getAttribute('data-automation-id')) || '').toLowerCase();
+                      const cls = (n.className || '').toString().toLowerCase();
+                      if (/\\bskills?\\b|suggested.?skill|skill.?chip|formfield-skill/.test(aid + ' ' + cls))
+                        return true;
+                    }
+                    return false;
+                  };
+                  const menus = document.querySelectorAll(
+                    '[role="listbox"],[data-automation-id="promptList"]'
+                  );
+                  for (const lb of menus) {
+                    if (vis(lb) && !isSkills(lb)) return true;
+                  }
+                  const expanded = [...document.querySelectorAll('[aria-expanded="true"]')]
+                    .some((el) => vis(el) && !isSkills(el));
+                  if (!expanded) return false;
+                  const opts = document.querySelectorAll(
+                    '[data-automation-id="promptOption"],[role="option"]'
+                  );
+                  let n = 0;
+                  for (const o of opts) {
+                    if (vis(o) && !isSkills(o)) { n++; if (n >= 2) return true; }
+                  }
+                  return false;
+                }"""
+            )
+        )
+    except Exception:
+        return False
+
+
+_FOS_SKIP_REASONS = frozenset(
+    {
+        "no_matching_option",
+        "fos_not_committed",
+        "enumerate_below_threshold_no_safe_filter",
+        "fos_skip",
+    }
+)
+
+
+def fos_skip_allows_advance(report: dict | None) -> bool:
+    """True when FoS was skip / no_matching_option — do not block Next on chrome."""
+    if not isinstance(report, dict):
+        return False
+    if report.get("fos_skip") or report.get("fos_no_matching_option"):
+        return True
+    for bag in (report.get("filled"), report.get("missed")):
+        for row in bag or []:
+            if not isinstance(row, dict):
+                continue
+            ft = str(row.get("type") or "").upper()
+            aid = str(row.get("automation_id") or "").lower().replace("_", "").replace(
+                "-", ""
+            )
+            fos_ish = ft in _FOS_TYPES or "fieldofstudy" in aid
+            if not fos_ish:
+                continue
+            reason = str(row.get("reason") or row.get("error") or "")
+            if (
+                row.get("fos_skip")
+                or row.get("optional_miss")
+                or reason in _FOS_SKIP_REASONS
+            ):
+                return True
+    return False
+
+
 async def settle_before_advance(page, report: dict | None = None) -> dict:
     """Close mid-widget menus before Save and Continue — never ADVANCE with listbox open."""
     detail: dict[str, Any] = {"settled": False, "was_open": False}
     try:
+        fos_cands: list[str] = []
+        fos_intent: str | None = None
+        if report is not None:
+            fill_values = report.get("fill_values") or {}
+            fos_intent = (
+                fill_values.get("FIELD_OF_STUDY")
+                or fill_values.get("DISCIPLINE")
+                or fill_values.get("MAJOR")
+            )
+            try:
+                from exp_workday_selectors import _fos_candidates
+
+                fos_cands = _fos_candidates(fill_values, for_fill=False)
+            except Exception:
+                pass
+        await settle_fos_widget_until_closed(
+            page, candidates=fos_cands or None, intent=fos_intent
+        )
+        # How-Heard listbox left open steals State keystrokes (NXP 0842Z / 2244Z).
+        hh_chip = await how_heard_chip_committed_on_page(page)
+        if hh_chip or await how_heard_widget_expanded(page) or await listbox_still_open(page):
+            await force_close_how_heard_widget(page)
         open_now = await listbox_still_open(page)
-        detail["was_open"] = open_now
-        if open_now:
-            await settle_open_listbox(page)
+        expanded_now = await fos_widget_expanded(page)
+        hh_exp = await how_heard_widget_expanded(page)
+        detail["was_open"] = open_now or expanded_now or hh_exp
+        if open_now or expanded_now or hh_exp:
+            await force_close_fos_widget(page)
+            await force_close_how_heard_widget(page)
             try:
                 await page.wait_for_timeout(200)
             except Exception:
                 pass
-            still = await listbox_still_open(page)
+            still_lb = await listbox_still_open(page)
+            still_exp = await fos_widget_expanded(page)
+            still_hh = await how_heard_widget_expanded(page)
+            still = still_lb or still_exp or still_hh
+            if still:
+                # NXP: committed US (+1) chip can leave stale listbox chrome open.
+                snip = await read_phone_country_field_snip(page)
+                if is_committed_us_phone_country_readback(snip):
+                    try:
+                        await page.evaluate(
+                            """() => {
+                              document.body.click();
+                              const active = document.activeElement;
+                              if (active && active.blur) active.blur();
+                            }"""
+                        )
+                        await page.wait_for_timeout(150)
+                        await settle_open_listbox(page)
+                        await page.wait_for_timeout(120)
+                    except Exception:
+                        pass
+                    still_lb = await listbox_still_open(page)
+                    still_exp = await fos_widget_expanded(page)
+                    still_hh = await how_heard_widget_expanded(page)
+                    still = still_lb or still_exp or still_hh
+                    if still and is_committed_us_phone_country_readback(snip):
+                        detail["phone_country_chip_override"] = True
+                        still = False
+            if still:
+                # NXP 1045Z: FoS skip / no_matching_option + chrome closed
+                # (Skills chips leftover) must not block Experience Next.
+                chrome_open = await fos_widget_expanded(page) or await how_heard_widget_expanded(
+                    page
+                )
+                if not chrome_open and fos_skip_allows_advance(report):
+                    await force_close_fos_widget(page)
+                    detail["fos_skip_override"] = True
+                    still = False
+            if still:
+                # NXP 1301Z: Science-Computer chip committed but Major listbox Expanded.
+                # Mirror phone-country override — committed FoS must not block ADVANCE
+                # when portal chrome refuses to drop after force-close.
+                chip_ok = await fos_chip_committed_on_page(
+                    page, fos_cands or None, fos_intent
+                )
+                if not chip_ok and report is not None:
+                    chip_ok = any(
+                        isinstance(f, dict)
+                        and str(f.get("type") or "").upper()
+                        in ("FIELD_OF_STUDY", "DISCIPLINE", "MAJOR")
+                        and (
+                            f.get("verified")
+                            or f.get("ok")
+                            or f.get("skipped_already_correct")
+                        )
+                        for f in (report.get("filled") or [])
+                    )
+                if chip_ok:
+                    await force_close_fos_widget(page)
+                    await settle_fos_widget_until_closed(
+                        page, candidates=fos_cands or None, intent=fos_intent
+                    )
+                    detail["fos_chip_override"] = True
+                    still = False
+            if still:
+                # 0842Z: valid How-Heard leaf chip committed but portal listbox
+                # still open — close and do not block other fields / Next.
+                hh_ok = hh_chip or await how_heard_chip_committed_on_page(page)
+                if hh_ok:
+                    await force_close_how_heard_widget(page)
+                    detail["how_heard_chip_override"] = True
+                    still = False
             detail["still_open"] = still
             detail["settled"] = not still
             if report is not None:
                 report["mid_widget_open"] = bool(still)
                 report["listbox_open"] = bool(still)
+                if detail.get("fos_chip_override"):
+                    report["fos_chip_override"] = True
+                if detail.get("fos_skip_override"):
+                    report["fos_skip_override"] = True
+                if detail.get("how_heard_chip_override"):
+                    report["how_heard_chip_override"] = True
         elif report is not None:
             report["mid_widget_open"] = False
             report["listbox_open"] = False
@@ -1378,6 +2228,8 @@ async def enumerate_listbox_options(
     timeout_ms: int = 2500,
     max_scrolls: int = 10,
     max_options: int = 200,
+    field_type: str = "",
+    portal_fallback: bool | None = None,
 ) -> tuple[Any, list[str]]:
     """Collect option texts, scrolling the listbox to load virtualized rows.
 
@@ -1389,6 +2241,12 @@ async def enumerate_listbox_options(
     Returns (locator, texts) with texts aligned to locator indices when possible.
     Dummy-only helper — never submits.
     """
+    ftype = str(field_type or "").upper()
+    fallback = (
+        False
+        if ftype in _FOS_TYPES
+        else (True if portal_fallback is None else bool(portal_fallback))
+    )
     opts, texts = await wait_for_option_texts(
         page,
         selectors=selectors,
@@ -1397,6 +2255,8 @@ async def enumerate_listbox_options(
         nudge=True,
         allow_enter_nudge=False,
         root=root,
+        field_type=field_type,
+        portal_fallback=fallback,
         max_options=max_options,
     )
     if not texts:
@@ -1422,6 +2282,8 @@ async def enumerate_listbox_options(
             nudge=False,
             root=root,
             max_options=max_options,
+            field_type=field_type,
+            portal_fallback=fallback,
         )
         for t in more:
             if t and t not in seen:
@@ -1477,6 +2339,8 @@ async def enumerate_listbox_options(
         nudge=False,
         root=root,
         max_options=max_options,
+        field_type=field_type,
+        portal_fallback=fallback,
     )
     # Prefer the union of scrolled texts for scoring; click uses live locator
     merged = list(texts2) if texts2 else list(seen)
@@ -1633,16 +2497,10 @@ async def nudge_listbox_after_type(
                 break
             except Exception:
                 continue
-    # 3) Last resort: Enter on the focused filter (loads suggestions on some WD prompts)
+    # 3) Never Enter — MCP NXP: pressEnter false always (Enter submits / commits
+    # filter text instead of a promptOption chip).
     if allow_enter:
-        try:
-            if filter_input is not None:
-                await filter_input.focus()
-            await page.keyboard.press("Enter")
-            detail["nudges"].append("Enter_filter")
-            await page.wait_for_timeout(400)
-        except Exception as e:
-            detail["enter_error"] = str(e)[:80]
+        detail["nudges"].append("enter_skipped_mcp")
     return detail
 
 
@@ -1653,6 +2511,7 @@ async (el, args) => {
   const value = String((args && args.value) || '');
   const aliases = Array.isArray(args && args.aliases) ? args.aliases.map(String) : [];
   const waitMs = Math.max(400, Math.min(2200, Number((args && args.wait_ms) || 1200)));
+  const strictPrompt = !!(args && args.strict_prompt);
   if (!el || !value) return { status: 'no-el', options: [] };
   const vis = (x) => {
     try {
@@ -1713,13 +2572,20 @@ async (el, args) => {
       }
     } catch (e) {}
   };
-  const getOpts = () => [...document.querySelectorAll(
-    '[data-automation-id="promptOption"],[role="option"],'
-    + '[class*="dropdown-results"],[class*="suggestion"],'
-    + '[class*="select__option"]'
-  )].filter(vis).filter((x) => {
+  const optSel = strictPrompt
+    ? '[data-automation-id="promptOption"],[role="option"]'
+    : '[data-automation-id="promptOption"],[role="option"],'
+      + '[class*="dropdown-results"],[class*="suggestion"],'
+      + '[class*="select__option"]';
+  const getOpts = () => [...document.querySelectorAll(optSel)].filter(vis).filter((x) => {
     const t = txt(x);
-    return t && t.length > 0 && t.length < 120;
+    if (!t || t.length === 0 || t.length >= 120) return false;
+    if (strictPrompt) {
+      const wrap = x.closest('[data-automation-id]') || x;
+      const aid = ((wrap.getAttribute && wrap.getAttribute('data-automation-id')) || '').toLowerCase();
+      if (/skill/.test(aid)) return false;
+    }
+    return true;
   });
   const cands = [value, ...aliases].map((s) => String(s || '').trim()).filter(Boolean);
   const tokensFrom = (s) => String(s).toLowerCase().split(/[\\s,/|+=()-]+/)
@@ -1841,12 +2707,16 @@ async def fiber_search_select(
     *,
     aliases: list[str] | None = None,
     wait_ms: int = 1500,
+    field_type: str = "",
+    strict_prompt: bool = False,
 ) -> dict[str, Any]:
     """Workday/async typeahead via React fiber onKeyDown Tab (ChamPro searchSelect).
 
-    Prefer this over typing-only for HOW_HEARD / SCHOOL / SOURCE prompts.
+    Prefer this over typing-only for SCHOOL / SOURCE prompts (not How-Heard —
+    How-Heard is click → category → leaf → chip, never type-as-commit).
     Falls back to caller (nudge_listbox / Playwright click) when status != picked.
     Never blurs the filter (blur can clear unpicked autocomplete).
+    FoS: ``strict_prompt`` so Skills suggested chips are never scored/clicked.
     """
     detail: dict[str, Any] = {
         "algorithm": "fiber_search_select",
@@ -1865,6 +2735,7 @@ async def fiber_search_select(
             cands.append(s)
     try:
         # Ensure the locator resolves to a real input before fiber walk
+        await scroll_widget_into_view(filter_input)
         try:
             await filter_input.click(timeout=2000, force=True)
         except Exception:
@@ -1872,9 +2743,16 @@ async def fiber_search_select(
                 await filter_input.focus()
             except Exception:
                 pass
+        ftype = str(field_type or "").upper()
+        strict = bool(strict_prompt) or ftype in _FOS_TYPES
         raw = await filter_input.evaluate(
             _FIBER_SEARCH_SELECT_JS,
-            {"value": primary, "aliases": cands[1:], "wait_ms": wait_ms},
+            {
+                "value": primary,
+                "aliases": cands[1:],
+                "wait_ms": wait_ms,
+                "strict_prompt": strict,
+            },
         )
         if not isinstance(raw, dict):
             detail["status"] = "bad_result"
@@ -1940,38 +2818,14 @@ async def fiber_search_select(
                         pass
                 return detail
             if status == "scored":
-                idx = raw.get("optionIndex")
-                try:
-                    clicked = await filter_input.evaluate(
-                        """({idx, text}) => {
-                          const vis = (el) => {
-                            if (!el) return false;
-                            const r = el.getBoundingClientRect();
-                            return r.width > 0 && r.height > 0;
-                          };
-                          const txt = (el) => (el.innerText || el.textContent || '').trim();
-                          const opts = [...document.querySelectorAll(
-                            '[data-automation-id="promptOption"],[role="option"],'
-                            + '[class*="dropdown-results"],[class*="suggestion"],'
-                            + '[class*="select__option"]'
-                          )].filter(vis).filter((x) => {
-                            const t = txt(x);
-                            return t && t.length > 0 && t.length < 120;
-                          });
-                          let el = (typeof idx === 'number' && opts[idx]) ? opts[idx] : null;
-                          if (!el) el = opts.find((o) => txt(o) === text) || null;
-                          if (!el) return false;
-                          el.click();
-                          return true;
-                        }""",
-                        {"idx": idx, "text": picked_f},
-                    )
-                except Exception as e:
-                    detail["status"] = "click_failed"
-                    detail["error"] = str(e)[:80]
-                    detail["option_clicked"] = False
-                    detail["ok"] = False
-                    return detail
+                # Re-query by exact text (MCP) — never reuse fiber's stale optionIndex.
+                clicked = await click_option_exact_text(
+                    page,
+                    picked_f,
+                    timeout_ms=4000,
+                    allow_soft=True,
+                    field_type=ftype,
+                )
                 if not clicked:
                     detail["status"] = "click_failed"
                     detail["error"] = "option_gone"
@@ -1998,6 +2852,241 @@ async def fiber_search_select(
         detail["error"] = str(e)[:120]
         detail["ok"] = False
         return detail
+
+
+# Workday stubborn TEXT (NXP addressLine2 empty_readback): Playwright fill
+# paints the DOM, then fiber re-render wipes it unless __reactProps$.onChange
+# commits React state. Native setter + InputEvent. NOT for ADDRESS_STATE /
+# ADDRESS_COUNTY (promptOption combobox — path-drift typed Sangamon as text).
+_STUBBORN_TEXT_TYPES = frozenset({"ADDRESS_LINE1", "ADDRESS_LINE2"})
+_STUBBORN_TEXT_AID_NEEDLES = (
+    "addressline1",
+    "addressline2",
+    "address--addressline1",
+)
+
+_FIBER_TEXT_COMMIT_JS = """
+(el, value) => {
+  const v = String(value || '');
+  if (!el) return { ok: false, error: 'no-el', algorithm: 'fiber_text_commit' };
+  try { el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
+  try { el.focus(); } catch (e) {}
+  const tag = (el.tagName || '').toUpperCase();
+  const proto = (tag === 'TEXTAREA')
+    ? (window.HTMLTextAreaElement && HTMLTextAreaElement.prototype)
+    : (window.HTMLInputElement && HTMLInputElement.prototype);
+  const desc = proto && Object.getOwnPropertyDescriptor(proto, 'value');
+  const setNative = (x) => {
+    try {
+      if (desc && desc.set) desc.set.call(el, x);
+      else el.value = x;
+      try { if (el._valueTracker) el._valueTracker.setValue(''); } catch (e) {}
+    } catch (e) {
+      try { el.value = x; } catch (e2) {}
+    }
+  };
+  setNative('');
+  try {
+    el.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true,
+      inputType: 'deleteContentBackward', data: null
+    }));
+  } catch (e) {}
+  setNative(v);
+  let beforeinput_ok = false;
+  try {
+    beforeinput_ok = el.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true,
+      inputType: 'insertText', data: v
+    }));
+  } catch (e) {}
+  try {
+    el.dispatchEvent(new InputEvent('input', {
+      bubbles: true, cancelable: false,
+      inputType: 'insertText', data: v
+    }));
+  } catch (e) {
+    try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e2) {}
+  }
+  try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+  // Tab commits gym/live Fiber stubs that listen for keydown (never Enter —
+  // Enter can submit a Workday step). Playwright fill() does not dispatch Tab.
+  try {
+    el.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab', code: 'Tab', keyCode: 9, which: 9,
+      bubbles: true, cancelable: true
+    }));
+  } catch (e) {}
+  let fiber = false;
+  let fiberKey = '';
+  try {
+    const pk = Object.keys(el).find((k) => k.startsWith('__reactProps'));
+    const p = pk ? el[pk] : null;
+    if (pk) fiberKey = String(pk);
+    if (p && typeof p.onChange === 'function') {
+      p.onChange({
+        target: el, currentTarget: el,
+        preventDefault() {}, stopPropagation() {}
+      });
+      fiber = true;
+    }
+  } catch (e) {}
+  return {
+    ok: true,
+    value: (el.value || ''),
+    fiber_onChange: fiber,
+    fiber_key: fiberKey,
+    beforeinput_not_canceled: beforeinput_ok,
+    algorithm: 'fiber_text_commit'
+  };
+}
+"""
+
+
+def is_stubborn_text_field(
+    *,
+    automation_id: str = "",
+    field_type: str = "",
+    selector: str = "",
+) -> bool:
+    """True for Workday addressLine2-style controlled text.
+
+    ADDRESS_STATE / countryRegion and ADDRESS_COUNTY / regionSubdivision1 are
+    promptOption comboboxes — never stubborn fiber text.
+    """
+    ft = str(field_type or "").upper()
+    if ft in ("ADDRESS_STATE", "ADDRESS_COUNTRY", "ADDRESS_COUNTY"):
+        return False
+    if ft in _STUBBORN_TEXT_TYPES:
+        return True
+    blob = f"{automation_id} {selector}".lower().replace("_", "").replace("-", "")
+    return any(
+        n.replace("_", "").replace("-", "") in blob for n in _STUBBORN_TEXT_AID_NEEDLES
+    )
+
+
+async def fiber_text_commit(locator, value: str) -> dict[str, Any]:
+    """Native value setter + InputEvent + ``__reactProps$.onChange`` (ChamPro).
+
+    Commits Workday-like controlled TEXT so fiber re-render does not empty_readback.
+    Caller must still ``verify_before_touch`` / ``commit_fill`` / field locks.
+    Never use this as the Illinois State picker — that stays role_click/promptOption.
+    """
+    detail: dict[str, Any] = {
+        "algorithm": "fiber_text_commit",
+        "ok": False,
+        "fiber_onChange": False,
+    }
+    want = str(value or "")
+    if locator is None:
+        detail["error"] = "no-locator"
+        return detail
+    try:
+        try:
+            await locator.click(timeout=2000, force=True)
+        except Exception:
+            try:
+                await locator.focus()
+            except Exception:
+                pass
+        raw = await locator.evaluate(_FIBER_TEXT_COMMIT_JS, want)
+        if isinstance(raw, dict):
+            detail.update(raw)
+            detail["ok"] = bool(raw.get("ok"))
+        else:
+            detail["error"] = str(raw)[:80]
+    except Exception as e:
+        detail["error"] = str(e)[:120]
+        detail["ok"] = False
+    return detail
+
+
+async def fill_text_fiber_then_read(
+    locator,
+    value: str,
+    *,
+    stubborn: bool = False,
+    page=None,
+) -> dict[str, Any]:
+    """Fill text: stubborn fields fiber-first; others fill then fiber on miss.
+
+    Waits past typical fiber re-render (~120ms) before returning so callers
+    can trust readback. Does not lock or commit_fill — Tech10 stays at caller.
+    """
+    want = str(value or "")
+    out: dict[str, Any] = {
+        "algorithm": "playwright_fill",
+        "ok": False,
+        "fiber_onChange": False,
+        "stubborn": bool(stubborn),
+    }
+    if locator is None:
+        out["error"] = "no-locator"
+        return out
+
+    async def _pw_fill() -> None:
+        try:
+            await locator.fill(want, timeout=4000)
+        except Exception:
+            try:
+                await locator.click(timeout=2000, force=True, click_count=3)
+            except Exception:
+                pass
+
+    async def _settle() -> None:
+        waiter = page
+        if waiter is None:
+            try:
+                waiter = locator.page
+            except Exception:
+                waiter = None
+        if waiter is not None:
+            try:
+                await waiter.wait_for_timeout(120)
+            except Exception:
+                pass
+
+    if stubborn:
+        fiber = await fiber_text_commit(locator, want)
+        out.update(fiber)
+        await _settle()
+        shown = ""
+        try:
+            shown = (await locator.input_value()) or ""
+        except Exception:
+            shown = str(fiber.get("value") or "")
+        if want and shown.strip() and (
+            shown.strip().lower() == want.strip().lower()
+            or want.strip().lower() in shown.strip().lower()
+        ):
+            out["ok"] = True
+            out["value"] = shown
+            return out
+        await _pw_fill()
+        fiber = await fiber_text_commit(locator, want)
+        out.update(fiber)
+        out["retried_after_fill"] = True
+        await _settle()
+        return out
+
+    await _pw_fill()
+    shown = ""
+    try:
+        shown = (await locator.input_value()) or ""
+    except Exception:
+        shown = ""
+    if want and shown.strip() and (
+        shown.strip().lower() == want.strip().lower()
+        or want.strip().lower() in shown.strip().lower()
+    ):
+        out["ok"] = True
+        out["value"] = shown
+        return out
+    fiber = await fiber_text_commit(locator, want)
+    out.update(fiber)
+    out["empty_readback_fiber_retry"] = True
+    await _settle()
+    return out
 
 
 _HOW_HEARD_OPTION_SELS = [
@@ -2090,7 +3179,12 @@ async def is_how_heard_safe_filter_input(loc) -> bool:
 
 
 async def _read_how_heard_wrap_text(page) -> str:
-    """Chip chrome for how-heard / source (prefer formField, not filter alone)."""
+    """Chip chrome for how-heard / source (prefer formField, not filter alone).
+
+    Strips open ``role=listbox`` soup so promptOption rows cannot fake a chip,
+    but keeps ``selectedItem`` / ``N items selected`` chrome (never strip
+    committed pills — 0842Z leftover was label-only after listbox scrape).
+    """
     for sel in _HOW_HEARD_WRAP_SELS.split(", "):
         try:
             loc = page.locator(sel.strip()).first
@@ -2101,7 +3195,28 @@ async def _read_how_heard_wrap_text(page) -> str:
                     continue
             except Exception:
                 pass
-            snip = ((await loc.inner_text()) or "").strip()
+            snip = str(
+                await loc.evaluate(
+                    """(el) => {
+                      const wrap = el.closest('[data-automation-id*="formField"]') || el;
+                      const selected = wrap.querySelector(
+                        '[data-automation-id*="selectedItem"], '
+                        + '[data-automation-id*="selectedChip"], '
+                        + '[data-automation-id*="pill"]'
+                      );
+                      if (selected) {
+                        const t = (selected.innerText || selected.textContent || '')
+                          .replace(/\\s+/g, ' ').trim();
+                        if (t) return t.slice(0, 240);
+                      }
+                      const clone = wrap.cloneNode(true);
+                      clone.querySelectorAll('[role="listbox"], .menu').forEach((n) => n.remove());
+                      return (clone.innerText || clone.textContent || '')
+                        .replace(/\\s+/g, ' ').trim().slice(0, 240);
+                    }"""
+                )
+                or ""
+            ).strip()
             if not snip:
                 continue
             if looks_like_phone_country_or_address_chip(snip):
@@ -2110,6 +3225,12 @@ async def _read_how_heard_wrap_text(page) -> str:
         except Exception:
             continue
     return ""
+
+
+def _norm_how_heard_label(text: str | None) -> str:
+    """Normalize option/chip text; strip drill chevrons (``Website >``)."""
+    t = " ".join(str(text or "").strip().split())
+    return re.sub(r"\s*[>›»]\s*$", "", t).strip().lower()
 
 
 async def _list_how_heard_options(page, *, max_n: int = 40) -> list[dict[str, Any]]:
@@ -2134,7 +3255,7 @@ async def _list_how_heard_options(page, *, max_n: int = 40) -> list[dict[str, An
                 continue
             if not text or len(text) > 120:
                 continue
-            key = text.lower()
+            key = _norm_how_heard_label(text)
             if key in seen:
                 continue
             seen.add(key)
@@ -2170,6 +3291,7 @@ async def _list_how_heard_options(page, *, max_n: int = 40) -> list[dict[str, An
                 meta.get("chevron")
                 or meta.get("ariaExpanded") in ("true", "false")
                 or str(meta.get("hasPopup") or "").lower() in ("true", "menu", "listbox")
+                or str(text or "").rstrip().endswith(">")
             ):
                 # Don't treat concrete leaves (Indeed) as expandable categories
                 leafish = text.lower() in {
@@ -2189,42 +3311,316 @@ async def _list_how_heard_options(page, *, max_n: int = 40) -> list[dict[str, An
     return out
 
 
-async def _click_option_by_text(page, text: str, *, timeout_ms: int = 4000) -> bool:
-    """Click the first visible option whose text soft-matches *text*."""
-    want = (text or "").strip()
-    if not want:
+# MCP NXP: off-screen Select One produced ZERO [role=option] until
+# scrollIntoView({block:'center'}) → click → wait 1–1.5s → exact option click.
+# pressEnter is always false. Re-query locators after every click.
+WIDGET_OPEN_WAIT_MS = 1500
+_OPTION_EXACT_SELS = (
+    '[role="option"]',
+    '[data-automation-id="promptOption"]',
+    '[data-automation-id*="promptOption" i]',
+)
+_FOS_TYPES = frozenset({"FIELD_OF_STUDY", "DISCIPLINE", "MAJOR"})
+_SKILLS_AID_RE = re.compile(r"\bskills?\b|suggested.?skill|skill.?chip|formfield-skill", re.I)
+
+
+async def scroll_widget_into_view(locator) -> bool:
+    """MCP: ``scrollIntoView({block:'center'})`` before widget click.
+
+    Playwright ``scroll_into_view_if_needed`` only peeks the edge; off-screen
+    Workday Select One then opens with zero ``[role=option]`` / promptOption.
+    """
+    if locator is None:
         return False
-    opts = await _list_how_heard_options(page)
-    best = None
-    best_score = 0
-    for o in opts:
-        t = str(o.get("text") or "")
-        tl, wl = t.lower(), want.lower()
-        if tl == wl:
-            sc = 100
-        elif soft_value_match(want, t):
-            sc = 90
-        elif wl in tl or tl in wl:
-            sc = 70
-        else:
-            sc = 0
-        if sc > best_score:
-            best_score = sc
-            best = o
-    if not best or best_score < 70:
-        return False
-    sel = str(best.get("selector") or _HOW_HEARD_OPTION_SELS[0])
-    idx = int(best.get("index") or 0)
     try:
-        await page.locator(sel).nth(idx).click(timeout=timeout_ms)
+        await locator.evaluate(
+            """el => {
+              try { el.scrollIntoView({ block: 'center', inline: 'nearest' }); }
+              catch (e) {}
+            }"""
+        )
         return True
     except Exception:
         try:
-            loc = page.get_by_role("option", name=want, exact=False).first
-            await loc.click(timeout=timeout_ms)
+            await locator.scroll_into_view_if_needed()
             return True
         except Exception:
             return False
+
+
+async def option_is_skills_suggested(el, text: str = "") -> bool:
+    """True when the node lives under Skills suggested-chip chrome (not FoS)."""
+    blob = str(text or "")
+    try:
+        meta = await el.evaluate(
+            """el => {
+              const w = el.closest('[data-automation-id], [class*="skill" i]') || el;
+              const aid = (w.getAttribute && w.getAttribute('data-automation-id')) || '';
+              const cls = (w.className || '').toString();
+              return (aid + ' ' + cls).slice(0, 240);
+            }"""
+        )
+        blob = f"{meta} {blob}"
+    except Exception:
+        pass
+    return bool(_SKILLS_AID_RE.search(blob or ""))
+
+
+async def open_list_widget(
+    page,
+    locator,
+    *,
+    wait_ms: int = WIDGET_OPEN_WAIT_MS,
+    root: Any | None = None,
+    field_type: str = "",
+) -> dict[str, Any]:
+    """scrollIntoView({block:'center'}) → click → wait for options. Never Enter.
+
+    Polls up to ``wait_ms`` (1–1.5s) for ``[role=option]`` / promptOption.
+    Callers must re-query option locators after this returns (handles go stale).
+    Dummy-only — never submits.
+    """
+    detail: dict[str, Any] = {"opened": False, "options": [], "algorithm": "mcp_open_list"}
+    if locator is None:
+        detail["error"] = "no_locator"
+        return detail
+    await scroll_widget_into_view(locator)
+    try:
+        await locator.click(timeout=4000, force=True)
+    except Exception:
+        try:
+            await locator.click(timeout=4000)
+        except Exception as e:
+            detail["error"] = f"open_failed:{e}"[:120]
+            return detail
+    detail["opened"] = True
+    timeout = max(1000, min(int(wait_ms or WIDGET_OPEN_WAIT_MS), 1500))
+    try:
+        _opts, texts = await wait_for_option_texts(
+            page,
+            timeout_ms=timeout,
+            nudge=False,
+            allow_enter_nudge=False,
+            root=root,
+            field_type=field_type,
+            portal_fallback=str(field_type or "").upper() not in _FOS_TYPES,
+        )
+        detail["options"] = [t for t in (texts or []) if t][:24]
+    except Exception as e:
+        detail["wait_error"] = str(e)[:80]
+    return detail
+
+
+async def click_option_exact_text(
+    page,
+    text: str,
+    *,
+    root: Any | None = None,
+    timeout_ms: int = 4000,
+    allow_soft: bool = True,
+    field_type: str = "",
+) -> bool:
+    """Re-query ``[role=option]`` / promptOption and click EXACT text. Never Enter.
+
+    MCP NXP: do not reuse a stale nth() handle after any prior click.
+    FoS: only options in *this* popup — never Skills suggested chips.
+    """
+    want = (text or "").strip()
+    if not want:
+        return False
+    want_n = _norm_how_heard_label(want)
+    ftype = str(field_type or "").upper()
+    fos = ftype in _FOS_TYPES
+    scope = root if root is not None else page
+
+    async def _try_click(el) -> bool:
+        try:
+            if not await el.is_visible(timeout=400):
+                return False
+        except Exception:
+            return False
+        if fos:
+            try:
+                t = ((await el.inner_text()) or "").strip()
+            except Exception:
+                t = ""
+            if await option_is_skills_suggested(el, t):
+                return False
+        try:
+            await scroll_widget_into_view(el)
+        except Exception:
+            pass
+        try:
+            await el.click(timeout=timeout_ms)
+            return True
+        except Exception:
+            try:
+                await el.click(timeout=timeout_ms, force=True)
+                return True
+            except Exception:
+                return False
+
+    # 1) Fresh role=option by exact accessible name (MCP exact text).
+    try:
+        loc = scope.get_by_role("option", name=want, exact=True)
+        n = await loc.count()
+        for i in range(min(n, 12)):
+            if await _try_click(loc.nth(i)):
+                return True
+    except Exception:
+        pass
+
+    # 2) Re-query promptOption / role=option; match exact innerText (or chevron-stripped).
+    for sel in _OPTION_EXACT_SELS:
+        try:
+            loc = scope.locator(sel)
+            n = await loc.count()
+        except Exception:
+            n = 0
+        exact_idx: list[int] = []
+        soft_idx: list[int] = []
+        for i in range(min(n, 80)):
+            el = loc.nth(i)
+            try:
+                if not await el.is_visible(timeout=120):
+                    continue
+                t = ((await el.inner_text()) or "").strip()
+            except Exception:
+                continue
+            if not t or is_placeholder_select_value(t):
+                continue
+            if fos and await option_is_skills_suggested(el, t):
+                continue
+            tn = _norm_how_heard_label(t)
+            if t == want or tn == want_n:
+                exact_idx.append(i)
+            elif allow_soft and soft_value_match(want, t):
+                soft_idx.append(i)
+        # Re-query nth() at click time (list may have shifted, but same pass).
+        for i in exact_idx:
+            if await _try_click(loc.nth(i)):
+                return True
+        if allow_soft and len(soft_idx) == 1:
+            if await _try_click(loc.nth(soft_idx[0])):
+                return True
+
+    # 3) Portaled menu: FoS must NOT fall back page-wide (Skills chips).
+    if root is not None and not fos:
+        return await click_option_exact_text(
+            page,
+            want,
+            root=None,
+            timeout_ms=timeout_ms,
+            allow_soft=allow_soft,
+            field_type=field_type,
+        )
+    return False
+
+
+async def _click_option_by_text(page, text: str, *, timeout_ms: int = 4000) -> bool:
+    """Click a visible option by exact text (soft only if unique). Never Enter."""
+    return await click_option_exact_text(
+        page, text, timeout_ms=timeout_ms, allow_soft=True
+    )
+
+
+def _rank_how_heard_categories(
+    visible: list[str],
+    preferred: list[str],
+) -> list[str]:
+    """Order drill-in categories: Website / Job Board / Internet first."""
+    seen: set[str] = set()
+    ranked: list[tuple[int, str]] = []
+    pref = [_norm_how_heard_label(p) for p in preferred if p]
+    keyword_boost = (
+        ("website", 950),
+        ("job board", 940),
+        ("internet", 930),
+        ("online job", 920),
+    )
+    for raw in visible:
+        norm = _norm_how_heard_label(raw)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        score = 0
+        for i, p in enumerate(pref):
+            if p == norm or soft_value_match(p, raw) or p in norm:
+                score = max(score, 1000 - i)
+        for kw, boost in keyword_boost:
+            if kw in norm:
+                score = max(score, boost)
+        ranked.append((score, raw))
+    ranked.sort(key=lambda x: (-x[0], x[1].lower()))
+    out = [raw for _, raw in ranked if _ > 0]
+    out.extend(raw for sc, raw in ranked if sc <= 0 and raw not in out)
+    for p in preferred:
+        if p and p not in out:
+            out.append(p)
+    return out[:4]
+
+
+def _pick_priority_leaf_option(
+    option_texts: list[str],
+    leaf_candidates: list[str] | None = None,
+) -> str | None:
+    """First visible leaf matching priority (handles ``Web - CareerBuilder``)."""
+    opts = [str(o).strip() for o in (option_texts or []) if str(o).strip()]
+    if not opts:
+        return None
+    try:
+        from fill_verify import (
+            how_heard_leaf_candidates,
+            is_how_heard_category_option,
+            pick_how_heard_from_options,
+        )
+
+        leaves = leaf_candidates or how_heard_leaf_candidates()
+        non_cat = [o for o in opts if not is_how_heard_category_option(o)]
+        picked = pick_how_heard_from_options(non_cat or opts)
+        if picked:
+            return picked
+        for leaf in leaves:
+            for opt in opts:
+                if is_how_heard_category_option(opt):
+                    continue
+                if soft_value_match(leaf, opt) or leaf.lower() in opt.lower():
+                    return opt
+    except Exception:
+        for leaf in leaf_candidates or ["LinkedIn", "Indeed"]:
+            for opt in opts:
+                if soft_value_match(leaf, opt) or leaf.lower() in opt.lower():
+                    return opt
+    return None
+
+
+async def _wait_for_how_heard_options(
+    page,
+    *,
+    filter_input: Any | None = None,
+    timeout_ms: int = 2400,
+    wait_ms: int = 450,
+) -> list[dict[str, Any]]:
+    """Poll until category or leaf options appear after opening how-heard."""
+    deadline = timeout_ms
+    step = max(120, wait_ms // 2)
+    opts: list[dict[str, Any]] = []
+    for _ in range(max(1, deadline // step)):
+        opts = await _list_how_heard_options(page)
+        if opts:
+            return opts
+        try:
+            await page.wait_for_timeout(step)
+        except Exception:
+            break
+    if not opts and filter_input is not None:
+        try:
+            await nudge_listbox_after_type(page, filter_input, allow_enter=False)
+            await page.wait_for_timeout(wait_ms)
+        except Exception:
+            pass
+        opts = await _list_how_heard_options(page)
+    return opts
 
 
 async def fill_hierarchical_how_heard(
@@ -2235,15 +3631,14 @@ async def fill_hierarchical_how_heard(
     category_candidates: list[str] | None = None,
     wait_ms: int = 450,
 ) -> dict[str, Any]:
-    """Walmart-style Workday how-heard: type → open subsection → pick leaf → chip.
+    """Workday how-heard: open → drill category → pick leaf → chip → close.
 
-    Flow:
-      1. Type a concrete leaf (Indeed / LinkedIn / …)
-      2. If a leaf option is visible, click it
-      3. Else if category/subsection headers appear, open the right one, then
-         click the leaf inside the subsection
-      4. Verify via formField chip chrome (``N items selected``); never treat
-         category filter text as committed
+    Matches live NXP/Walmart UX (never type Indeed/LinkedIn into the filter first):
+      1. Click/open ``source--source`` combobox (scoped — never phone dial)
+      2. Wait for category list (``promptOption`` rows with drill-in / children)
+      3. Prefer Website / Job Board / Internet — click to drill in
+      4. Pick first priority leaf (``Web - CareerBuilder`` soft-matches CareerBuilder)
+      5. Verify chip readback, settle listbox, stop — one honest pass only
     """
     detail: dict[str, Any] = {
         "algorithm": "hierarchical_how_heard",
@@ -2263,16 +3658,17 @@ async def fill_hierarchical_how_heard(
             c
             for c in (leaf_candidates or how_heard_leaf_candidates())
             if c and not is_how_heard_category_option(c)
-        ][:3]
-        cats = list(category_candidates or how_heard_category_candidates())[:2]
+        ]
+        cats = list(category_candidates or how_heard_category_candidates())
     except Exception:
-        leaves = list(leaf_candidates or ["LinkedIn", "Indeed", "Company Website"])[:5]
-        cats = list(category_candidates or ["Internet job board", "Job Board"])[:3]
+        leaves = list(leaf_candidates or ["LinkedIn", "Indeed", "CareerBuilder"])[:8]
+        cats = list(category_candidates or ["Website", "Job Board", "Internet job board"])
 
     detail["leaves"] = leaves
     detail["categories"] = cats
 
-    async def _ensure_open() -> None:
+    async def _ensure_open(*, clear_filter: bool = True) -> None:
+        await scroll_widget_into_view(filter_input)
         try:
             await filter_input.click(timeout=2000, force=True)
         except Exception:
@@ -2280,30 +3676,23 @@ async def fill_hierarchical_how_heard(
                 await filter_input.focus()
             except Exception:
                 pass
-
-    async def _type_query(q: str) -> None:
-        await _ensure_open()
-        try:
-            await filter_input.fill("")
-        except Exception:
-            pass
-        try:
-            await filter_input.fill(str(q)[:80])
-        except Exception:
+        if clear_filter:
             try:
-                await page.keyboard.type(str(q)[:80], delay=15)
+                await filter_input.fill("")
             except Exception:
                 pass
-        # Prefer a short settle over heavy nudge (nudge can hang on fixture DOMs)
+        # MCP: wait 1–1.5s for category/leaf list (re-query after click).
         try:
-            await page.wait_for_timeout(wait_ms)
+            await wait_for_option_texts(
+                page,
+                timeout_ms=WIDGET_OPEN_WAIT_MS,
+                filter_input=filter_input,
+                nudge=False,
+                allow_enter_nudge=False,
+            )
         except Exception:
-            pass
-        opts_now = await _list_how_heard_options(page)
-        if not opts_now:
             try:
-                await nudge_listbox_after_type(page, filter_input, allow_enter=True)
-                await page.wait_for_timeout(wait_ms)
+                await page.wait_for_timeout(WIDGET_OPEN_WAIT_MS)
             except Exception:
                 pass
 
@@ -2315,7 +3704,16 @@ async def fill_hierarchical_how_heard(
         return ok, snip
 
     snip0 = await _read_how_heard_wrap_text(page)
-    if how_heard_source_committed(snip0, leaves):
+    # Any valid source leaf chip is done — don't reopen to fight CareerBuilder vs Glassdoor.
+    if how_heard_source_committed(snip0, leaves) or committed_how_heard_leaf(snip0):
+        try:
+            await force_close_how_heard_widget(page)
+        except Exception:
+            try:
+                await settle_open_listbox(page)
+            except Exception:
+                pass
+        leaf0 = committed_how_heard_leaf(snip0) or snip0[:120]
         detail.update(
             {
                 "status": "already_committed",
@@ -2323,114 +3721,166 @@ async def fill_hierarchical_how_heard(
                 "verified": True,
                 "committed": True,
                 "readback": snip0[:120],
-                "picked": snip0[:120],
+                "picked": leaf0,
+                "value": leaf0,
                 "skipped_already_correct": True,
             }
         )
         return detail
 
-    async def _try_pick_leaf(leaf: str, *, path: str, subsection: str = "") -> bool:
-        opts = await _list_how_heard_options(page)
-        for o in opts:
-            if o.get("is_category"):
-                continue
-            t = str(o.get("text") or "")
-            if soft_value_match(leaf, t) or t.lower() == leaf.lower():
-                clicked = await _click_option_by_text(page, t)
-                detail["option_clicked"] = clicked
-                detail["picked"] = t
-                detail["path"] = path
-                if subsection:
-                    detail["subsection"] = subsection
-                try:
-                    await page.wait_for_timeout(350)
-                except Exception:
-                    pass
-                ok, snip = await _chip_ok(leaf)
-                if ok:
-                    try:
-                        await settle_open_listbox(page)
-                    except Exception:
-                        pass
-                    detail.update(
-                        {
-                            "status": "picked",
-                            "ok": True,
-                            "verified": True,
-                            "committed": True,
-                            "readback": snip[:120],
-                            "value": leaf,
-                        }
-                    )
-                    return True
-        return False
-
-    for leaf in leaves:
-        detail["attempted_leaf"] = leaf
-        await _type_query(leaf)
-        opts = await _list_how_heard_options(page)
-        detail["options_after_leaf_type"] = [o.get("text") for o in opts[:12]]
-
-        if await _try_pick_leaf(leaf, path="leaf_direct"):
-            return detail
-
-        # Open a visible category / known category, then pick leaf
-        cat_opts = [o for o in opts if o.get("is_category")]
-        nav_cats: list[str] = []
-        for o in cat_opts:
-            t = str(o.get("text") or "")
-            if t and t not in nav_cats:
-                nav_cats.append(t)
-        for c in cats:
-            if c not in nav_cats:
-                nav_cats.append(c)
-        nav_cats = nav_cats[:3]
-
+    async def _commit_leaf(
+        leaf_text: str,
+        *,
+        path: str,
+        subsection: str = "",
+        canonical: str = "",
+    ) -> bool:
+        clicked = await _click_option_by_text(page, leaf_text)
+        detail["option_clicked"] = clicked
+        detail["picked"] = leaf_text
+        detail["path"] = path
+        if subsection:
+            detail["subsection"] = subsection
+        canon = canonical or leaf_text
+        detail["value"] = canon
+        if not clicked:
+            return False
+        # MCP: wait for CHIP (not typed filter text).
         try:
-            from fill_step_log import note_step
-
-            note_step(
-                None,
-                action="how_heard_hierarchy_open",
-                label="how_heard",
-                field_type="HOW_HEARD",
-                after=leaf,
-                via="hierarchical_how_heard",
-                reason=f"opts={len(opts)} cats={len(cat_opts)}",
-            )
+            await page.wait_for_timeout(800)
         except Exception:
             pass
-
-        for cat in nav_cats:
-            visible = [str(o.get("text") or "") for o in cat_opts]
-            if visible and not any(soft_value_match(cat, v) for v in visible):
-                # Category not in current list — type it to surface
-                await _type_query(cat)
-                opts = await _list_how_heard_options(page)
-                cat_opts = [o for o in opts if o.get("is_category")]
-            opened = await _click_option_by_text(page, cat)
-            detail.setdefault("subsection_opens", []).append(
-                {"category": cat, "opened": opened}
+        ok, snip = await _chip_ok(canon)
+        if ok:
+            try:
+                await force_close_how_heard_widget(page)
+            except Exception:
+                try:
+                    await settle_open_listbox(page)
+                except Exception:
+                    pass
+            detail.update(
+                {
+                    "status": "picked",
+                    "ok": True,
+                    "verified": True,
+                    "committed": True,
+                    "readback": snip[:120],
+                }
             )
-            if not opened:
-                continue
+            return True
+        return False
+
+    async def _try_leaf_list(
+        opts: list[dict[str, Any]],
+        *,
+        path: str,
+        subsection: str = "",
+    ) -> bool:
+        texts = [str(o.get("text") or "") for o in opts if not o.get("is_category")]
+        picked = _pick_priority_leaf_option(texts, leaves)
+        if not picked:
+            return False
+        detail["attempted_leaf"] = picked
+        return await _commit_leaf(
+            picked,
+            path=path,
+            subsection=subsection,
+            canonical=picked,
+        )
+
+    # --- Step 1: open combobox (no leaf typing) ---
+    await _ensure_open(clear_filter=True)
+    try:
+        await page.wait_for_timeout(wait_ms)
+    except Exception:
+        pass
+    opts = await _wait_for_how_heard_options(
+        page, filter_input=filter_input, wait_ms=wait_ms
+    )
+    detail["options_on_open"] = [o.get("text") for o in opts[:16]]
+
+    cat_opts = [o for o in opts if o.get("is_category")]
+    # Flat tenants only: skip top-level leaf pick when category rows are open
+    # (otherwise Job Board "LinkedIn" can win before Website → Web - LinkedIn).
+    if not cat_opts:
+        if await _try_leaf_list(opts, path="leaf_direct_top"):
+            return detail
+
+    visible_cats = [str(o.get("text") or "") for o in cat_opts if o.get("text")]
+    nav_cats = _rank_how_heard_categories(visible_cats, cats)
+    detail["nav_categories"] = nav_cats[:4]
+
+    try:
+        from fill_step_log import note_step
+
+        note_step(
+            None,
+            action="how_heard_hierarchy_open",
+            label="how_heard",
+            field_type="HOW_HEARD",
+            after=leaves[0] if leaves else "",
+            via="hierarchical_how_heard",
+            reason=f"opts={len(opts)} cats={len(cat_opts)}",
+        )
+    except Exception:
+        pass
+
+    # --- Step 2–4: one honest category drill (no filter thrash) ---
+    for cat in nav_cats[:3]:
+        detail["attempted_category"] = cat
+        if not any(
+            soft_value_match(cat, v) or _norm_how_heard_label(cat) == _norm_how_heard_label(v)
+            for v in visible_cats
+        ):
+            # Category not visible — reopen clean once (no typing cat into filter)
+            await _ensure_open(clear_filter=True)
             try:
                 await page.wait_for_timeout(wait_ms)
             except Exception:
                 pass
-            if await _try_pick_leaf(leaf, path="category_then_leaf", subsection=cat):
-                return detail
-            # Filter inside subsection
-            try:
-                await filter_input.fill("")
-                await filter_input.fill(leaf[:80])
-                await page.wait_for_timeout(wait_ms)
-            except Exception:
-                pass
-            if await _try_pick_leaf(
-                leaf, path="category_then_leaf_filtered", subsection=cat
+            opts = await _wait_for_how_heard_options(
+                page, filter_input=filter_input, wait_ms=wait_ms
+            )
+            cat_opts = [o for o in opts if o.get("is_category")]
+            visible_cats = [str(o.get("text") or "") for o in cat_opts if o.get("text")]
+            if not any(
+                soft_value_match(cat, v)
+                or _norm_how_heard_label(cat) == _norm_how_heard_label(v)
+                for v in visible_cats
             ):
-                return detail
+                continue
+
+        opened = await _click_option_by_text(page, cat)
+        detail.setdefault("subsection_opens", []).append(
+            {"category": cat, "opened": opened}
+        )
+        if not opened:
+            continue
+        try:
+            await page.wait_for_timeout(wait_ms)
+        except Exception:
+            pass
+        sub_opts = await _wait_for_how_heard_options(
+            page, filter_input=filter_input, wait_ms=wait_ms
+        )
+        detail["options_in_subsection"] = [o.get("text") for o in sub_opts[:16]]
+        if await _try_leaf_list(
+            sub_opts, path="category_then_leaf", subsection=cat
+        ):
+            return detail
+        # One category path tried — do not type leaf into filter; try next category only
+        await _ensure_open(clear_filter=True)
+        try:
+            await page.wait_for_timeout(wait_ms)
+        except Exception:
+            pass
+        opts = await _wait_for_how_heard_options(
+            page, filter_input=filter_input, wait_ms=wait_ms
+        )
+        visible_cats = [
+            str(o.get("text") or "") for o in opts if o.get("is_category") and o.get("text")
+        ]
 
     snip_f = await _read_how_heard_wrap_text(page)
     detail.update(
@@ -2444,9 +3894,12 @@ async def fill_hierarchical_how_heard(
         }
     )
     try:
-        await settle_open_listbox(page)
+        await force_close_how_heard_widget(page)
     except Exception:
-        pass
+        try:
+            await settle_open_listbox(page)
+        except Exception:
+            pass
     return detail
 
 
@@ -2461,6 +3914,8 @@ async def wait_for_option_texts(
     nudge: bool = False,
     allow_enter_nudge: bool = False,
     root: Any | None = None,
+    field_type: str = "",
+    portal_fallback: bool = True,
 ) -> tuple[Any, list[str]]:
     """Poll until listbox options appear. Returns (locator, texts).
 
@@ -2469,16 +3924,28 @@ async def wait_for_option_texts(
     selects can't cross-click (GH mounts every select menu at once — the
     Hispanic "Decline To Self Identify" would otherwise win a RACE Decline
     click). Falls back to a page-wide scan if the scoped root finds nothing
-    (menus portalled to <body> on some tenants).
+    (menus portalled to <body> on some tenants). FoS sets ``portal_fallback``
+    false so Skills suggested chips cannot be collected.
     """
-    sels = selectors or [
-        ".select__option",
-        "[id*='react-select'][id*='option']",
-        "[role='listbox'] [role='option']",
-        "[role='option']",
-        '[data-automation-id="promptOption"]',
-        '[data-automation-id*="promptOption" i]',
-    ]
+    ftype = str(field_type or "").upper()
+    fos = ftype in _FOS_TYPES
+    sels = selectors or (
+        [
+            "[role='listbox'] [role='option']",
+            "[role='option']",
+            '[data-automation-id="promptOption"]',
+            '[data-automation-id*="promptOption" i]',
+        ]
+        if fos
+        else [
+            ".select__option",
+            "[id*='react-select'][id*='option']",
+            "[role='listbox'] [role='option']",
+            "[role='option']",
+            '[data-automation-id="promptOption"]',
+            '[data-automation-id*="promptOption" i]',
+        ]
+    )
     scope = root if root is not None else page
     loops = max(1, timeout_ms // max(poll_ms, 50))
     last_loc = scope.locator(sels[0])
@@ -2494,25 +3961,34 @@ async def wait_for_option_texts(
                 continue
             texts: list[str] = []
             for i in range(min(n, max_options)):
+                el = loc.nth(i)
                 try:
-                    t = (await loc.nth(i).inner_text()).strip()
+                    t = (await el.inner_text()).strip()
                 except Exception:
                     t = ""
                 # ATS2-001: never drop rows — empty/placeholder become "" so
                 # texts[i] always matches loc.nth(i). Stripping Select… used to
                 # remap Illinois→Idaho (texts=[Idaho,Illinois] → nth(1)=Idaho).
+                if fos and t:
+                    try:
+                        if await option_is_skills_suggested(el, t):
+                            texts.append("")
+                            continue
+                    except Exception:
+                        pass
                 if t and not is_placeholder_select_value(t):
                     texts.append(t)
                 else:
                     texts.append("")
             if any(texts):
                 return loc, texts
-        # Mid-poll nudge once when Workday/async prompts stay empty
+        # Mid-poll nudge once when Workday/async prompts stay empty.
+        # pressEnter is always false (MCP NXP) — never Enter-nudge.
         if nudge and not nudged and loop_i == max(1, loops // 3):
             nudged = True
             try:
                 await nudge_listbox_after_type(
-                    page, filter_input, allow_enter=allow_enter_nudge
+                    page, filter_input, allow_enter=False
                 )
             except Exception:
                 pass
@@ -2520,7 +3996,7 @@ async def wait_for_option_texts(
             await page.wait_for_timeout(poll_ms)
         except Exception:
             break
-    if root is not None:
+    if root is not None and portal_fallback and not fos:
         # Scoped root found nothing — menu may be portalled outside the
         # container on this tenant. Retry page-wide so scoping never regresses
         # option discovery (only the cross-select clobber is prevented).
@@ -2532,8 +4008,10 @@ async def wait_for_option_texts(
             max_options=max_options,
             filter_input=filter_input,
             nudge=nudge,
-            allow_enter_nudge=allow_enter_nudge,
+            allow_enter_nudge=False,
             root=None,
+            field_type=field_type,
+            portal_fallback=False,
         )
     return last_loc, []
 
@@ -2556,7 +4034,9 @@ async def click_best_option(
     primary = (intent or "").strip() or (
         str(candidates[0]).strip() if candidates else ""
     )
-    opts, texts = await wait_for_option_texts(page, timeout_ms=timeout_ms)
+    opts, texts = await wait_for_option_texts(
+        page, timeout_ms=max(timeout_ms, 1500), allow_enter_nudge=False
+    )
     detail: dict[str, Any] = {
         "option_clicked": False,
         "options": texts[:12],
@@ -2604,13 +4084,20 @@ async def click_best_option(
         detail["error"] = "no_matching_option"
         return detail
     best_i, picked, best_s = clear
-    try:
-        await opts.nth(best_i).click(timeout=timeout_ms)
+    clicked = await click_option_exact_text(
+        page, picked, timeout_ms=timeout_ms, allow_soft=True
+    )
+    if not clicked:
+        try:
+            await opts.nth(best_i).click(timeout=timeout_ms)
+            clicked = True
+        except Exception as e:
+            detail["error"] = f"option_click_failed:{e}"[:120]
+            return detail
+    if clicked:
         detail["option_clicked"] = True
         detail["picked"] = picked
         detail["score"] = best_s
-    except Exception as e:
-        detail["error"] = f"option_click_failed:{e}"[:120]
     return detail
 
 
@@ -2759,8 +4246,8 @@ async def typable_dropdown_narrow_and_click(
         or "countryregion" in lab_l
         or lab_l.endswith("state")
     )
+    # HOW_HEARD: never type-as-commit (MCP: click → category → leaf → chip).
     prefer_fiber = needs_async_nudge and ftype_u in (
-        "HOW_HEARD",
         "SOURCE",
         "SCHOOL",
         "ADDRESS_STATE",
@@ -2800,6 +4287,7 @@ async def typable_dropdown_narrow_and_click(
                 fiber_tok,
                 aliases=cands,
                 wait_ms=min(2200, max(1200, timeout_ms // 2)),
+                field_type=ftype_u,
             )
             detail["fiber_search_select"] = {
                 k: fiber.get(k)
@@ -2835,33 +4323,16 @@ async def typable_dropdown_narrow_and_click(
         except Exception as e:
             detail["fiber_error"] = str(e)[:80]
 
-    async def _click_text(opts_loc, texts_live: list[str], want: str) -> bool:
-        """Click option by exact text, then soft_value_match — never raw ``in``.
-
-        Male⊂Female / IL⊂Idaho must not unique-substring-commit.
-        """
-        want_n = (want or "").strip()
-        if not want_n:
-            return False
-        for i, t in enumerate(texts_live):
-            if (t or "").strip() == want_n:
-                try:
-                    await opts_loc.nth(i).click(timeout=timeout_ms)
-                    return True
-                except Exception:
-                    continue
-        hits = [
-            i
-            for i, t in enumerate(texts_live)
-            if t and soft_value_match(want_n, t)
-        ]
-        if len(hits) == 1:
-            try:
-                await opts_loc.nth(hits[0]).click(timeout=timeout_ms)
-                return True
-            except Exception:
-                return False
-        return False
+    async def _click_text(_opts_loc, _texts_live: list[str], want: str) -> bool:
+        """Re-query + exact text click (MCP). Never Enter, never stale nth()."""
+        return await click_option_exact_text(
+            page,
+            want,
+            root=root,
+            timeout_ms=timeout_ms,
+            allow_soft=True,
+            field_type=ftype_u,
+        )
 
     # Fiber may leave a filter token in the input that zeros the option list
     # (Capco HOW_HEARD: fiber typed "Internet job board" → 0 options → enumerate
@@ -2887,6 +4358,7 @@ async def typable_dropdown_narrow_and_click(
         filter_input=filter_input,
         timeout_ms=min(timeout_ms, 3200 if needs_async_nudge else 2200),
         max_scrolls=8 if ftype_u in ("DEGREE", "SCHOOL", "HOW_HEARD") else 5,
+        field_type=ftype_u,
     )
     detail["enumerated"] = len(texts)
     detail["options"] = texts[:20]
@@ -2926,18 +4398,14 @@ async def typable_dropdown_narrow_and_click(
         live_opts, live_texts = await wait_for_option_texts(
             page,
             selectors=option_selectors,
-            timeout_ms=1200,
+            timeout_ms=1500,
             filter_input=None,
             nudge=False,
             root=root,
+            field_type=ftype_u,
+            portal_fallback=ftype_u not in _FOS_TYPES,
         )
         clicked = await _click_text(live_opts, live_texts or texts, picked)
-        if not clicked and live_opts is not None:
-            try:
-                await live_opts.nth(_idx).click(timeout=timeout_ms)
-                clicked = True
-            except Exception as e:
-                detail["error"] = f"option_click_failed:{e}"[:120]
         if clicked:
             detail.update(
                 {
@@ -2950,13 +4418,20 @@ async def typable_dropdown_narrow_and_click(
             return detail
 
     # --- FALLBACK: sanitized type-to-filter only when list huge/empty ---
+    # HOW_HEARD / FoS: if this popup has no commit, SKIP — never type into
+    # Skills suggested chips or use filter-as-commit (MCP NXP).
     safe_tok = sanitized_typeahead_token(ftype_u, primary, cands)
-    allow_type = bool(use_type) and bool(safe_tok) and (
-        len(texts) == 0 or len(texts) >= _HUGE_OPTION_LIST or pick is None
+    skip_type = ftype_u in ("HOW_HEARD", "SOURCE") or ftype_u in _FOS_TYPES
+    allow_type = (
+        (not skip_type)
+        and bool(use_type)
+        and bool(safe_tok)
+        and (len(texts) == 0 or len(texts) >= _HUGE_OPTION_LIST or pick is None)
     )
     # Degree/country always may try sanitized filter once if enumerate missed
     if (
         not allow_type
+        and not skip_type
         and use_type
         and safe_tok
         and ftype_u in _ENUMERATE_FIRST_TYPES
@@ -2965,6 +4440,12 @@ async def typable_dropdown_narrow_and_click(
         allow_type = True
 
     if not allow_type:
+        if ftype_u in _FOS_TYPES:
+            try:
+                await force_close_fos_widget(page)
+                await settle_open_listbox(page)
+            except Exception:
+                pass
         detail["error"] = "no_matching_option"
         detail["reason"] = "enumerate_below_threshold_no_safe_filter"
         return detail
@@ -3002,6 +4483,7 @@ async def typable_dropdown_narrow_and_click(
         filter_input=filter_input,
         timeout_ms=min(timeout_ms, 2800),
         max_scrolls=4,
+        field_type=ftype_u,
     )
     detail["enumerated_after_filter"] = len(texts)
     detail["options"] = texts[:20]
@@ -3017,6 +4499,12 @@ async def typable_dropdown_narrow_and_click(
         }
     )
     if not pick:
+        if ftype_u in _FOS_TYPES:
+            try:
+                await force_close_fos_widget(page)
+                await settle_open_listbox(page)
+            except Exception:
+                pass
         detail["error"] = "no_matching_option"
         detail["reason"] = "filtered_below_threshold"
         return detail
@@ -3024,19 +4512,17 @@ async def typable_dropdown_narrow_and_click(
     live_opts, live_texts = await wait_for_option_texts(
         page,
         selectors=option_selectors,
-        timeout_ms=1200,
+        timeout_ms=1500,
         filter_input=None,
         nudge=False,
         root=root,
+        field_type=ftype_u,
+        portal_fallback=ftype_u not in _FOS_TYPES,
     )
     clicked = await _click_text(live_opts, live_texts or texts, picked)
     if not clicked:
-        try:
-            await (live_opts or opts).nth(_idx).click(timeout=timeout_ms)
-            clicked = True
-        except Exception as e:
-            detail["error"] = f"option_click_failed:{e}"[:120]
-            return detail
+        detail["error"] = "option_click_failed:exact_text_miss"
+        return detail
     detail.update(
         {
             "option_clicked": True,
@@ -3109,7 +4595,45 @@ async def fill_typable_dropdown(
 
     shown0 = await _read()
     dep0 = await _probe()
+    ftype_u = str(field_type or "").upper()
+    if ftype_u == "PHONE_COUNTRY_CODE" and not shown0:
+        try:
+            shown0 = await read_phone_country_field_snip(page)
+        except Exception:
+            shown0 = shown0 or ""
     if shown0 and not is_placeholder_select_value(shown0):
+        # Country Phone Code: US (+1) chip with empty filter — never reopen
+        if ftype_u == "PHONE_COUNTRY_CODE" and is_committed_us_phone_country_readback(
+            shown0
+        ):
+            detail.update(
+                {
+                    "ok": True,
+                    "verified": True,
+                    "committed": True,
+                    "skipped_already_correct": True,
+                    "reason": "already_correct_skip",
+                    "readback": shown0[:120],
+                    "picked": shown0[:120],
+                }
+            )
+            return detail
+        # Field of Study: committed chip (Science-Computer) — never type Other/filter
+        if ftype_u in ("FIELD_OF_STUDY", "DISCIPLINE", "MAJOR") and field_of_study_committed(
+            shown0, cands, dom_chip=True
+        ):
+            detail.update(
+                {
+                    "ok": True,
+                    "verified": True,
+                    "committed": True,
+                    "skipped_already_correct": True,
+                    "reason": "already_correct_skip",
+                    "readback": shown0[:120],
+                    "picked": shown0[:120],
+                }
+            )
+            return detail
         # Places Location: probe closed menu + blur-stable + alias match (Airwallex)
         if loc_field:
             probe0 = await probe_location_committed(
@@ -3146,6 +4670,8 @@ async def fill_typable_dropdown(
                     }
                 )
                 return detail
+        elif ftype_u in ("FIELD_OF_STUDY", "DISCIPLINE", "MAJOR"):
+            pass  # never generic select_readback_ok — Arts-Other ⊃ Other alias trap
         elif select_readback_ok(
             shown0,
             cands,
@@ -3189,18 +4715,15 @@ async def fill_typable_dropdown(
 
     async def _attempt(*, use_type: bool) -> dict[str, Any]:
         out: dict[str, Any] = {"option_clicked": False}
-        try:
-            await control.click(timeout=timeout_ms, force=True)
-        except Exception:
-            try:
-                await control.click(timeout=timeout_ms)
-            except Exception as e:
-                out["error"] = f"open_failed:{e}"[:100]
-                return out
-        try:
-            await page.wait_for_timeout(180)
-        except Exception:
-            pass
+        opened = await open_list_widget(
+            page,
+            control,
+            wait_ms=WIDGET_OPEN_WAIT_MS,
+            field_type=ftype_u,
+        )
+        if not opened.get("opened"):
+            out["error"] = opened.get("error") or "open_failed"
+            return out
         click = await typable_dropdown_narrow_and_click(
             page,
             filter_input=filt,
@@ -3369,6 +4892,13 @@ async def fill_typable_dropdown(
         detail["ok"] = False
         detail["verified"] = False
         detail["committed"] = False
+    # MCP: never leave FoS listbox open after a miss (NXP 1045Z).
+    if ftype_u in _FOS_TYPES and not detail.get("ok"):
+        try:
+            await force_close_fos_widget(page)
+            await settle_open_listbox(page)
+        except Exception:
+            pass
     return detail
 
 
@@ -3467,6 +4997,53 @@ async def read_combobox_display(locator) -> str:
                 return txt
             aria = (await locator.get_attribute("aria-label") or "").strip()
             return "" if is_placeholder_select_value(aria) else aria
+        # Workday Country Phone Code filter input (often plain text, not role=combobox)
+        if tag == "input":
+            pc_name = "countryphonecode" in name or "phonenumber--countryphonecode" in name
+            if (
+                "countryphonecode" in aid
+                or "phonenumber--countryphonecode" in aid
+                or "phonecountry" in aid
+                or pc_name
+                or re.search(r"country\s*phone\s*code|phone\s*country", name, re.I)
+            ):
+                try:
+                    wrap = locator.locator(
+                        "xpath=ancestor::*[contains(@data-automation-id,'formField') "
+                        "and (contains(@data-automation-id,'countryPhoneCode') "
+                        "or contains(@data-automation-id,'phoneNumber--countryPhoneCode') "
+                        "or contains(@data-automation-id,'phoneCountry'))][1]"
+                    ).first
+                    if await wrap.count():
+                        chip = ((await wrap.inner_text()) or "").strip()
+                        if chip and is_committed_us_phone_country_readback(chip):
+                            return chip[:200]
+                except Exception:
+                    pass
+        # Field of Study / discipline / major: filter input empty but chip committed
+        if tag == "input" and (
+            "fieldofstudy" in aid
+            or "fieldofstudy" in name
+            or "discipline" in aid
+            or "major" in aid
+            or role == "combobox"
+        ):
+            chip_txt = await read_workday_formfield_chip(locator)
+            if chip_txt:
+                return chip_txt[:200]
+            try:
+                wrap = locator.locator(
+                    "xpath=ancestor::*[contains(@data-automation-id,'formField') "
+                    "and (contains(@data-automation-id,'fieldOfStudy') "
+                    "or contains(@data-automation-id,'discipline') "
+                    "or contains(@data-automation-id,'major'))][1]"
+                ).first
+                if await wrap.count():
+                    chip = ((await wrap.inner_text()) or "").strip()
+                    if chip and workday_wrap_text_has_chip(chip):
+                        return chip[:200]
+            except Exception:
+                pass
         if tag == "input" and (
             role == "combobox" or "select__input" in cls or "select__" in cls
         ):
@@ -3880,6 +5457,34 @@ async def fill_workday_combobox(
         cands = [*leaves, *cats]
         if is_how_heard_category_option(value_n) and leaves:
             value_n = leaves[0]
+        # MCP NXP: click → category → leaf → chip. Never type as commit.
+        filt = filter_input if filter_input is not None else control
+        try:
+            hier = await fill_hierarchical_how_heard(
+                page,
+                filt,
+                leaf_candidates=leaves or None,
+                category_candidates=cats or None,
+            )
+            hier["mode"] = "workday_combobox"
+            if hier.get("ok") and hier.get("committed"):
+                return hier
+            if not hier.get("committed"):
+                hier["ok"] = False
+                hier["verified"] = False
+                hier["reason"] = hier.get("reason") or "how_heard_no_chip"
+                return hier
+        except Exception as e:
+            return {
+                "mode": "workday_combobox",
+                "algorithm": "hierarchical_how_heard",
+                "ok": False,
+                "verified": False,
+                "committed": False,
+                "option_clicked": False,
+                "error": f"how_heard_hier:{e}"[:120],
+                "reason": "how_heard_no_chip",
+            }
 
     detail = await fill_typable_dropdown(
         page,

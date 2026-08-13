@@ -2,5 +2,7 @@
   "id": "gh_react_select",
   "platform": "greenhouse",
   "fail_class": "react_select_commit",
-  "description": "Greenhouse-style combobox with portal listbox; must commit display text after option select."
+  "description": "Greenhouse-style combobox with portal listbox; must commit display text after option select.",
+  "fidelity": "medium",
+  "live_signoff": false
 }

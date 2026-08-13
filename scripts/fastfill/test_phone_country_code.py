@@ -193,6 +193,166 @@ def test_workday_us_phone_readback_helpers():
     assert not _is_us_address_country_readback("Australia")
 
 
+def test_committed_us_phone_country_readback():
+    from verified_select import (
+        filter_phone_country_false_empties,
+        is_committed_us_phone_country_readback,
+        phone_country_empty_row,
+        phone_country_verified_snips_from_report,
+    )
+
+    assert is_committed_us_phone_country_readback("United States (+1)")
+    assert is_committed_us_phone_country_readback("United States of America (+1)")
+    assert not is_committed_us_phone_country_readback("Select One")
+    assert not is_committed_us_phone_country_readback("Australia (+61)")
+    assert not is_committed_us_phone_country_readback("+1")
+
+    rows = [
+        {"id": "phoneNumber--countryPhoneCode", "reason": "empty_required_input"},
+        {"id": "phone-number", "reason": "empty_required_input"},
+    ]
+    kept = filter_phone_country_false_empties(
+        rows, "United States of America (+1)"
+    )
+    assert len(kept) == 1
+    assert kept[0]["id"] == "phone-number"
+    assert phone_country_empty_row({"id": "countryPhoneCode"})
+    assert phone_country_empty_row({"label": "Country Phone Code*"})
+
+    # Experience-page hold: live snip absent but verified fill row has chip readback
+    report = {
+        "filled": [
+            {
+                "type": "PHONE_COUNTRY_CODE",
+                "automation_id": "countryPhoneCode",
+                "verified": True,
+                "readback": (
+                    "Country Phone Code* 1 item selected, "
+                    "United States of America (+1) United States of America (+1)"
+                ),
+            }
+        ]
+    }
+    fallbacks = phone_country_verified_snips_from_report(report)
+    assert fallbacks
+    kept2 = filter_phone_country_false_empties(
+        rows, None, fallback_snips=fallbacks
+    )
+    assert len(kept2) == 1
+    assert kept2[0]["id"] == "phone-number"
+
+
+async def _eval_fixture_html(html_path) -> list[dict]:
+    import asyncio
+    from pathlib import Path
+
+    from playwright.async_api import async_playwright
+
+    from workday_selectors import _required_empty_on_page
+
+    html = Path(html_path).read_text()
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content(html)
+        out = await _required_empty_on_page(page)
+        await browser.close()
+        return out
+
+
+def test_nxp_phone_contact_fixture_zero_required_empty():
+    import asyncio
+    from pathlib import Path
+
+    from form_gaps import collect_form_gaps, gaps_block_ready
+
+    case = (
+        Path(__file__).resolve().parent
+        / "gym/ats/cases/workday_nxp_phone_contact/form.html"
+    )
+    empties = asyncio.run(_eval_fixture_html(case))
+    assert empties == [], empties
+
+    async def _gaps():
+        from playwright.async_api import async_playwright
+
+        html = case.read_text()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.set_content(html)
+            gaps = await collect_form_gaps(page)
+            await browser.close()
+            return gaps
+
+    gaps = asyncio.run(_gaps())
+    assert not gaps_block_ready(gaps), gaps
+    # Mid-wizard ADVANCE footer still blocks review-hold Ready — that is OK.
+    # Honesty fix: phone country chip must not appear in required_empty / gaps.
+    assert not any(
+        "countryphonecode" in str(g.get("automation_id") or g.get("label") or "").lower()
+        for g in gaps
+    )
+
+
+def test_nxp_phone_empty_chip_still_incomplete():
+    import asyncio
+    from pathlib import Path
+
+    from form_gaps import collect_form_gaps, gaps_block_ready
+
+    case = (
+        Path(__file__).resolve().parent
+        / "gym/ats/cases/workday_nxp_phone_contact/form.html"
+    )
+    html = case.read_text().replace(
+        '<div id="country-chip-wrap">',
+        '<div id="country-chip-wrap" style="display:none">',
+    )
+
+    async def _run():
+        from playwright.async_api import async_playwright
+
+        from workday_selectors import _required_empty_on_page
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.set_content(html)
+            await page.evaluate(
+                """() => {
+                  const f = document.getElementById('country-filter');
+                  f.style.display = 'block';
+                  f.value = '';
+                }"""
+            )
+            empties = await _required_empty_on_page(page)
+            gaps = await collect_form_gaps(page)
+            await browser.close()
+            return empties, gaps
+
+    empties, gaps = asyncio.run(_run())
+    assert any(
+        "countryphonecode" in str(e.get("id") or "").lower()
+        or "country phone" in str(e.get("label") or "").lower()
+        for e in empties
+    ) or gaps_block_ready(gaps), (empties, gaps)
+
+
+def test_fill_verify_phone_country_code_row():
+    from fill_verify import is_verified_fill_row
+
+    row = {
+        "type": "PHONE_COUNTRY_CODE",
+        "status": "filled",
+        "verified": True,
+        "readback": "United States of America (+1)",
+        "value": "United States (+1)",
+    }
+    assert is_verified_fill_row(row) is True
+    assert is_verified_fill_row({**row, "readback": "Select One", "verified": True}) is False
+
+
 if __name__ == "__main__":
     test_classify_country_phone_code()
     test_phone_country_search_sanitizer_rejects_job_boards()
@@ -200,4 +360,8 @@ if __name__ == "__main__":
     test_how_heard_selectors_never_bare_multiselect()
     test_semantic_does_not_score_australia_for_us()
     test_workday_us_phone_readback_helpers()
+    test_committed_us_phone_country_readback()
+    test_nxp_phone_contact_fixture_zero_required_empty()
+    test_nxp_phone_empty_chip_still_incomplete()
+    test_fill_verify_phone_country_code_row()
     print("ok")

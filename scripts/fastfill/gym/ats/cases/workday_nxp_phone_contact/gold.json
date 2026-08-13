@@ -1,0 +1,20 @@
+{
+  "fields": [
+    {
+      "key": "phone_country",
+      "selector": "#country-chip-wrap",
+      "committed": "United States of America (+1)",
+      "required": true,
+      "notes": "US (+1) chip with delete — filter input stays empty."
+    },
+    {
+      "key": "phone_number",
+      "selector": "#phone-num",
+      "committed": "405-555-0100",
+      "required": true
+    }
+  ],
+  "required_empty": [],
+  "gaps": [],
+  "notes": "NXP My Information phone section visually complete → zero gaps; empty chip stays incomplete."
+}

@@ -46,9 +46,12 @@ async def _run() -> None:
         clear_locks_on_advance,
         get_field_locks,
         lock_verified_field,
-        page_complete_should_advance,
     )
-    from page_progress import attach_footer_primary, may_enter_review_hold
+    from page_progress import (
+        attach_footer_primary,
+        footer_primary_wizard_incomplete,
+        may_enter_review_hold,
+    )
     from exp_workday_selectors import _fill_automation_id, _is_verified_fill
 
     async with async_playwright() as p:
@@ -111,20 +114,15 @@ async def _run() -> None:
         )
         assert hh.get("skipped_locked") or hh.get("reason") == "field_locked_skip", hh
 
-        # Page complete + ADVANCE → should advance; never review-hold
+        # Page complete + ADVANCE → never review-hold (live gate is
+        # fill_contract / can_claim_ready, not a fourth boolean helper).
         attach_footer_primary(report, kind="ADVANCE", label="Save and Continue")
-        assert page_complete_should_advance(
-            required_empty=[], footer_kind="ADVANCE", footer_label="Save and Continue"
-        )
+        assert footer_primary_wizard_incomplete("ADVANCE", "Save and Continue") is True
         assert may_enter_review_hold(report) is False
 
-        # Incomplete page must NOT advance
+        # Incomplete required empties: wizard still ADVANCE, not review-hold
         await page.set_content(INCOMPLETE_HTML)
-        assert not page_complete_should_advance(
-            required_empty=[{"id": "legalNameSection_firstName", "reason": "empty"}],
-            footer_kind="ADVANCE",
-            footer_label="Next",
-        )
+        assert footer_primary_wizard_incomplete("ADVANCE", "Next") is True
 
         clear_locks_on_advance(report)
         assert not sess.is_locked(

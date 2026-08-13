@@ -89,20 +89,28 @@ _activate_chrome_testing() {
 _run() {
   export PYTHONUNBUFFERED=1
   export FASTFILL_STEP_LOG_STREAM=1
+  export FASTFILL_FLIGHT="${FASTFILL_FLIGHT:-1}"
+  export FASTFILL_FLIGHT_STREAM="${FASTFILL_FLIGHT_STREAM:-1}"
   _preflight_headed_cap
   echo "════════════════════════════════════════════════════════════════"
-  echo " JOB-HUNTER FILL — live [fill-step] log streams below"
+  echo " JOB-HUNTER FILL — live [fill-step] + [flight] streams below"
   echo " Headed browser (--headed) opens next. Dummy only. Never submits."
   echo " Flash leftovers ON (--flash-leftovers) for salary/clearance/etc."
+  echo " Workday/NXP: leftover Flash ON after Layer 0/1 + pack (never re-fill contact)."
+  echo " Flight trace: ${OUT_DIR}/flight.log  (+ flight.jsonl)"
   echo " Artifacts: ${OUT_DIR}/"
   echo "════════════════════════════════════════════════════════════════"
   # Always --headed here; never downgrade to headless in the inline path.
   # --flash-leftovers: Layer 0/1 first, then DeepSeek for leftovers (dummy facts).
   # Disable: FASTFILL_FLASH_LEFTOVERS=0 ./scripts/fastfill/run_fill_visible.sh URL
+  # Default Flash ON for all ATS including Workday; leftover-only (no contact steal).
+  FLASH_ENV="${FASTFILL_FLASH_LEFTOVERS:-1}"
   FLASH_ARGS=(--flash-leftovers)
-  case "${FASTFILL_FLASH_LEFTOVERS:-1}" in
+  case "${FLASH_ENV}" in
     0|false|no|off) FLASH_ARGS=() ;;
   esac
+  export FASTFILL_ACTION_SUPERVISOR="${FASTFILL_ACTION_SUPERVISOR:-1}"
+  export FASTFILL_STRICT_COMPLETION="${FASTFILL_STRICT_COMPLETION:-1}"
   "${PYTHON}" "${FILL}" "$URL" \
     --headed \
     "${FLASH_ARGS[@]}" \

@@ -97,7 +97,8 @@ skyvern_runtime/venv/bin/python scripts/fastfill/regression_gates.py
 - **`--flash-leftovers`**: raw CLI default **OFF**. Dashboard Start/Fast fill + `run_fill_visible.sh`
   default **ON**. When on, leftovers-only Skyvern/DeepSeek prompt; never submits.
 - Visible watch: `./scripts/fastfill/run_fill_visible.sh URL` (Flash ON; disable with
-  `FASTFILL_FLASH_LEFTOVERS=0`)
+  `FASTFILL_FLASH_LEFTOVERS=0`; Workday/NXP leftover Flash ON after the pack). Flight recorder ON by default → `flight.log` /
+  `flight.jsonl` beside the run (see `LIVE_VISIBILITY.md`).
 
 ## Layer order (do not skip)
 
@@ -106,11 +107,17 @@ Non-Workday fill order matches `fast_fill.py`:
 1. **ENTRY pre-pass** — `entry_prepass` via `button_gate` (never FINAL); thin ATS /
    unknown get up to 5 entry clicks; may follow Apply into a new tab
 2. **Selector pack (Layer 0.5)** — platform pack or `GENERIC_SELECTOR_PACK` on best
-   page/iframe (`apply_selector_pack_anywhere` / `fill_target`)
+   page/iframe (`apply_selector_pack_anywhere` / `fill_target`). Vanilla native
+   text/email/tel/textarea, native `<select>`, and simple checkbox snap in via one
+   `batch_fill_simple` evaluate; widgets (HOW_HEARD, searchSelect, combobox, file,
+   radio, FoS, dates, phone-country, address country/state/city) stay sequential
+   `_fill_selector`. Batch misses / empty readback fall back to sequential (fiber
+   for stubborn Workday addressLine2/county). Never `asyncio.gather` of Playwright fills.
 3. **Replay** — `record_replay.apply_replay_map` (selector→type cache; no PII values;
    invalidate on verify miss)
 4. **Extract + classify** — Layer 0 HTML `autocomplete` + Layer 1 label/name/id
-   heuristics (`field_map`); Greenhouse `gh_select`; custom widgets
+   heuristics (`field_map`); same vanilla batch-fill then sequential remainder;
+   Greenhouse `gh_select`; custom widgets
 5. **Learned allow-list** — `learned_fields.json` via `learning.py` (policy facts only)
 6. **Flash leftovers only** — opt-in `--flash-leftovers` → `flash_leftovers.py` (≤5 steps)
 
@@ -155,6 +162,7 @@ iframe (classic iCIMS). Empty iframe extract → one top-page retry
 `exp_workday_selectors.workday_two_phase_on_page`. Notes in `ats_notes/workday.md`.
 
 - **Phase A (account gate):** Apply → Apply Manually → create/sign-in. Passwords from `web_keys` (`Pswdpswd@912*{Company}`); prefer Sign In when host has stored email+password. Never `FINAL`.
+- **Workday leftover Flash ON** — after Layer 0/1 + two-phase pack, inpage/Skyvern Flash fills leftovers only (dates, FoS, How-Heard leftover, essays, screening). Never re-fills already-correct contact/address/How-Heard (cheat sheet / field_lock / steal-blocklist). Never Submit.
 - **Phase B (contact):** verified fills; **no ADVANCE** if required empty / pack incomplete; phone-device-type = Mobile (never dial codes). How-Heard / School prompts: fiber `searchSelect` → `nudge_listbox` → Playwright click; then `gaps_after_save` blocks Ready if Save still shows required empties.
 - **Phase C–E:** experience (resume + jobs) → voluntary disclosures (Decline) → self-id; stop at review.
 - **Ready:** only when `page_progress.can_claim_ready` passes **and** live `vision_judge.judge_page` is complete (FAIL_BLANK / BLOCKED / AMBIGUOUS → not Ready; `vision_judge_live` on report). Hold alone never promotes Ready. Non-empty `gaps_after_save` also blocks Ready.
@@ -213,15 +221,73 @@ skyvern_runtime/venv/bin/python scripts/fastfill/continuous_learn.py --sanitize
 
 See `scripts/fastfill/learning_store/LEARNING.md`.
 
+## Action supervisor (per-action audit)
+
+After every fill/click/select, `action_supervisor.py` re-reads DOM readback and
+judges before the next action:
+
+| Verdict | Behavior |
+|---------|----------|
+| **OK** | Continue |
+| **THRASH** | Lock field + skip (no retry) — thrash_rewrite or N touches same value |
+| **WRONG** | One corrective re-fill, re-audit |
+| **STUCK** | Log to report `supervisor_stuck[]`, mark unverified |
+
+- Wired in `_fill_selector` (pack/generic) and Workday `_fill_experience_text_field`
+- Logs: `{attempt_dir}/action_audit.jsonl` + `fill_steps` rows with `action=action_audit`
+- Disable: `FASTFILL_ACTION_SUPERVISOR=0`; thrash N: `FASTFILL_SUPERVISOR_THRASH_N=3`
+
+```bash
+skyvern_runtime/venv/bin/python scripts/fastfill/test_action_supervisor.py
+skyvern_runtime/venv/bin/python scripts/fastfill/action_supervisor.py --self-test
+```
+
+## Flight recorder (live decision trace)
+
+When the headed browser looks wrong but reports are opaque, turn on the
+**flight recorder** — chronological why/what for every meaningful gate:
+
+- **Files:** `{out_dir}/flight.jsonl` + `{out_dir}/flight.log` (also streams `[flight NNNN]` lines)
+- **Default:** ON when `--headed` / `run_fill_visible.sh`; OFF headless
+- **Force:** `FASTFILL_FLIGHT=1` or `--flight-recorder`; off: `FASTFILL_FLIGHT=0` / `--no-flight-recorder`
+- **Hooks:** `fill_contract` verify/commit/advance, `field_lock` leftover drops,
+  `page_progress` empty-cycle STOP, Workday `pack_incomplete`, flash EEO filter
+
+```bash
+# Visible run (flight ON by default)
+./scripts/fastfill/run_fill_visible.sh 'https://….myworkdayjobs.com/…'
+# Then paste back: skyvern_runtime/real_job_results/fill_live_*/flight.log
+
+skyvern_runtime/venv/bin/python scripts/fastfill/flight_recorder.py --self-test
+skyvern_runtime/venv/bin/python scripts/fastfill/test_flight_recorder.py
+```
+
+See `scripts/fastfill/LIVE_VISIBILITY.md` for browser→log mapping and remaining blind spots.
+
+## Progress monitor (adaptive next fix)
+
+Source of “what's happening” + one next adaptive action. **Gym green ≠ live win** (`gym_pass` never sets `live_pass`).
+
+```bash
+skyvern_runtime/venv/bin/python scripts/fastfill/progress_monitor.py
+skyvern_runtime/venv/bin/python scripts/fastfill/progress_monitor.py --json
+./scripts/fastfill/watch_progress.sh
+```
+
+Writes `scripts/fastfill/progress_state.json` + `PROGRESS.md`. Policy: overwrite/lock_skip → tighten lock; empty_cycle → page_progress budgets; empty_readback addr2/county → fiber_text_commit; Illinois → state pack; FoS steal → ontology unlock-if-wrong; vanilla → keep `batch_fill`. When no gym-fixable gap remains: **live headed flight.log required**.
+
 ## Key modules
 
 | Module | Role |
 |--------|------|
 | `fast_fill.py` | Orchestrator (Workday multipage + optional Flash) |
+| `batch_fill.py` | Instant Layer 0/1 vanilla fill (one `page.evaluate`); widgets sequential |
+| `flight_recorder.py` | Live decision trace (`flight.jsonl` / `flight.log`) — headed default ON |
+| `progress_monitor.py` | Adaptive progress: scan flight/gym/gate → `PROGRESS.md` + one next fix |
+| `adapt_policy.py` | Highest-ROI next action (gym ≠ live) |
 | `page_progress.py` | Advance gates + `can_claim_ready` / `apply_live_vision_gate` |
 | `vision_judge.py` | DOM `judge_page` + screenshot heuristic (Ready gate) |
 | `web_keys.py` | Per-site ATS passwords (`web_keys.json`) |
-| `parity_report.py` | Dummy/real prepare key-presence smoke (no PII) |
 | `coverage_matrix.md` | Universal ATS + non-ATS path table |
 | `iframe_ctx.py` | Apply iframe / SPA form discovery |
 | `exp_workday_selectors.py` | Workday Phase A–E |
@@ -238,5 +304,7 @@ See `scripts/fastfill/learning_store/LEARNING.md`.
 | `dummy_answers.py` | **Shared source of truth** — `SHARED_FILL_POLICY` / `shared_values()` / `DETERMINISTIC_ANSWERS` (identical for dummy + real) |
 | `captcha_pause.py` | Headed CAPTCHA human pause (Enter / sentinel) |
 | `fill_pause.py` | Headed in-page Pause/Continue overlay between field actions |
+| `action_supervisor.py` | Per-action audit loop (OK/THRASH/WRONG/STUCK) → `action_audit.jsonl` |
+| `action_judge.py` | Lightweight verdict helper (`correct_skip` / `thrash_rewrite`) |
 | `button_gate.py` | Never-submit click gate |
 | `run_identity.py` | Per-run random email + resume compile; `prepare_real_run` composes shared + unique |

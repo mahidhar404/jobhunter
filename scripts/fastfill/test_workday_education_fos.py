@@ -55,7 +55,7 @@ def test_education_fos_fill_uses_combobox_not_plain_text():
 
     src = inspect.getsource(wd._fill_education_field_of_study)
     assert "combobox=True" in src
-    assert "formField-fieldOfStudy" in src
+    assert "_FOS_FILL_AIDS" in src
     assert "_fill_typable_edu_prompt" in src
     assert "FIELD_OF_STUDY" in src
     # Plain-text-only fallback removed from dedicated FoS path
@@ -78,12 +78,15 @@ def test_select_one_passes_nested_filter_for_fos():
 
 
 def test_automation_id_maps_fos_field_type():
+    import inspect
+
     import exp_workday_selectors as wd
 
-    src = inspect.getsource(wd._fill_automation_id)
-    assert "fieldofstudy" in src.lower()
-    assert "FIELD_OF_STUDY" in src
-    assert "aliases_for" in src
+    wrap = inspect.getsource(wd._fill_automation_id)
+    impl = inspect.getsource(wd._fill_automation_id_impl)
+    assert "fieldofstudy" in wrap.lower()
+    assert "FIELD_OF_STUDY" in wrap
+    assert "aliases_for" in impl
 
 
 def test_fos_candidates_include_computer_science():
@@ -94,6 +97,42 @@ def test_fos_candidates_include_computer_science():
         {FIELD_OF_STUDY: "Computer Science", DISCIPLINE: "Computer Science", MAJOR: "CS"}
     )
     assert any("computer science" in c.lower() for c in cands), cands
+
+
+def test_fos_fill_aids_are_canonical_wraps():
+    """0842: don't walk inner fieldOfStudy + every edu alias — formField wraps only."""
+    from exp_workday_selectors import _FOS_FILL_AIDS
+
+    assert "formField-fieldOfStudy" in _FOS_FILL_AIDS
+    assert "formField-discipline" in _FOS_FILL_AIDS
+    assert "fieldOfStudy" not in _FOS_FILL_AIDS
+    assert "discipline" not in _FOS_FILL_AIDS
+    assert "major" not in _FOS_FILL_AIDS
+
+
+def test_education_in_dom_attempt_stops_alias_storm():
+    from exp_workday_selectors import education_in_dom_attempt
+
+    assert not education_in_dom_attempt({"reason": "not_in_dom"})
+    assert not education_in_dom_attempt({"reason": "not_visible"})
+    assert education_in_dom_attempt({"reason": "empty_readback"})
+    assert education_in_dom_attempt({"reason": "already_correct_skip", "verified": True})
+
+
+def test_education_section_school_is_searchselect_skip_if_done():
+    """School: one searchSelect (combobox), skip remaining school aids if done."""
+    import inspect
+
+    import exp_workday_selectors as wd
+
+    src = inspect.getsource(wd._fill_education_section)
+    assert "school_done" in src
+    assert "degree_done" in src
+    # First school aid must be combobox/searchSelect, not plain text schoolName
+    assert '("formField-school"' in src or '("formField-school", school, True' in src
+    assert "combobox=False" not in src or src.find("schoolName") < 0 or (
+        "school, True" in src
+    )
 
 
 def test_select_one_infers_phone_country_before_degree():
@@ -117,5 +156,8 @@ if __name__ == "__main__":
     test_select_one_passes_nested_filter_for_fos()
     test_automation_id_maps_fos_field_type()
     test_fos_candidates_include_computer_science()
+    test_fos_fill_aids_are_canonical_wraps()
+    test_education_in_dom_attempt_stops_alias_storm()
+    test_education_section_school_is_searchselect_skip_if_done()
     test_select_one_infers_phone_country_before_degree()
     print("ok")

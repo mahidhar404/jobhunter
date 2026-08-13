@@ -43,11 +43,15 @@ def test_click_text_path_uses_soft_value_match_not_raw_in():
     import verified_select as vs
 
     src = inspect.getsource(vs.typable_dropdown_narrow_and_click)
-    assert "soft_value_match(want_n, t)" in src
+    assert "click_option_exact_text" in src
     assert 'want_n.lower() in t.lower()' not in src
     # Fiber never accepts sc==0
     assert "sc == 0" not in src
     assert "sc >= min_score" in src
+    click_src = inspect.getsource(vs.click_option_exact_text)
+    assert "soft_value_match" in click_src
+    assert 'want_n.lower() in t.lower()' not in click_src
+    assert 'wl in tl' not in click_src
 
 
 def test_nudge_listbox_never_bare_prompt_icon():

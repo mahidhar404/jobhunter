@@ -12,13 +12,14 @@
     #menu { border: 1px solid #ccc; border-radius: 4px; padding: 8px; margin-top: 4px; }
     [role="option"] { padding: 6px 8px; cursor: pointer; border-radius: 3px; }
     [role="option"]:hover { background: #eef; }
+    .drill { color: #444; }
   </style>
 </head>
 <body>
   <h1>My Information — Workday</h1>
   <p>Applicant: Test Dummy · randommail6969@gmail.com</p>
   <p class="hint">
-    Walmart-shaped hierarchy: type → Job Board subsection → leaf chip.
+    NXP-shaped hierarchy: open → Website &gt; → Web - * leaf chip.
     Category filter text without chip must NOT count as committed.
   </p>
 
@@ -38,7 +39,7 @@
       <div id="menu" role="listbox" style="display:none;">
         <div id="subsection-hdr" style="display:none;">
           <button id="back-btn" type="button" aria-label="back">←</button>
-          <strong>Job Board</strong>
+          <strong id="subsection-title">Website</strong>
         </div>
         <div id="top-opts"></div>
         <div id="sub-opts" style="display:none;"></div>
@@ -49,59 +50,59 @@
 
   <script>
     (function () {
-      // Dummy profile value is NOT a leaf — filler must navigate category → leaf.
-      var CATEGORIES = ["Internet job board", "Job Board", "Social Media"];
-      var LEAVES = ["CareerBuilder", "Comparably", "Getting Hired", "Google For Jobs",
-                    "Indeed", "Jobillico", "LinkedIn"];
+      // NXP / Workday drill-in categories (each opens a leaf submenu).
+      var CATEGORIES = [
+        { label: "Advertising", drill: true },
+        { label: "Employee Referral", drill: true },
+        { label: "Event", drill: true },
+        { label: "Website", drill: true },
+        { label: "Job Board", drill: true }
+      ];
+      // Website submenu leaves (NXP uses "Web - …" prefix).
+      var WEB_LEAVES = [
+        "Web - CareerBuilder",
+        "Web - Craigslist",
+        "Web - Glassdoor",
+        "Web - Indeed",
+        "Web - LinkedIn",
+        "Web - Monster"
+      ];
+      var BOARD_LEAVES = ["CareerBuilder", "Indeed", "LinkedIn", "Glassdoor"];
+
       var input = document.getElementById("hh-input");
       var menu = document.getElementById("menu");
       var topOpts = document.getElementById("top-opts");
       var subOpts = document.getElementById("sub-opts");
       var subHdr = document.getElementById("subsection-hdr");
+      var subTitle = document.getElementById("subsection-title");
       var chrome = document.getElementById("chip-chrome");
-      var inSub = false;
 
-      function renderTop(q) {
+      function renderTop() {
         topOpts.innerHTML = "";
         subOpts.style.display = "none";
         subHdr.style.display = "none";
-        inSub = false;
-        var qq = (q || "").toLowerCase();
-        var cats = CATEGORIES.filter(function (c) {
-          return !qq || c.toLowerCase().indexOf(qq) >= 0
-            || (qq === "indeed" && c.toLowerCase().indexOf("job board") >= 0)
-            || (qq === "linkedin" && c.toLowerCase().indexOf("job board") >= 0);
-        });
-        var show = cats.length ? cats : CATEGORIES;
-        show.forEach(function (c) {
+        CATEGORIES.forEach(function (c) {
           var el = document.createElement("div");
           el.setAttribute("role", "option");
           el.setAttribute("data-automation-id", "promptOption");
           el.setAttribute("aria-expanded", "false");
-          el.textContent = c;
-          el.onclick = function () { openSub(c); };
+          el.className = "drill";
+          el.textContent = c.label + " >";
+          el.onclick = function () { openSub(c.label); };
           topOpts.appendChild(el);
         });
-        LEAVES.filter(function (l) { return qq && l.toLowerCase().indexOf(qq) >= 0; })
-          .forEach(function (l) {
-            var el = document.createElement("div");
-            el.setAttribute("role", "option");
-            el.setAttribute("data-automation-id", "promptOption");
-            el.textContent = l;
-            el.onclick = function () { pickLeaf(l); };
-            topOpts.appendChild(el);
-          });
         menu.style.display = "block";
         input.setAttribute("aria-expanded", "true");
       }
 
       function openSub(cat) {
-        inSub = true;
         topOpts.innerHTML = "";
         subHdr.style.display = "block";
         subOpts.style.display = "block";
+        subTitle.textContent = cat;
         subOpts.innerHTML = "";
-        LEAVES.forEach(function (l) {
+        var leaves = cat === "Website" ? WEB_LEAVES : BOARD_LEAVES;
+        leaves.forEach(function (l) {
           var el = document.createElement("div");
           el.setAttribute("role", "option");
           el.setAttribute("data-automation-id", "promptOption");
@@ -120,10 +121,9 @@
         input.setAttribute("aria-expanded", "false");
       }
 
-      document.getElementById("back-btn").onclick = function () { renderTop(input.value); };
-      input.addEventListener("focus", function () { renderTop(input.value); });
-      input.addEventListener("input", function () { renderTop(input.value); });
-      input.addEventListener("click", function () { renderTop(input.value); });
+      document.getElementById("back-btn").onclick = function () { renderTop(); };
+      input.addEventListener("focus", renderTop);
+      input.addEventListener("click", renderTop);
 
       document.querySelector('[data-automation-id="bottom-navigation-next-button"]')
         .addEventListener("click", function (e) {

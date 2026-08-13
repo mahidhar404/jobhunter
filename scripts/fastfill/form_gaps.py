@@ -32,6 +32,43 @@ def is_instruction_only_gap(label: str) -> bool:
     return bool(_INSTRUCTION_GAP_RE.search(label or ""))
 
 
+# Pack aids that 0842 NXP never mounts as live questions (optional / absent).
+_RAW_OPTIONAL_PACK_AID_RE = re.compile(
+    r"^(addressSection_addressLine2|addressSection_regionSubdivision1|"
+    r"worked_here_before)$",
+    re.I,
+)
+
+
+def is_raw_optional_pack_aid(label: str, automation_id: str = "") -> bool:
+    """True when gap label/aid is a pack theater id, not a visible question."""
+    for raw in (label, automation_id):
+        t = str(raw or "").strip()
+        if t and _RAW_OPTIONAL_PACK_AID_RE.match(t):
+            return True
+    return False
+
+
+def is_committed_phone_country_gap(label: str, automation_id: str = "") -> bool:
+    """True when a phone-country required_empty is actually a committed US +1 chip."""
+    blob = f"{label or ''} {automation_id or ''}"
+    compact = re.sub(r"[^a-z0-9]+", "", blob.lower())
+    phoneish = "countryphonecode" in compact or (
+        "phone" in blob.lower() and "country" in blob.lower()
+    )
+    if not phoneish:
+        return False
+    if re.search(r"[1-9]\d*\s+items?\s+selected", label or "", re.I):
+        return True
+    if re.search(
+        r"united\s*states(\s*of\s*america)?\s*\(\s*\+\s*1\s*\)",
+        label or "",
+        re.I,
+    ):
+        return True
+    return False
+
+
 COLLECT_GAPS_JS = """() => {
   const out = [];
   const vis = (el) => {
@@ -76,6 +113,23 @@ COLLECT_GAPS_JS = """() => {
     if (!L) return;
     if (/^(current teammates|please apply via)/i.test(L)) return;
     out.push({ label: L, reason: reason || 'invalid', automation_id: aid || '' });
+  };
+  const phoneCountryWrapCommitted = (wrap) => {
+    if (!wrap) return false;
+    const aid = (wrap.getAttribute('data-automation-id') || '').toLowerCase();
+    const isPhoneCountry = /countryphonecode|phone.?country|phonenumber--country/.test(aid)
+      || /country\\s*phone\\s*code|phone\\s*country/i.test(
+        (wrap.innerText || wrap.textContent || '').slice(0, 140)
+      );
+    if (!isPhoneCountry) return false;
+    const wt = (wrap.innerText || wrap.textContent || '').replace(/\\s+/g, ' ');
+    if (/united\\s*states(\\s*of\\s*america)?\\s*\\(\\s*\\+\\s*1\\s*\\)/i.test(wt)) return true;
+    if (/united\\s*states(\\s*of\\s*america)?/i.test(wt) && /\\(\\s*\\+\\s*1\\s*\\)/.test(wt)) return true;
+    const chip = wrap.querySelector(
+      '[data-automation-id="deleteSelected"], [data-automation-id*="selectedItem"], '
+      + '[aria-label*="delete" i], [aria-label*="remove" i], button[aria-label*="clear" i]'
+    );
+    return !!(chip && /united\\s*states|\\(\\s*\\+\\d{1,4}/i.test(wt));
   };
   // Explicit ATS / form error nodes (always keep — Workday etc.)
   for (const sel of [
@@ -129,11 +183,15 @@ COLLECT_GAPS_JS = """() => {
     } else {
       // Workday multi-select filter inputs stay "empty" while chips show "N items selected"
       const wrap = el.closest('[data-automation-id*="formField"], [data-automation-id="multiSelectContainer"], fieldset');
+      if (phoneCountryWrapCommitted(wrap)) {
+        empty = false;
+      } else {
       const wrapText = ((wrap && (wrap.innerText || wrap.textContent)) || '').toLowerCase();
       if (/[1-9]\\d*\\s+items?\\s+selected/.test(wrapText)) {
         empty = false;
       } else {
         empty = !(el.value || '').trim();
+      }
       }
     }
     if (!empty) continue;
@@ -186,6 +244,23 @@ def normalize_gaps(raw: list[Any] | None) -> list[dict[str, str]]:
         # Instructional sibling copy (not an unanswered control).
         if reason == "required_empty" and is_instruction_only_gap(label):
             continue
+        aid = str(g.get("automation_id") or "")
+        # Invented pack aids (0842 addressLine2/county/worked_here not in DOM).
+        if reason == "required_empty" and is_raw_optional_pack_aid(label, aid):
+            continue
+        # Phone-country chip already committed — filter-input stays empty.
+        if reason == "required_empty" and is_committed_phone_country_gap(label, aid):
+            continue
+        # Optional education GPA must never leftover/block ADVANCE.
+        try:
+            from workday_date_readback import is_optional_gpa_label
+
+            if is_optional_gpa_label(label) or is_optional_gpa_label(aid):
+                continue
+        except Exception:
+            blob = f"{label} {aid}".lower()
+            if "gpa" in blob or "grade point" in blob:
+                continue
         key = label.lower()[:80]
         if key in seen:
             continue
@@ -221,7 +296,22 @@ async def collect_form_gaps(page) -> list[dict[str, str]]:
                 "automation_id": "",
             }
         ]
-    return normalize_gaps(raw if isinstance(raw, list) else [])
+    norm = normalize_gaps(raw if isinstance(raw, list) else [])
+    try:
+        from field_done import filter_gaps_false_incomplete
+
+        return await filter_gaps_false_incomplete(page, norm)
+    except Exception:
+        try:
+            from verified_select import (
+                filter_phone_country_false_empties,
+                read_phone_country_field_snip,
+            )
+
+            snip = await read_phone_country_field_snip(page)
+            return filter_phone_country_false_empties(norm, snip)
+        except Exception:
+            return norm
 
 
 def merge_gaps_into_report(report: dict, gaps: list[dict] | None) -> list[dict[str, str]]:

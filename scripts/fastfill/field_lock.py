@@ -20,7 +20,86 @@ from typing import Any
 
 # Once any identity for these types is locked, every identity of that type
 # is treated as locked (page-singleton widgets — resume, etc.).
-SINGLETON_LOCK_TYPES = frozenset({"RESUME_UPLOAD", "WORKED_HERE_BEFORE", "HOW_HEARD"})
+SINGLETON_LOCK_TYPES = frozenset(
+    {
+        "RESUME_UPLOAD",
+        "WORKED_HERE_BEFORE",
+        "HOW_HEARD",
+        # FoS aliases (Major / Discipline / Field of Study) share one chip —
+        # locking any variant blocks pass-2 / leftover / Flash retouches.
+        "FIELD_OF_STUDY",
+        "DISCIPLINE",
+        "MAJOR",
+    }
+)
+
+# Cross-type FoS family: locking FIELD_OF_STUDY also blocks MAJOR/DISCIPLINE.
+FOS_LOCK_TYPES = frozenset({"FIELD_OF_STUDY", "DISCIPLINE", "MAJOR"})
+
+
+def _fos_family_locked(sess: "FieldLockSession") -> bool:
+    locked = sess.locked_types()
+    return bool(locked & FOS_LOCK_TYPES)
+
+
+def _ontology_family_entry(
+    sess: "FieldLockSession",
+    *,
+    field_type: str | None = None,
+    label: str | None = None,
+    automation_id: str | None = None,
+    field_id: str | None = None,
+) -> "LockEntry | None":
+    """Return a lock in the same Workday aid-ontology family, or None.
+
+    Covers ADDRESS_STATE countryRegion aliases (and backs FoS / how-heard)
+    without multiplying lock keys.
+    """
+    try:
+        from workday_aid_ontology import family_for
+    except Exception:
+        return None
+    probe = family_for(
+        field_type=field_type,
+        automation_id=automation_id or field_id,
+        label=label,
+    )
+    if probe is None:
+        return None
+    for e in sess._locks.values():
+        locked = family_for(
+            field_type=e.field_type,
+            automation_id=e.automation_id,
+            label=e.label,
+        )
+        if locked is not None and locked.name == probe.name:
+            return e
+    return None
+
+
+def _looks_like_fos_target(
+    *,
+    field_type: str | None = None,
+    label: str | None = None,
+    selector: str | None = None,
+    automation_id: str | None = None,
+    field_id: str | None = None,
+) -> bool:
+    ft = (field_type or "").strip().upper()
+    if ft in FOS_LOCK_TYPES:
+        return True
+    aid = (automation_id or field_id or "").lower()
+    sel = (selector or "").lower()
+    lab = (label or "").lower()
+    if any(k in aid for k in ("fieldofstudy", "discipline", "major")):
+        return True
+    if any(k in sel for k in ("fieldofstudy", "discipline", "major")):
+        return True
+    if re.search(r"field\s+of\s+study|\bdiscipline\b|\bmajor\b", lab):
+        return True
+    if "education/major" in aid or "education/major" in lab:
+        return True
+    return False
 
 
 def field_identity_key(
@@ -91,6 +170,23 @@ class FieldLockSession:
         ft = (field_type or "").strip().upper()
         if ft in SINGLETON_LOCK_TYPES and ft in self.locked_types():
             return True
+        # FoS family: any locked FoS type blocks Major/Discipline/FoS aliases.
+        if _fos_family_locked(self) and _looks_like_fos_target(
+            field_type=field_type,
+            label=label,
+            selector=selector,
+            automation_id=automation_id,
+            field_id=field_id,
+        ):
+            return True
+        if _ontology_family_entry(
+            self,
+            field_type=field_type,
+            label=label,
+            automation_id=automation_id,
+            field_id=field_id,
+        ) is not None:
+            return True
         k = key or field_identity_key(
             field_type=field_type,
             label=label,
@@ -112,7 +208,11 @@ class FieldLockSession:
         via: str | None = None,
         key: str | None = None,
     ) -> LockEntry:
-        """Lock after commit-verified fill. Idempotent for same key."""
+        """Lock after commit-verified fill. Idempotent for same key.
+
+        Also expands Workday aid ontology siblings (FoS/Major/Discipline,
+        countryRegion state family, how-heard) so alias walks cannot retouch.
+        """
         ft = (field_type or "").strip().upper() or None
         # Prefer stable aid for resume so pack/ensure/phase_c share one key.
         if ft == "RESUME_UPLOAD" and not (automation_id or field_id):
@@ -146,6 +246,37 @@ class FieldLockSession:
             page_epoch=self.page_epoch,
         )
         self._locks[k] = entry
+        # Ontology expand: lock sibling types so Major/Discipline share FoS lock.
+        try:
+            from workday_aid_ontology import expand_lock_types
+
+            for sib_ft in expand_lock_types(
+                field_type=ft,
+                automation_id=automation_id or field_id,
+                label=label,
+            ):
+                if not sib_ft or sib_ft == (ft or ""):
+                    continue
+                sk = field_identity_key(
+                    field_type=sib_ft,
+                    automation_id=automation_id or field_id,
+                    label=label,
+                )
+                if sk in self._locks:
+                    continue
+                self._locks[sk] = LockEntry(
+                    key=sk,
+                    field_type=sib_ft,
+                    label=(label or "")[:120] or None,
+                    selector=(selector or "")[:160] or None,
+                    automation_id=(automation_id or field_id or "")[:80] or None,
+                    readback=(str(readback)[:120] if readback is not None else None),
+                    via=(f"{via or 'lock'}|ontology:{sib_ft}" if via or sib_ft else "ontology"),
+                    locked_at=now,
+                    page_epoch=self.page_epoch,
+                )
+        except Exception:
+            pass
         return entry
 
     def note_attempt(self, key: str) -> int:
@@ -256,6 +387,62 @@ class FieldLockSession:
                 }
         except Exception:
             pass
+        # FoS family: once Science-Computer (or any correct FoS) is locked,
+        # Major / Discipline / edu_prompt aliases must not retype (Yogesh rule).
+        if _fos_family_locked(self) and _looks_like_fos_target(
+            field_type=field_type,
+            label=label,
+            selector=selector,
+            automation_id=automation_id,
+            field_id=field_id,
+        ):
+            entry = next(
+                (e for e in self._locks.values() if (e.field_type or "") in FOS_LOCK_TYPES),
+                None,
+            )
+            k = (
+                entry.key
+                if entry is not None
+                else field_identity_key(
+                    field_type=field_type or "FIELD_OF_STUDY",
+                    label=label,
+                    selector=selector,
+                    automation_id=automation_id or "education/fieldOfStudy",
+                    field_id=field_id,
+                )
+            )
+            self.note_retouch(k)
+            return {
+                "action": "lock_skip",
+                "key": k,
+                "thrash": True,
+                "thrash_retouches": self.thrash_retouches,
+                "readback": entry.readback if entry else None,
+                "locked_via": entry.via if entry else None,
+                "attempt_count": self._attempt_counts.get(k, 0),
+                "singleton_type": "FIELD_OF_STUDY",
+            }
+        # Ontology family (ADDRESS_STATE countryRegion aliases, etc.)
+        fam_entry = _ontology_family_entry(
+            self,
+            field_type=field_type,
+            label=label,
+            automation_id=automation_id,
+            field_id=field_id,
+        )
+        if fam_entry is not None:
+            k = fam_entry.key
+            self.note_retouch(k)
+            return {
+                "action": "lock_skip",
+                "key": k,
+                "thrash": True,
+                "thrash_retouches": self.thrash_retouches,
+                "readback": fam_entry.readback,
+                "locked_via": fam_entry.via,
+                "attempt_count": self._attempt_counts.get(k, 0),
+                "singleton_type": fam_entry.field_type,
+            }
         # Resume (and other singletons): any prior lock for the type blocks
         # every selector/label variant — same class of thrash as how-heard.
         if ft in SINGLETON_LOCK_TYPES and ft in self.locked_types():
@@ -355,6 +542,41 @@ class FieldLockSession:
             "advance_count": int(self._advance_count),
         }
 
+    def unlock(
+        self,
+        *,
+        field_type: str | None = None,
+        label: str | None = None,
+        selector: str | None = None,
+        automation_id: str | None = None,
+        field_id: str | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Drop matching locks (and aid/FoS siblings). Returns count removed."""
+        removed = 0
+        k = key or field_identity_key(
+            field_type=field_type,
+            label=label,
+            selector=selector,
+            automation_id=automation_id,
+            field_id=field_id,
+        )
+        if k in self._locks:
+            del self._locks[k]
+            removed += 1
+        ft = (field_type or "").strip().upper()
+        aid = (automation_id or field_id or "").strip()
+        for lk in list(self._locks.keys()):
+            e = self._locks[lk]
+            if aid and str(e.automation_id or "") == aid:
+                del self._locks[lk]
+                removed += 1
+                continue
+            if ft and ft in FOS_LOCK_TYPES and (e.field_type or "") in FOS_LOCK_TYPES:
+                del self._locks[lk]
+                removed += 1
+        return removed
+
     def lock_skip_result(
         self,
         gate_info: dict[str, Any],
@@ -445,6 +667,22 @@ def lock_verified_field(
     if sess is None:
         return None
     row = row or {}
+    # Honesty: never lock a row that already failed verify/commit.
+    if row.get("verified") is False or row.get("ok") is False:
+        return None
+    # SSoT: lock only if field_is_done agrees. Do not add a parallel oracle.
+    try:
+        from field_done import field_is_done_from_row
+
+        probe = dict(row)
+        if field_type:
+            probe.setdefault("type", field_type)
+        if readback is not None:
+            probe["readback"] = readback
+        if not field_is_done_from_row(probe).ok:
+            return None
+    except Exception:
+        pass
     ft = field_type or row.get("type")
     lab = label if label is not None else row.get("label")
     sel = selector if selector is not None else row.get("selector")
@@ -455,7 +693,13 @@ def lock_verified_field(
     )
     rb = readback
     if rb is None:
-        rb = row.get("readback") or row.get("picked") or row.get("value")
+        rb = row.get("readback")
+        if rb in (None, ""):
+            rb = row.get("picked")
+    # Never treat intent/value as DOM readback (overwrite → lock_skip miss).
+    rb_s = str(rb).strip() if rb is not None else ""
+    if not rb_s:
+        return None
     v = via or row.get("via")
     return sess.lock(
         field_type=str(ft) if ft else None,
@@ -463,9 +707,259 @@ def lock_verified_field(
         selector=str(sel) if sel else None,
         automation_id=str(aid) if aid else None,
         field_id=field_id,
-        readback=str(rb) if rb is not None else None,
+        readback=rb_s[:120],
         via=str(v) if v else None,
     )
+
+
+def unlock_if_not_done(
+    report: dict | None,
+    *,
+    field_type: str | None = None,
+    label: str | None = None,
+    selector: str | None = None,
+    automation_id: str | None = None,
+    field_id: str | None = None,
+    intent: str | None = None,
+    readback: str | None = None,
+) -> dict[str, Any] | None:
+    """Unlock when ``field_is_done`` says the locked value is wrong.
+
+    Do not add a parallel oracle — completion truth stays in ``field_done``.
+    """
+    parent = resolve_lock_report(report)
+    sess = get_field_locks(parent)
+    if sess is None:
+        return None
+    rb = str(readback or "").strip()
+    if not rb:
+        k = field_identity_key(
+            field_type=field_type,
+            label=label,
+            selector=selector,
+            automation_id=automation_id,
+            field_id=field_id,
+        )
+        entry = sess._locks.get(k)
+        if entry is None:
+            entry = _ontology_family_entry(
+                sess,
+                field_type=field_type,
+                label=label,
+                automation_id=automation_id,
+                field_id=field_id,
+            )
+        rb = str((entry.readback if entry else "") or "")
+    try:
+        from field_done import field_is_done_from_readback
+
+        meta = {
+            "type": field_type or "",
+            "automation_id": automation_id or field_id or "",
+            "selector": selector or "",
+            "label": label or "",
+        }
+        ft = str(field_type or "").upper()
+        if ft in FOS_LOCK_TYPES:
+            meta["dom_chip"] = True
+        if field_is_done_from_readback(rb, meta, intent).ok:
+            return None
+    except Exception:
+        return None
+    cleared = sess.unlock(
+        field_type=field_type,
+        label=label,
+        selector=selector,
+        automation_id=automation_id,
+        field_id=field_id,
+    )
+    if not cleared:
+        return None
+    info = {
+        "unlocked_not_done": True,
+        "cleared": cleared,
+        "intent": (intent or "")[:80],
+        "readback": rb[:120],
+    }
+    if parent is not None:
+        parent["field_unlock_not_done"] = info
+        try:
+            from fill_step_log import note_step
+
+            note_step(
+                parent,
+                action="unlock_not_done",
+                field_type=str(field_type or "")[:48],
+                reason=f"cleared={cleared}",
+                via="field_lock",
+            )
+        except Exception:
+            pass
+    return info
+
+
+def unlock_fos_if_intent_mismatch(
+    report: dict | None,
+    *,
+    intent: str | None,
+    candidates: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Drop FoS family locks when locked readback ≠ intent (wrong autofill lock).
+
+    Yogesh rule: honest locks must block retouch. Dishonest locks (Arts-Other
+    locked while intent is Computer Science) must NOT block reclaim — clear the
+    family and let the fill path rewrite.
+    """
+    sess = get_field_locks(resolve_lock_report(report))
+    if sess is None or not _fos_family_locked(sess):
+        return None
+    want = (intent or "").strip()
+    cands = [str(c).strip() for c in (candidates or []) if str(c or "").strip()]
+    if want and want not in cands:
+        cands = [want, *cands]
+    if not cands:
+        return None
+    try:
+        from field_done import field_is_done_from_readback
+    except Exception:
+        return None
+
+    mismatched: list[str] = []
+    for e in list(sess._locks.values()):
+        ft = (e.field_type or "").upper()
+        if ft not in FOS_LOCK_TYPES and not _looks_like_fos_target(
+            field_type=ft,
+            label=e.label,
+            selector=e.selector,
+            automation_id=e.automation_id,
+        ):
+            continue
+        rb = str(e.readback or "")
+        meta = {"type": "FIELD_OF_STUDY", "dom_chip": True, "aliases_tried": cands}
+        ok = any(
+            field_is_done_from_readback(rb, meta, c).ok for c in cands
+        )
+        if not ok:
+            mismatched.append(e.key)
+
+    if not mismatched:
+        return None
+
+    cleared = 0
+    for k in list(sess._locks.keys()):
+        e = sess._locks[k]
+        ft = (e.field_type or "").upper()
+        if ft in FOS_LOCK_TYPES or k in mismatched or _looks_like_fos_target(
+            field_type=ft,
+            label=e.label,
+            selector=e.selector,
+            automation_id=e.automation_id,
+        ):
+            del sess._locks[k]
+            cleared += 1
+    info = {
+        "unlocked_fos_mismatch": True,
+        "cleared": cleared,
+        "mismatched_keys": mismatched,
+        "intent": want[:80],
+    }
+    parent = resolve_lock_report(report)
+    if parent is not None:
+        parent["fos_unlock_mismatch"] = info
+        try:
+            from fill_step_log import note_step
+
+            note_step(
+                parent,
+                action="fos_unlock_mismatch",
+                reason=f"cleared={cleared} intent={want[:40]}",
+                via="field_lock",
+            )
+        except Exception:
+            pass
+    return info
+
+
+def filter_locked_leftovers(report: dict | None) -> list[dict]:
+    """Drop leftovers that target a locked/verified field (no cross-layer overwrite).
+
+    Settle/advance may still close chrome; Flash/refill must not retouch locked
+    FoS/Major/etc. Mutates ``report["leftovers"]`` when present.
+    """
+    if not isinstance(report, dict):
+        return []
+    rows = report.get("leftovers")
+    if not isinstance(rows, list) or not rows:
+        return []
+    sess = get_field_locks(resolve_lock_report(report))
+    kept: list[dict] = []
+    dropped = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ft = str(row.get("type") or row.get("field_type") or "") or None
+        aid = str(row.get("automation_id") or row.get("field_id") or "") or None
+        lab = str(row.get("label") or "") or None
+        sel = str(row.get("selector") or "") or None
+        reason = str(row.get("reason") or "")
+        # Stale listbox chrome on a committed FoS is not a fill leftover.
+        if reason == "listbox_still_open" and (
+            _looks_like_fos_target(
+                field_type=ft, label=lab, selector=sel, automation_id=aid
+            )
+            or (sess is not None and _fos_family_locked(sess))
+        ):
+            dropped += 1
+            continue
+        if sess is not None and sess.is_locked(
+            field_type=ft, label=lab, selector=sel, automation_id=aid
+        ):
+            dropped += 1
+            continue
+        # Also drop when filled[] already has verified FoS and leftover is Major.
+        if _looks_like_fos_target(
+            field_type=ft, label=lab, selector=sel, automation_id=aid
+        ):
+            filled_ok = False
+            for f in report.get("filled") or []:
+                if not isinstance(f, dict):
+                    continue
+                if not (f.get("verified") or f.get("ok") or f.get("skipped_already_correct")):
+                    continue
+                fft = str(f.get("type") or "").upper()
+                if fft in FOS_LOCK_TYPES or _looks_like_fos_target(
+                    field_type=fft,
+                    label=str(f.get("label") or ""),
+                    automation_id=str(f.get("automation_id") or ""),
+                ):
+                    filled_ok = True
+                    break
+            if filled_ok:
+                dropped += 1
+                continue
+        kept.append(row)
+    report["leftovers"] = kept
+    report["leftover_count"] = len(kept)
+    if dropped:
+        report["leftovers_dropped_locked"] = int(
+            report.get("leftovers_dropped_locked") or 0
+        ) + dropped
+        try:
+            from flight_recorder import note_flight
+
+            note_flight(
+                report,
+                "flash_filter",
+                action="drop_locked_leftovers",
+                layer="field_lock",
+                gate_kind="filter_locked_leftovers",
+                gate_result="dropped",
+                gate_reason=f"dropped={dropped} kept={len(kept)}",
+                extra={"dropped": dropped, "kept": len(kept)},
+            )
+        except Exception:
+            pass
+    return kept
 
 
 def clear_locks_on_advance(report: dict | None) -> dict[str, Any] | None:
@@ -532,29 +1026,6 @@ def apply_thrash_verdict_gate(report: dict) -> dict:
         report["verdict_reason"] = "thrash_retouches"
         report["thrash_demoted"] = True
     return report
-
-
-def page_complete_should_advance(
-    *,
-    required_empty: list | None,
-    footer_kind: str | None,
-    footer_label: str | None = None,
-    gaps_blocking: bool = False,
-) -> bool:
-    """True when page is done and footer is ADVANCE → click Next once.
-
-    Never review-hold while footer is ADVANCE. Callers must still route the
-    click through button_gate (never FINAL).
-    """
-    if required_empty:
-        return False
-    if gaps_blocking:
-        return False
-    from page_progress import footer_primary_wizard_incomplete
-
-    decision = footer_primary_wizard_incomplete(footer_kind, footer_label)
-    # True means ADVANCE / incomplete wizard → should advance (not hold)
-    return decision is True
 
 
 def analyze_step_log_waste(steps: list[dict[str, Any]]) -> dict[str, Any]:
@@ -715,15 +1186,6 @@ def self_test() -> None:
     cleared = s.clear_for_new_page()
     assert cleared["cleared_locks"] == 1
     assert not s.is_locked(field_type="HOW_HEARD", automation_id="how_heard")
-    assert page_complete_should_advance(
-        required_empty=[], footer_kind="ADVANCE", footer_label="Save and Continue"
-    )
-    assert not page_complete_should_advance(
-        required_empty=[{"id": "x"}], footer_kind="ADVANCE", footer_label="Next"
-    )
-    assert not page_complete_should_advance(
-        required_empty=[], footer_kind="FINAL", footer_label="Submit"
-    )
     report: dict = {"verdict": "SUCCESS"}
     attach_field_locks(report)
     get_field_locks(report).thrash_retouches = 2  # type: ignore[union-attr]

@@ -1,0 +1,18 @@
+{
+  "fields": [
+    {
+      "key": "field_of_study",
+      "selector": "#fos-chip",
+      "committed": "Computer Science",
+      "required": true,
+      "notes": "Arts-Other wrong autofill must be reclaimed — never lock-skip as already correct."
+    }
+  ],
+  "required_empty": [],
+  "gaps": [],
+  "wrong_autofill_start": "Arts-Other",
+  "intent": "Computer Science",
+  "must_reclaim_not_lock": true,
+  "footer_kind": "ADVANCE",
+  "notes": "Simulates resume Arts-Other chip with CS intent; fill path must clear chip and commit Computer Science (taxonomy alias Science-Computer also valid)."
+}

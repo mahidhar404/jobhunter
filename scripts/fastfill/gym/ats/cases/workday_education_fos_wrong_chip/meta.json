@@ -1,0 +1,8 @@
+{
+  "id": "workday_education_field_of_study",
+  "platform": "workday",
+  "family": "education_field_of_study",
+  "description": "FoS wrong autofill (Arts-Other) \u2192 reclaim to Science-Computer; correct chip \u2192 zero second-pass actions.",
+  "fidelity": "medium",
+  "live_signoff": false
+}

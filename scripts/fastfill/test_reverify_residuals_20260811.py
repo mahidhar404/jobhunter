@@ -100,7 +100,7 @@ def test_hierarchical_fixture_commits_leaf_chip() -> None:
                 page,
                 inp,
                 leaf_candidates=["LinkedIn", "Indeed"],
-                category_candidates=["Internet job board", "Job Board"],
+                category_candidates=["Website", "Job Board", "Internet job board"],
             )
             assert hier.get("ok") and hier.get("committed"), hier
             rb = str(hier.get("readback") or "")

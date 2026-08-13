@@ -474,7 +474,9 @@ def pick_eeo_radio_option(
     return best
 
 
-async def fill_lever_widgets(page, values: dict[str, Any]) -> list[dict]:
+async def fill_lever_widgets(
+    page, values: dict[str, Any], *, report: dict | None = None
+) -> list[dict]:
     """Fill Lever WORK_AUTH / SPONSORSHIP radios + EEO selects + extra URL.
 
     Safe to call when CAPTCHA is present at page bottom — only touches
@@ -1054,6 +1056,14 @@ async def fill_lever_widgets(page, values: dict[str, Any]) -> list[dict]:
                     }
                 )
 
+    try:
+        from fill_contract import finalize_widget_rows
+
+        results = await finalize_widget_rows(
+            page, report, results, via="lever_widgets"
+        )
+    except Exception:
+        pass
     return results
 
 

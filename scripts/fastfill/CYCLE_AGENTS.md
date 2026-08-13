@@ -15,15 +15,9 @@ resume / commute / essays. The only human Enter pause is **CAPTCHA**.
 
 ## Offline-first gate (required before live)
 
-Prefer training against the offline gym (`scripts/fastfill/gym/`) before live ATS:
+Prefer the ATS gym (`scripts/fastfill/gym/ats/`) before live ATS. Gym green ≠ live.
 
-1. `improvement_cycle.py --phase train_offline` → writes `OFFLINE_GATE_PASS.json`
-2. `improvement_cycle.py --phase gate_live` → writes `LIVE_CANARY_ARMED`
-3. `improvement_cycle.py --phase canary_live --limit 7` → one diversity
-   `eval_suite`, then `LIVE_CANARY_DONE.json` (**hard stop**)
-4. Fix failures offline / in gym; re-arm only after offline still green
-
-`run_headed_cycle_with_monitor.py` and `eval_suite.py` refuse live until armed
+`eval_suite.py` / `cycle_orchestrate.py` refuse live until `live_gate` is armed
 (unless `--force-live`). See `live_gate.py` and `gym/README.md`.
 
 ---
@@ -33,8 +27,7 @@ Prefer training against the offline gym (`scripts/fastfill/gym/`) before live AT
 **Goal:** Prefill then grounded Flash leftovers on the next variety URL. Leave
 zero unanswered fields including “why join us” essays.
 
-**Prefer offline first:** run ATS/FormFactory gym self-tests and
-`improvement_cycle --phase train_offline` before live variety.
+**Prefer offline first:** run `gym/ats/runner.py --self-test` before live variety.
 
 **CLI:**
 
@@ -52,8 +45,8 @@ skyvern_runtime/venv/bin/python scripts/fastfill/fast_fill.py URL \
 ```
 You are Agent1 (Tester) for job-hunter fastfill cycle.
 
-0. If LIVE_CANARY_DONE exists or canary not armed, run offline gym /
-   train_offline / gate_live first — do not thrash live ATS.
+0. If LIVE_CANARY_DONE exists or canary not armed, run ATS gym /
+   live_gate first — do not thrash live ATS.
 1. Pick next URL from the variety queue (Greenhouse → Lever → Ashby → Workday →
    mid-tier → unknown) via cycle_orchestrate or eval_urls.json.
 2. Run fast_fill with --flash-leftovers (headed when reviewing). Dummy identity
@@ -218,33 +211,3 @@ skyvern_runtime/venv/bin/python scripts/fastfill/answer_memory_ab.py \
 
 Cycle rollups write `regression_lane.json` beside `rollup.json`. Disable with
 `FASTFILL_CYCLE_REGRESSION=0`.
----
-
-## Exhaustive improvement cycle (control plane)
-
-Entrypoint: `scripts/fastfill/improvement_cycle.py`  
-**Headed + monitor one-shot:** `scripts/fastfill/run_headed_cycle_with_monitor.py`
-
-Proof order: safety → **end-state (not mid-wizard)** → **correct values** → **no thrash** → blanks → vision → streak.
-
-Fail fix priority: `FAIL_MIDWIZARD` → `FAIL_WRONG_VALUE` → `FAIL_THRASH` → `FAIL_BLANK` → `FAIL_STUCK`.
-CAPTCHA → `BLOCKED` (no Fixer). ≥3 in a window → cooldown (sleep, no browser); escalations → `PAUSE_BOT_PRESSURE`.
-Stale jobs: prefer **skip → next URL** (see Orchestrator stop rules); monitor writes `FIX_SKIPPED.md` + taxonomy.
-
-```bash
-skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --self-test
-skyvern_runtime/venv/bin/python scripts/fastfill/test_stale_skip.py
-# Unattended:
-skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --phase all --mode unattended --limit 4 \
-  --working-streak 3 --min-platforms 3 --require-workday \
-  --captcha-burst 3 --captcha-cooldown-s 180
-# Attended headed + live monitor (preferred):
-skyvern_runtime/venv/bin/python scripts/fastfill/run_headed_cycle_with_monitor.py \
-  --limit 4 --working-streak 3 --min-platforms 3 --require-workday
-# Equivalent:
-skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --phase train --mode attended \
-  --with-monitor --limit 4 --working-streak 3 --min-platforms 3 --require-workday
-skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --status
-```
-
-Decisions: `scripts/fastfill/learning_store/improvement_decisions.jsonl`.

@@ -115,8 +115,8 @@ def require_live_allowed(*, force: bool = False) -> None:
     if not ok:
         raise SystemExit(
             f"[live_gate] REFUSING live fill: {reason}. "
-            "Run improvement_cycle --phase train_offline then --phase gate_live, "
-            "or pass --force-live / FASTFILL_FORCE_LIVE=1."
+            "Pass --force-live / FASTFILL_FORCE_LIVE=1, or write "
+            "OFFLINE_GATE_PASS.json + LIVE_CANARY_ARMED under real_job_results."
         )
 
 

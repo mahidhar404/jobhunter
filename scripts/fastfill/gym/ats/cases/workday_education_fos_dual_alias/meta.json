@@ -1,0 +1,11 @@
+{
+  "id": "workday_education_fos_dual_alias",
+  "platform": "workday",
+  "tags": [
+    "thrash",
+    "education_fos"
+  ],
+  "description": "Arts-Other on fieldOfStudy + Science-Computer on discipline \u2014 clear wrong wrap, keep matching alias.",
+  "fidelity": "low",
+  "live_signoff": false
+}

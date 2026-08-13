@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-# Walmart-shaped hierarchy: type → Job Board subsection → Indeed leaf → chip
+# NXP-shaped hierarchy: open → Website > → Web - * leaf → chip
 HIERARCHY_HTML = """
 <html><body>
 <nav aria-label="progress">
@@ -30,7 +30,7 @@ HIERARCHY_HTML = """
     <div id="menu" role="listbox" style="display:none; border:1px solid #ccc; padding:8px;">
       <div id="subsection-hdr" style="display:none;">
         <button id="back-btn" aria-label="back">←</button>
-        <strong>Job Board</strong>
+        <strong id="subsection-title">Website</strong>
       </div>
       <div id="top-opts"></div>
       <div id="sub-opts" style="display:none;"></div>
@@ -39,55 +39,40 @@ HIERARCHY_HTML = """
   <button data-automation-id="bottom-navigation-next-button">Save and Continue</button>
 </div>
 <script>
-const CATEGORIES = ["Internet job board", "Job Board", "Social Media"];
-const LEAVES = ["CareerBuilder", "Comparably", "Getting Hired", "Google For Jobs",
-                "Indeed", "Jobillico", "LinkedIn"];
+const CATEGORIES = ["Advertising", "Employee Referral", "Event", "Website", "Job Board"];
+const WEB_LEAVES = ["Web - CareerBuilder", "Web - Craigslist", "Web - Indeed", "Web - LinkedIn"];
+const BOARD_LEAVES = ["CareerBuilder", "Indeed", "LinkedIn"];
 const input = document.getElementById("hh-input");
 const menu = document.getElementById("menu");
 const topOpts = document.getElementById("top-opts");
 const subOpts = document.getElementById("sub-opts");
 const subHdr = document.getElementById("subsection-hdr");
+const subTitle = document.getElementById("subsection-title");
 const chrome = document.getElementById("chip-chrome");
-let inSub = false;
-let chip = null;
 
-function renderTop(q) {
+function renderTop() {
   topOpts.innerHTML = "";
   subOpts.style.display = "none";
   subHdr.style.display = "none";
-  inSub = false;
-  const qq = (q || "").toLowerCase();
-  const cats = CATEGORIES.filter(c => !qq || c.toLowerCase().includes(qq)
-    || (qq === "indeed" && c.toLowerCase().includes("job board")));
-  // When querying a leaf, still show Job Board category (Walmart behavior)
-  const show = cats.length ? cats : CATEGORIES;
-  show.forEach(c => {
+  CATEGORIES.forEach(c => {
     const el = document.createElement("div");
     el.setAttribute("role", "option");
     el.setAttribute("data-automation-id", "promptOption");
     el.setAttribute("aria-expanded", "false");
-    el.textContent = c;
+    el.textContent = c + " >";
     el.onclick = () => openSub(c);
-    topOpts.appendChild(el);
-  });
-  // Also surface leaf if typed exactly and not only categories
-  LEAVES.filter(l => qq && l.toLowerCase().includes(qq)).forEach(l => {
-    const el = document.createElement("div");
-    el.setAttribute("role", "option");
-    el.setAttribute("data-automation-id", "promptOption");
-    el.textContent = l;
-    el.onclick = () => pickLeaf(l);
     topOpts.appendChild(el);
   });
   menu.style.display = "block";
 }
 function openSub(cat) {
-  inSub = true;
   topOpts.innerHTML = "";
   subHdr.style.display = "block";
   subOpts.style.display = "block";
+  subTitle.textContent = cat;
   subOpts.innerHTML = "";
-  LEAVES.forEach(l => {
+  const leaves = cat === "Website" ? WEB_LEAVES : BOARD_LEAVES;
+  leaves.forEach(l => {
     const el = document.createElement("div");
     el.setAttribute("role", "option");
     el.setAttribute("data-automation-id", "promptOption");
@@ -97,15 +82,13 @@ function openSub(cat) {
   });
 }
 function pickLeaf(l) {
-  chip = l;
   chrome.textContent = "1 item selected, " + l;
   input.value = "1 item selected, " + l;
   menu.style.display = "none";
 }
-document.getElementById("back-btn").onclick = () => renderTop(input.value);
-input.addEventListener("focus", () => renderTop(input.value));
-input.addEventListener("input", () => renderTop(input.value));
-input.addEventListener("click", () => renderTop(input.value));
+document.getElementById("back-btn").onclick = () => renderTop();
+input.addEventListener("focus", renderTop);
+input.addEventListener("click", renderTop);
 </script>
 </body></html>
 """
@@ -122,8 +105,9 @@ def test_category_helpers_and_candidates() -> None:
 
     assert is_how_heard_category_option("Internet job board")
     assert is_how_heard_category_option("Job Board")
+    assert is_how_heard_category_option("Website >")
     assert not is_how_heard_category_option("Indeed")
-    assert not is_how_heard_category_option("LinkedIn")
+    assert not is_how_heard_category_option("Web - LinkedIn")
 
     leaves = how_heard_leaf_candidates({"HOW_HEARD": "Internet job board"})
     assert leaves[0] == "LinkedIn"
@@ -135,6 +119,7 @@ def test_category_helpers_and_candidates() -> None:
     assert cands.index("LinkedIn") < cands.index("Internet job board")
 
     cats = how_heard_category_candidates({"HOW_HEARD": "Internet job board"})
+    assert "Website" in cats
     assert "Internet job board" in cats
 
     # Category filter text alone is NOT committed
@@ -173,7 +158,12 @@ async def _run_fixture() -> None:
     from playwright.async_api import async_playwright
     from exp_workday_selectors import _fill_how_heard, _is_verified_fill
     from page_progress import attach_footer_primary, may_enter_review_hold
-    from verified_select import fill_hierarchical_how_heard, how_heard_source_committed
+    from verified_select import (
+        fill_hierarchical_how_heard,
+        how_heard_source_committed,
+        listbox_still_open,
+        settle_before_advance,
+    )
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -186,13 +176,27 @@ async def _run_fixture() -> None:
             page,
             inp,
             leaf_candidates=["LinkedIn", "Indeed"],
-            category_candidates=["Internet job board", "Job Board"],
+            category_candidates=["Website", "Job Board", "Internet job board"],
         )
         assert hier.get("ok") and hier.get("committed"), hier
-        assert "LinkedIn" in str(hier.get("picked") or hier.get("readback") or "")
+        assert hier.get("path") == "category_then_leaf", hier
+        assert "Website" in str(hier.get("subsection") or "")
+        picked = str(hier.get("picked") or hier.get("readback") or "")
+        assert "linkedin" in picked.lower(), hier
         chrome = await page.locator("#chip-chrome").inner_text()
         assert how_heard_source_committed(chrome, ["LinkedIn"])
         assert "1 item selected" in chrome.lower()
+
+        menu_disp = await page.locator("#menu").evaluate(
+            "el => getComputedStyle(el).display"
+        )
+        assert menu_disp == "none", menu_disp
+        assert not await listbox_still_open(page)
+        settle0 = await settle_before_advance(
+            page, {"fill_values": {"HOW_HEARD": "LinkedIn"}}
+        )
+        assert settle0.get("settled"), settle0
+        assert not await listbox_still_open(page)
 
         # Fresh page — Playwright set_content twice on one page drops inline JS
         page2 = await browser.new_page()
@@ -210,6 +214,11 @@ async def _run_fixture() -> None:
         rb = str(hh.get("readback") or "")
         assert "linkedin" in rb.lower() or "1 item selected" in rb.lower(), hh
         assert "0 items selected" not in rb.lower()
+        menu2 = await page2.locator("#menu").evaluate(
+            "el => getComputedStyle(el).display"
+        )
+        assert menu2 == "none", menu2
+        assert not await listbox_still_open(page2)
 
         attach_footer_primary(report, kind="ADVANCE", label="Save and Continue")
         report["workday_wizard_progress"] = (
@@ -230,6 +239,109 @@ async def _run_fixture() -> None:
         )
         await browser.close()
     print("test_how_heard_hierarchy fixture: OK")
+
+
+COMMITTED_CHIP_HTML = """
+<html><body>
+<div data-automation-id="contactInformationPage">
+  <div data-automation-id="formField-source" id="hh-wrap">
+    <label>How Did You Hear About Us?*</label>
+    <div data-automation-id="multiSelectContainer">
+      <span id="chip-chrome">1 item selected, Web - CareerBuilder</span>
+      <input id="hh-input" name="source--source" data-automation-id="source--source"
+             role="combobox" aria-required="true" aria-expanded="true" value="" />
+    </div>
+    <div id="menu" role="listbox" style="display:block; border:1px solid #ccc; padding:8px;">
+      <div role="option" data-automation-id="promptOption">Web - CareerBuilder</div>
+      <div role="option" data-automation-id="promptOption">Web - Glassdoor</div>
+      <div role="option" data-automation-id="promptOption">Web - LinkedIn</div>
+    </div>
+  </div>
+  <button id="state-btn" data-automation-id="addressSection_countryRegion">State</button>
+  <button data-automation-id="bottom-navigation-next-button">Save and Continue</button>
+</div>
+<script>
+const input = document.getElementById("hh-input");
+const menu = document.getElementById("menu");
+let openCount = 0;
+function openMenu() {
+  openCount += 1;
+  menu.style.display = "block";
+  input.setAttribute("aria-expanded", "true");
+}
+input.addEventListener("focus", openMenu);
+input.addEventListener("click", openMenu);
+document.body.addEventListener("click", (e) => {
+  if (e.target === input || menu.contains(e.target)) return;
+  menu.style.display = "none";
+  input.setAttribute("aria-expanded", "false");
+});
+window.__hhOpenCount = () => openCount;
+</script>
+</body></html>
+"""
+
+
+async def _run_already_committed_skip() -> None:
+    """CareerBuilder chip + Glassdoor intent → skip, close listbox, no second open."""
+    from playwright.async_api import async_playwright
+    from verified_select import (
+        fill_hierarchical_how_heard,
+        how_heard_source_committed,
+        listbox_still_open,
+        settle_before_advance,
+    )
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content(COMMITTED_CHIP_HTML)
+        assert await listbox_still_open(page), "fixture starts with open how-heard listbox"
+
+        inp = page.locator("#hh-input")
+        hier = await fill_hierarchical_how_heard(
+            page,
+            inp,
+            leaf_candidates=["LinkedIn", "Glassdoor"],
+            category_candidates=["Website", "Job Board"],
+        )
+        assert hier.get("skipped_already_correct") or hier.get("status") == "already_committed", hier
+        assert hier.get("ok") and hier.get("committed"), hier
+        chrome = await page.locator("#chip-chrome").inner_text()
+        assert how_heard_source_committed(chrome, ["Glassdoor"])
+        assert "careerbuilder" in chrome.lower()
+        # Must not reopen / click a different leaf
+        assert not hier.get("option_clicked"), hier
+        menu_disp = await page.locator("#menu").evaluate("el => getComputedStyle(el).display")
+        assert menu_disp == "none", menu_disp
+        assert not await listbox_still_open(page)
+
+        # Second pass: still no reopen
+        open_before = await page.evaluate("() => window.__hhOpenCount()")
+        hier2 = await fill_hierarchical_how_heard(
+            page,
+            inp,
+            leaf_candidates=["LinkedIn", "Glassdoor"],
+            category_candidates=["Website", "Job Board"],
+        )
+        open_after = await page.evaluate("() => window.__hhOpenCount()")
+        assert hier2.get("skipped_already_correct") or hier2.get("status") == "already_committed", hier2
+        assert not hier2.get("option_clicked"), hier2
+        assert open_after == open_before, (open_before, open_after)
+        assert not await listbox_still_open(page)
+
+        # settle_before_advance must keep listbox closed (Next / other fields)
+        report: dict = {"fill_values": {"HOW_HEARD": "Glassdoor"}}
+        detail = await settle_before_advance(page, report)
+        assert detail.get("settled"), detail
+        assert not report.get("listbox_open"), report
+        assert not await listbox_still_open(page)
+        await browser.close()
+
+
+def test_already_committed_chip_skip_second_pass_no_reopen() -> None:
+    """0842Z: valid leaf already committed → skip, close listbox, never reopen."""
+    asyncio.run(_run_already_committed_skip())
 
 
 def test_how_heard_lock_skip_second_attempt() -> None:
@@ -268,6 +380,7 @@ def test_how_heard_lock_skip_second_attempt() -> None:
 def main() -> None:
     test_category_helpers_and_candidates()
     test_false_hold_refused_on_advance_footer()
+    test_already_committed_chip_skip_second_pass_no_reopen()
     test_how_heard_lock_skip_second_attempt()
     asyncio.run(_run_fixture())
     print("test_how_heard_hierarchy: OK")

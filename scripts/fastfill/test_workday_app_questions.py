@@ -68,6 +68,20 @@ def test_wd_county_is_combobox_in_pack() -> None:
     assert all(r[2] == "combobox" for r in county_rows), county_rows
 
 
+def test_wd_county_is_combobox_in_two_phase_plan() -> None:
+    """Two-phase fill plan must match CSS pack: county = combobox, not text."""
+    from exp_workday_selectors import build_contact_fill_plan
+    from field_map import ADDRESS_COUNTY, ADDRESS_LINE2
+
+    plan, _ = build_contact_fill_plan(
+        {ADDRESS_COUNTY: "Sangamon", ADDRESS_LINE2: "Apt 1A"}
+    )
+    county = [r for r in plan if r[0] == "addressSection_regionSubdivision1"]
+    addr2 = [r for r in plan if r[0] == "addressSection_addressLine2"]
+    assert county and county[0][2] is True, county
+    assert addr2 and addr2[0][2] is False, addr2
+
+
 def test_dummy_answer_school() -> None:
     cands = _dummy_answer_for_wd_label(
         "School*",
@@ -126,6 +140,7 @@ def main() -> None:
     test_dummy_answer_how_heard()
     test_dummy_answer_over_18_yes()
     test_wd_county_is_combobox_in_pack()
+    test_wd_county_is_combobox_in_two_phase_plan()
     test_dummy_answer_school()
     test_finalize_demotes_contact_only_success()
     test_finalize_success_at_review()

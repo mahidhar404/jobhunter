@@ -168,6 +168,13 @@ UNANSWERED_CHOICE_JS = """() => {
       || !!(root.querySelector && root.querySelector('[aria-required="true"]'))
       || star;
     if (!req && !star) return;
+    const wrap = root.closest('[data-automation-id*="formField"]') || root.parentElement;
+    const waid = ((wrap && wrap.getAttribute('data-automation-id')) || '').toLowerCase();
+    const wtxt = ((wrap && (wrap.innerText || wrap.textContent)) || '').replace(/\\s+/g, ' ');
+    if (/countryphonecode|phone.?country|phonenumber--country/.test(waid)
+        && /united\\s*states(\\s*of\\s*america)?\\s*\\(\\s*\\+\\s*1\\s*\\)/i.test(wtxt)) {
+      return;
+    }
     const sv = root.querySelector('.select__single-value');
     const shown = ((sv && (sv.textContent || sv.innerText)) || '').trim();
     if (shown && !isEmptyUi(shown) && !/^select/i.test(shown)) return;
@@ -240,6 +247,65 @@ UNANSWERED_CHOICE_JS = """() => {
     });
   });
 
+  // --- Ashby field-entry radio GROUPS (one row per question, not by name) ---
+  document.querySelectorAll(
+    '.ashby-application-form-field-entry, [class*="_fieldEntry_"]'
+  ).forEach((el) => {
+    if (!isVisible(el)) return;
+    const labEl = el.querySelector(
+      'label.ashby-application-form-question-title, label[class*="_heading_"], label'
+    );
+    const label = sanitizeLabel((labEl && (labEl.innerText || labEl.textContent)) || '');
+    if (!label) return;
+    const native = Array.from(el.querySelectorAll('input[type=radio]')).filter(isVisible);
+    const roles = Array.from(el.querySelectorAll('[role=radio]')).filter(isVisible);
+    const group = native.length ? native : roles;
+    if (!group.length) return;
+    if (group.length < 2 && !(group.length === 1 && requiredish(group[0], label))) return;
+    if (choiceGroupAnswered(native.length ? native : roles)) return;
+    if (!requiredish(group[0], label) && !/\\*/.test(label)) return;
+    push({
+      label,
+      kind: 'radio_group',
+      reason: 'unanswered_radio_group',
+      name: el.getAttribute('data-field-path') || (group[0].name || ''),
+      selector: '',
+    });
+  });
+
+  // --- Ashby required consent checkboxes (TERMS dummy-yes; skip marketing) ---
+  document.querySelectorAll(
+    '.ashby-application-form-field-entry, [class*="_fieldEntry_"]'
+  ).forEach((el) => {
+    if (!isVisible(el)) return;
+    const labEl = el.querySelector(
+      'label.ashby-application-form-question-title, label[class*="_heading_"], label'
+    );
+    let label = sanitizeLabel((labEl && (labEl.innerText || labEl.textContent)) || '');
+    const checks = Array.from(el.querySelectorAll('input[type=checkbox]')).filter(isVisible);
+    if (!checks.length) return;
+    if (checks.some((c) => c.checked)) return;
+    if (!label) {
+      const c0 = checks[0];
+      label = sanitizeLabel(
+        ((c0.labels && c0.labels[0] && c0.labels[0].innerText) || c0.name || 'I agree')
+      );
+    }
+    const low = label.toLowerCase();
+    if (/marketing|newsletter|sms|promotional|talent\\s*community|opt[\\s_-]*in/.test(low)) return;
+    const consentish = /^consent\\s*\\*?$/.test(low)
+      || /i\\s+(agree|consent)|terms\\s*(and|&)\\s*conditions|privacy|data[\\s_-]*consent/.test(low);
+    if (!consentish && !/\\*/.test(label)) return;
+    if (!consentish) return;
+    push({
+      label,
+      kind: 'checkbox',
+      reason: 'unanswered_ashby_consent',
+      name: checks[0].id || el.getAttribute('data-field-path') || '',
+      selector: '',
+    });
+  });
+
   // Dedup by label+kind
   const seen = new Set();
   const uniq = [];
@@ -258,13 +324,205 @@ def _norm_key(value: Any) -> str:
     return " ".join(str(value or "").lower().split())[:100]
 
 
+def _compact_token(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _row_compact(row: dict | None) -> str:
+    if not isinstance(row, dict):
+        return ""
+    return _compact_token(
+        " ".join(
+            str(row.get(k) or "")
+            for k in ("label", "automation_id", "type", "name", "id", "selector")
+        )
+    )
+
+
+_ABSENT_LEFTOVER_REASONS = frozenset(
+    {
+        "not_in_dom",
+        "not_visible",
+        "radio_not_found",
+        "selector_missing",
+        "no_matching_option",
+    }
+)
+
+# Pack-required optional aids that 0842 NXP never mounts (US address, no prior-worker radio).
+_OPTIONAL_ABSENT_COMPACT = (
+    "addressline2",
+    "regionsubdivision1",
+    "workedherebefore",
+)
+
+
+def _reason_core(reason: str) -> str:
+    r = str(reason or "").lower().strip()
+    if r.startswith("l01_miss_scan:"):
+        r = r.split(":", 1)[-1]
+    if r.startswith("live_required_empty:"):
+        r = r.split(":", 1)[-1]
+    return r
+
+
+def _row_is_phone_country(row: dict | None) -> bool:
+    compact = _row_compact(row)
+    if "countryphonecode" in compact:
+        return True
+    lab = str((row or {}).get("label") or "").lower()
+    return "phone" in lab and "country" in lab
+
+
+def _phone_country_done_in_report(report: dict | None) -> bool:
+    """True when a verified fill already committed US (+1) phone country."""
+    if not isinstance(report, dict):
+        return False
+    for f in report.get("filled") or []:
+        if not isinstance(f, dict):
+            continue
+        if not _row_is_phone_country(f) and str(f.get("type") or "").upper() not in (
+            "PHONE_COUNTRY_CODE",
+            "COUNTRYPHONECODE",
+        ):
+            continue
+        done = False
+        try:
+            from fill_verify import is_verified_fill_row
+
+            done = bool(is_verified_fill_row(f))
+        except Exception:
+            done = False
+        if done:
+            return True
+        rb = str(f.get("readback") or "")
+        if (f.get("verified") or f.get("ok")) and re.search(
+            r"united\s*states.*\(\s*\+\s*1\s*\)|[1-9]\d*\s+items?\s+selected",
+            rb,
+            re.I,
+        ):
+            return True
+    return False
+
+
+def is_invented_leftover(row: dict | None, report: dict | None = None) -> bool:
+    """True when leftover is pack theater, not a live unanswered widget.
+
+    0842 classes: addressLine2/county ``not_in_dom``, worked_here ``radio_not_found``,
+    ``phonenumber--countryphonecode`` live_required_empty while chip already US +1.
+    Never demotes First/Last Name or other real required empties.
+    """
+    if not isinstance(row, dict):
+        return False
+    reason = str(row.get("reason") or "").lower()
+    core = _reason_core(reason)
+    compact = _row_compact(row)
+
+    if any(tok in compact for tok in _OPTIONAL_ABSENT_COMPACT):
+        if core in _ABSENT_LEFTOVER_REASONS or reason in _ABSENT_LEFTOVER_REASONS:
+            return True
+        if "radio_not_found" in reason or "not_in_dom" in reason:
+            return True
+
+    if _row_is_phone_country(row) and _phone_country_done_in_report(report):
+        return True
+
+    try:
+        from workday_date_readback import (
+            is_date_spin_theater_label,
+            is_optional_gpa_label,
+        )
+
+        blob = " ".join(
+            str(row.get(k) or "")
+            for k in ("label", "automation_id", "id", "name", "type")
+        )
+        if is_date_spin_theater_label(row.get("label")) or is_date_spin_theater_label(
+            row.get("id")
+        ) or is_date_spin_theater_label(row.get("automation_id")):
+            return True
+        if is_date_spin_theater_label(blob) and (
+            core in (
+                "unclassified",
+                "empty_required_date_display",
+                "empty_required_date_spin",
+                "empty_required_date_field",
+                "offscreen_skip",
+            )
+            or "unclassified" in reason
+            or "date_display" in reason
+            or "offscreen_skip" in reason
+        ):
+            return True
+        if is_optional_gpa_label(row.get("label")) or is_optional_gpa_label(
+            row.get("automation_id")
+        ) or is_optional_gpa_label(row.get("id")):
+            return True
+    except Exception:
+        pass
+
+    # 1116Z: Job Title*/From*/To* leftovers while experience skip-if-done already
+    # committed dummy values — same class as contact invented requireds.
+    try:
+        from field_done import filter_required_empty_from_report
+
+        fake = {
+            "id": str(
+                row.get("automation_id")
+                or row.get("id")
+                or row.get("name")
+                or row.get("label")
+                or ""
+            )[:80],
+            "label": str(row.get("label") or "")[:160],
+            "reason": core or "empty_required_input",
+        }
+        if fake["id"] or fake["label"]:
+            kept = filter_required_empty_from_report(report or {}, [fake])
+            if not kept:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def demote_invented_leftovers(report: dict) -> int:
+    """Drop invented leftovers from ``report['leftovers']``. Return count dropped."""
+    leftovers = [u for u in (report.get("leftovers") or []) if isinstance(u, dict)]
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for u in leftovers:
+        if is_invented_leftover(u, report):
+            dropped.append(u)
+        else:
+            kept.append(u)
+    report["leftovers"] = kept
+    report["invented_leftover_count"] = len(dropped)
+    if dropped:
+        report["invented_leftovers_dropped"] = [
+            {
+                "label": str(u.get("label") or "")[:80],
+                "reason": str(u.get("reason") or "")[:64],
+                "automation_id": str(u.get("automation_id") or "")[:80],
+            }
+            for u in dropped[:20]
+        ]
+    return len(dropped)
+
+
 def _verified_worked_here(report: dict) -> bool:
     """True when WORKED_HERE_BEFORE / worked_here_before was verified this run."""
     for f in report.get("filled") or []:
         if not isinstance(f, dict):
             continue
-        if not (f.get("verified") or f.get("ok")):
-            continue
+        try:
+            from fill_verify import is_verified_fill_row
+
+            if not is_verified_fill_row(f):
+                continue
+        except Exception:
+            if not (f.get("verified") or f.get("ok")):
+                continue
         blob = " ".join(
             [
                 str(f.get("type") or ""),
@@ -291,22 +549,38 @@ def _miss_is_worked_here_question(miss: dict) -> bool:
 def leftover_identity_keys(report: dict) -> set[str]:
     """Keys already tracked as leftovers or verified fills."""
     keys: set[str] = set()
+    phone_country_done = False
     for u in report.get("leftovers") or []:
         if not isinstance(u, dict):
             continue
-        for part in (u.get("label"), u.get("type"), u.get("selector"), u.get("name")):
+        for part in (u.get("label"), u.get("type"), u.get("selector"), u.get("name"), u.get("automation_id")):
             k = _norm_key(part)
             if k:
                 keys.add(k)
     for f in report.get("filled") or []:
         if not isinstance(f, dict):
             continue
-        if not (f.get("verified") or f.get("ok")):
-            continue
-        for part in (f.get("label"), f.get("type"), f.get("selector")):
+        try:
+            from fill_verify import is_verified_fill_row
+
+            if not is_verified_fill_row(f):
+                continue
+        except Exception:
+            if not (f.get("verified") or f.get("ok")):
+                continue
+        for part in (f.get("label"), f.get("type"), f.get("selector"), f.get("automation_id")):
             k = _norm_key(part)
             if k:
                 keys.add(k)
+        if _row_is_phone_country(f) or str(f.get("type") or "").upper() in (
+            "PHONE_COUNTRY_CODE",
+            "COUNTRYPHONECODE",
+        ):
+            phone_country_done = True
+    if phone_country_done:
+        keys.add("phonenumber--countryphonecode")
+        keys.add("countryphonecode")
+        keys.add("phone country code")
     return keys
 
 
@@ -340,6 +614,8 @@ def merge_miss_leftovers(report: dict, misses: list[dict] | None) -> int:
     existing = leftover_identity_keys(report)
     added = 0
     for row in misses_to_leftover_rows(misses):
+        if is_invented_leftover(row, report):
+            continue
         lab = _norm_key(row.get("label"))
         sel = _norm_key(row.get("selector"))
         name = _norm_key(row.get("name"))
@@ -390,7 +666,9 @@ async def promote_l01_misses(page, report: dict) -> dict:
         for m in misses[:40]
     ]
     added = merge_miss_leftovers(report, misses)
+    dropped = demote_invented_leftovers(report)
     summary["added"] = added
+    summary["invented_dropped"] = dropped
 
     # Sync required_empty_after_fill only for required-looking misses (FILL-010).
     # Optional unanswered radios stay flash_candidates via leftovers, but must
@@ -418,6 +696,19 @@ async def promote_l01_misses(page, report: dict) -> dict:
             }
         )
         empty_ids.add(eid.lower())
+    try:
+        from field_done import (
+            filter_phone_country_false_empties,
+            filter_required_empty_from_report,
+        )
+        from verified_select import phone_country_verified_snips_from_report
+
+        snips = phone_country_verified_snips_from_report(report)
+        snip = snips[0] if snips else ""
+        empties = filter_phone_country_false_empties(empties, snip)
+        empties = filter_required_empty_from_report(report, empties)
+    except Exception:
+        pass
     report["required_empty_after_fill"] = empties
     report["l01_miss_scan"] = summary
     return summary
@@ -448,9 +739,16 @@ def self_test() -> None:
             "name": "",
             "selector": "",
         },
+        {
+            "label": "Consent*",
+            "kind": "checkbox",
+            "reason": "unanswered_ashby_consent",
+            "name": "data_consent",
+            "selector": "",
+        },
     ]
     n = merge_miss_leftovers(report, misses)
-    assert n == 3, n
+    assert n == 4, n
     assert all(u.get("flash_candidate") is True for u in report["leftovers"])
     assert all(str(u.get("reason") or "").startswith("l01_miss_scan:") for u in report["leftovers"])
     # Dedupe on second merge
@@ -465,6 +763,8 @@ def self_test() -> None:
                 "type": "WORK_AUTH",
                 "ok": True,
                 "verified": True,
+                "value": "Yes",
+                "readback": "Yes",
             }
         ],
     }
@@ -472,6 +772,48 @@ def self_test() -> None:
     assert n3 == 0, n3
     rows = misses_to_leftover_rows(misses)
     assert rows[0]["via"] == "leftover_miss_scan"
+
+    nxp = {
+        "filled": [
+            {
+                "type": "countryPhoneCode",
+                "automation_id": "countryPhoneCode",
+                "ok": True,
+                "verified": True,
+                "value": "United States (+1)",
+                "readback": "United States of America (+1)",
+            }
+        ],
+        "leftovers": [
+            {
+                "label": "addressSection_addressLine2",
+                "reason": "not_in_dom",
+                "automation_id": "addressSection_addressLine2",
+            },
+            {
+                "label": "phonenumber--countryphonecode",
+                "reason": "live_required_empty:empty_required_input",
+            },
+            {"label": "First Name*", "reason": "live_required_empty:empty_required_input"},
+        ],
+    }
+    assert is_invented_leftover(nxp["leftovers"][0], nxp)
+    assert is_invented_leftover(nxp["leftovers"][1], nxp)
+    assert not is_invented_leftover(nxp["leftovers"][2], nxp)
+    assert demote_invented_leftovers(nxp) == 2
+    assert [u["label"] for u in nxp["leftovers"]] == ["First Name*"]
+    month_row = {"label": "Month — From*", "reason": "unclassified"}
+    month_plain = {"label": "Month", "reason": "unclassified"}
+    gpa_row = {"label": "Overall Result (GPA)", "reason": "unclassified"}
+    gpa_required = {
+        "label": "Overall Result (GPA)",
+        "reason": "live_required_empty:empty_required_input",
+        "automation_id": "formField-gpa",
+    }
+    assert is_invented_leftover(month_row, {"leftovers": [month_row]})
+    assert is_invented_leftover(month_plain, {"leftovers": [month_plain]})
+    assert is_invented_leftover(gpa_row, {"leftovers": [gpa_row]})
+    assert is_invented_leftover(gpa_required, {"leftovers": [gpa_required]})
     print("leftover_miss_scan.self_test: OK")
 
 

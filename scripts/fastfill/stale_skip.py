@@ -257,45 +257,28 @@ def append_skip_decision(
     mode: str = "attended",
     extra: dict | None = None,
 ) -> None:
-    """Best-effort append to improvement_decisions.jsonl."""
-    try:
-        from improvement_cycle import append_decision
-
-        row: dict[str, Any] = {
-            "phase": "train",
-            "decision": "SKIP_JOB",
-            "reason": reason,
-            "fail_class": fail_class,
-            "mode": mode,
-            "signals": {
-                "attempt_dir": str(attempt_dir) if attempt_dir else None,
-                "url": (url or "")[:300],
-                **(extra or {}),
-            },
-        }
-        append_decision(row)
-    except Exception:
-        # Fallback: write local JSONL next to attempt
-        if attempt_dir is not None:
-            try:
-                p = Path(attempt_dir) / "skip_decision.json"
-                p.write_text(
-                    json.dumps(
-                        {
-                            "ts": _utc(),
-                            "decision": "SKIP_JOB",
-                            "fail_class": fail_class,
-                            "reason": reason,
-                            "url": (url or "")[:300],
-                            **(extra or {}),
-                        },
-                        indent=2,
-                    )
-                    + "\n",
-                    encoding="utf-8",
+    """Best-effort write skip_decision.json next to the attempt."""
+    if attempt_dir is not None:
+        try:
+            p = Path(attempt_dir) / "skip_decision.json"
+            p.write_text(
+                json.dumps(
+                    {
+                        "ts": _utc(),
+                        "decision": "SKIP_JOB",
+                        "fail_class": fail_class,
+                        "reason": reason,
+                        "mode": mode,
+                        "url": (url or "")[:300],
+                        **(extra or {}),
+                    },
+                    indent=2,
                 )
-            except Exception:
-                pass
+                + "\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
 
 def _captcha_waiting_age_s(attempt_dir: Path) -> float | None:

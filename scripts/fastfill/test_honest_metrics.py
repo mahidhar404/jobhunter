@@ -1695,13 +1695,36 @@ def test_option_mappings_roundtrip(tmp_path=None):
 
 
 def test_batch_fill_skips_how_heard():
-    from batch_fill import is_batchable_row
+    from batch_fill import BATCH_SKIP_TYPES, is_batchable_row
 
     assert is_batchable_row(
         {"selector": "input[name=first]", "value": "Test", "type": "NAME_FIRST"}
     )
+    assert is_batchable_row(
+        {"selector": "input[type=email]", "value": "a@b.com", "type": "EMAIL"}
+    )
     assert not is_batchable_row(
         {"selector": "input", "value": "Job Board", "type": "HOW_HEARD"}
+    )
+    for skip in (
+        "FIELD_OF_STUDY",
+        "DISCIPLINE",
+        "MAJOR",
+        "EDUCATION_START_YEAR",
+        "EDUCATION_END_YEAR",
+        "PHONE_COUNTRY_CODE",
+        "PHONE_DEVICE",
+        "DEGREE",
+    ):
+        assert skip in BATCH_SKIP_TYPES
+        assert not is_batchable_row(
+            {"selector": "input", "value": "x", "type": skip}
+        )
+    assert not is_batchable_row(
+        {"selector": "[role=combobox]", "value": "IL", "type": "ADDRESS_STATE", "mode": "combobox"}
+    )
+    assert not is_batchable_row(
+        {"selector": "xpath=//input", "value": "Test", "type": "NAME_FIRST"}
     )
 
 

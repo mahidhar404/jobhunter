@@ -11,10 +11,12 @@ sys.path.insert(0, str(HERE))
 
 from page_progress import (  # noqa: E402
     apply_progress_verdict_gates,
+    budgeted_progress_decision,
     compute_stuck_on_same_page,
     flash_attempt_failed,
     is_essay_leftover,
     note_advance_result,
+    note_settle_cycle,
     step_fingerprint,
 )
 
@@ -350,6 +352,340 @@ def test_is_essay_leftover():
     assert is_essay_leftover({"label": "Why do you want this role?"}) is True
 
 
+def test_budgeted_empty_cycle_stops():
+    """Empty settle cycles must STOP — not keep cycling pages doing nothing."""
+    d0 = budgeted_progress_decision(
+        settle_count=1,
+        empty_cycle_count=1,
+        max_empty_cycles=2,
+        filled_this_cycle=0,
+        advanced_this_cycle=False,
+    )
+    assert d0["action"] == "CONTINUE", d0
+
+    d_stop = budgeted_progress_decision(
+        settle_count=2,
+        empty_cycle_count=2,
+        max_empty_cycles=2,
+        filled_this_cycle=0,
+        advanced_this_cycle=False,
+    )
+    assert d_stop["action"] == "STOP", d_stop
+    assert d_stop["reason"] == "empty_cycle"
+
+    # Simulated empty refill loop on a stuck page
+    report: dict = {"verdict": "SUCCESS", "stuck_on_same_page": False}
+    for _ in range(3):
+        decision = note_settle_cycle(report, filled_this_cycle=0, advanced_this_cycle=False)
+    assert decision["action"] == "STOP"
+    assert decision["reason"] == "empty_cycle"
+    assert report["progress_stop"] is True
+    assert report["empty_cycle_count"] >= 2
+    assert report["verdict"] == "FAIL"
+    assert report.get("progress_stop_reason") == "empty_cycle"
+
+
+def test_budgeted_stuck_on_same_page_stops():
+    d = budgeted_progress_decision(
+        settle_count=1,
+        empty_cycle_count=0,
+        stuck_on_same_page=True,
+        filled_this_cycle=2,
+        advanced_this_cycle=False,
+    )
+    assert d["action"] == "STOP"
+    assert d["reason"] == "stuck_on_same_page"
+
+
+def test_budgeted_max_advances_stops():
+    d = budgeted_progress_decision(
+        settle_count=1,
+        advance_count=4,
+        empty_cycle_count=0,
+        max_advances=4,
+        filled_this_cycle=1,
+        advanced_this_cycle=True,
+    )
+    assert d["action"] == "STOP"
+    assert d["reason"] == "max_advances"
+
+
+def test_progress_gates_empty_cycle_demotes_success():
+    """apply_progress_verdict_gates must FAIL SUCCESS when empty_cycle budget is spent."""
+    from page_progress import apply_progress_verdict_gates
+
+    report: dict = {
+        "verdict": "SUCCESS",
+        "empty_cycle_count": 2,
+        "settle_count": 2,
+        "advanced_count": 0,
+        "leftovers": [],
+        "required_empty_before_advance": [],
+        "required_empty_after_fill": [],
+    }
+    apply_progress_verdict_gates(report)
+    assert report["verdict"] == "FAIL"
+    assert report.get("progress_stop") is True
+    assert report.get("progress_stop_reason") == "empty_cycle"
+    assert report.get("verdict_reason") == "empty_cycle"
+
+
+def test_note_workday_phase_cycle_increments_empty():
+    from page_progress import note_workday_phase_cycle
+
+    report: dict = {}
+    phase = {"filled": []}
+    d1 = note_workday_phase_cycle(report, phase, advanced=False)
+    d2 = note_workday_phase_cycle(report, phase, advanced=False)
+    assert d2["action"] == "STOP"
+    assert d2["reason"] == "empty_cycle"
+    assert report["empty_cycle_count"] >= 2
+    assert d1["empty_cycle_count"] == 1
+
+
+def test_workday_selectors_wire_empty_cycle():
+    src = (HERE / "exp_workday_selectors.py").read_text(encoding="utf-8")
+    assert "note_workday_phase_cycle" in src
+    assert "progress_stop" in src
+
+
+def _done_name_hh_filled() -> list[dict]:
+    """Verified dummy First/Last/How-Heard rows (field_is_done true)."""
+    return [
+        {
+            "type": "NAME_FIRST",
+            "label": "First Name",
+            "value": "Jane",
+            "readback": "Jane",
+            "verified": True,
+        },
+        {
+            "type": "NAME_LAST",
+            "label": "Last Name",
+            "value": "Dummy",
+            "readback": "Dummy",
+            "verified": True,
+        },
+        {
+            "type": "HOW_HEARD",
+            "label": "How Did You Hear About Us?",
+            "value": "Internet job board",
+            "readback": (
+                "How Did You Hear About Us?* 1 item selected, Internet job board"
+            ),
+            "verified": True,
+        },
+    ]
+
+
+def _vision_false_empty_name_hh() -> dict:
+    return {
+        "complete": False,
+        "verdict": "FAIL_BLANK",
+        "empty_fields": [
+            {"label": "First Name", "kind": "blank"},
+            {"label": "Last Name", "kind": "blank"},
+            {"label": "How Did You Hear About Us?", "kind": "blank"},
+        ],
+        "never_submit": True,
+        "submit_clicked": False,
+        "source": "dom",
+    }
+
+
+def test_vision_empty_ignored_when_name_hh_field_is_done():
+    """0842Z: vision must not override field_is_done First/Last/How Heard."""
+    from field_done import field_is_done_from_row, filled_rows_honest
+    from page_progress import can_claim_ready, vision_blocks_ready
+
+    filled = _done_name_hh_filled()
+    assert all(field_is_done_from_row(r).ok for r in filled)
+    report = {
+        "verdict": "SUCCESS",
+        "leftovers": [],
+        "required_empty_after_fill": [],
+        "required_empty_before_advance": [],
+        "filled": filled,
+        "vision_judge_live": _vision_false_empty_name_hh(),
+        "vision_incomplete": True,
+        "blocker": "vision_incomplete",
+    }
+    assert filled_rows_honest(report) is True
+    # Ready path must reconcile before blocker=vision_incomplete vetoes.
+    assert can_claim_ready(report) is True
+    assert vision_blocks_ready(report) is False
+    vj = report["vision_judge_live"]
+    assert vj.get("complete") is True
+    assert vj.get("verdict") == "COMPLETE"
+    assert vj.get("empty_fields") == []
+    assert report.get("vision_incomplete") is not True
+    assert report.get("blocker") != "vision_incomplete"
+
+
+def test_vision_still_blocks_when_real_empty_remains():
+    """Phone still empty → vision FAIL_BLANK must keep blocking Ready."""
+    from page_progress import can_claim_ready, vision_blocks_ready
+
+    report = {
+        "verdict": "SUCCESS",
+        "leftovers": [],
+        "required_empty_after_fill": [],
+        "required_empty_before_advance": [],
+        "filled": _done_name_hh_filled(),
+        "vision_judge_live": {
+            "complete": False,
+            "verdict": "FAIL_BLANK",
+            "empty_fields": [
+                {"label": "First Name", "kind": "blank"},
+                {"label": "Phone", "kind": "blank"},
+            ],
+            "never_submit": True,
+            "submit_clicked": False,
+            "source": "dom",
+        },
+        "vision_incomplete": True,
+        "blocker": "vision_incomplete",
+    }
+    assert vision_blocks_ready(report) is True
+    assert can_claim_ready(report) is False
+    kept = [e.get("label") for e in report["vision_judge_live"].get("empty_fields") or []]
+    assert "Phone" in kept
+    assert "First Name" not in kept
+
+
+def test_fail_closed_vision_does_not_invent_done_name_hh():
+    """Fail-closed judge_error must not pack already-verified First/Last/HH."""
+    from page_progress import can_claim_ready, vision_blocks_ready
+
+    report = {
+        "verdict": "SUCCESS",
+        "leftovers": [],
+        "required_empty_after_fill": [],
+        "required_empty_before_advance": [],
+        "filled": _done_name_hh_filled(),
+        "vision_judge_live": {
+            "complete": False,
+            "verdict": "AMBIGUOUS",
+            "empty_fields": [
+                {"label": "First Name", "kind": "blank"},
+                {"label": "Last Name", "kind": "blank"},
+                {"label": "How Did You Hear About Us?", "kind": "blank"},
+                {"label": "judge_error: timeout", "kind": "blank"},
+            ],
+            "never_submit": True,
+            "submit_clicked": False,
+            "source": "dom",
+            "confidence": "ambiguous",
+        },
+        "vision_incomplete": True,
+        "blocker": "vision_incomplete",
+    }
+    # Name/HH empties dropped; leftover judge_error still fail-closed
+    assert vision_blocks_ready(report) is True
+    assert can_claim_ready(report) is False
+    labels = [e.get("label") for e in report["vision_judge_live"].get("empty_fields") or []]
+    assert any(str(l).startswith("judge_error:") for l in labels)
+    assert "First Name" not in labels
+    assert "Last Name" not in labels
+    assert "How Did You Hear About Us?" not in labels
+
+
+def test_apply_live_vision_gate_ignores_done_name_hh():
+    """apply_live_vision_gate must not set vision_incomplete for pack-verified names."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from page_progress import apply_live_vision_gate, can_claim_ready
+
+    report = {
+        "verdict": "SUCCESS",
+        "leftovers": [],
+        "required_empty_after_fill": [],
+        "required_empty_before_advance": [],
+        "filled": _done_name_hh_filled(),
+    }
+    fake_page = object()
+
+    async def _run():
+        with patch(
+            "vision_judge.judge_page",
+            new=AsyncMock(return_value=_vision_false_empty_name_hh()),
+        ):
+            result = await apply_live_vision_gate(fake_page, report)
+        return result
+
+    result = asyncio.run(_run())
+    assert result.get("complete") is True
+    assert result.get("empty_fields") == []
+    assert report.get("vision_incomplete") is not True
+    assert report.get("blocker") != "vision_incomplete"
+    assert can_claim_ready(report) is True
+
+
+def test_midwizard_footer_advance_refuses_ready_not_next():
+    """1138Z: Save and Continue + phase_c not advanced is Ready-incomplete.
+
+    ``workday_wizard_incomplete`` / footer ADVANCE must still refuse Ready.
+    ``advance_page_if_ready`` must NOT STOP Next with wizard_incomplete — page
+    empties already filtered; click Experience Next.
+    """
+    from page_progress import (
+        attach_footer_primary,
+        can_claim_ready,
+        may_enter_review_hold,
+        workday_wizard_incomplete,
+    )
+
+    src = (HERE / "fill_contract.py").read_text(encoding="utf-8")
+    assert 'AdvanceDecision(False, "wizard_incomplete")' not in src
+    assert "wizard_incomplete" in src  # still cleared when empties filtered
+
+    report = {
+        "platform": "workday",
+        "coverage_path": "workday_multipage",
+        "verdict": "SUCCESS",
+        "blocker": None,
+        "leftovers": [],
+        "required_empty_before_advance": [],
+        "required_empty_after_fill": [],
+        "workday_current_step": "experience",
+        "workday": {
+            "phase_c": {"present": True, "advanced": False},
+            "phase_e": None,
+        },
+        "vision_judge_live": {
+            "complete": True,
+            "verdict": "COMPLETE",
+            "empty_fields": [],
+            "never_submit": True,
+            "submit_clicked": False,
+        },
+    }
+    attach_footer_primary(
+        report, kind="ADVANCE", label="Save and Continue", source="workday_bottom_nav"
+    )
+    assert workday_wizard_incomplete(report) is True
+    assert may_enter_review_hold(report) is False
+    assert can_claim_ready(report) is False
+
+
+def test_flash_attempt_failed_workday_skip_not_failure():
+    """Legacy Workday skip reports are not flash_leftovers_failed (backward compat)."""
+    report = {
+        "verdict": "SUCCESS",
+        "flash_leftovers_requested": True,
+        "leftover_count": 2,
+        "flash": {
+            "invoked": False,
+            "skipped_reason": "workday_two_phase",
+        },
+    }
+    assert flash_attempt_failed(report) is False
+    apply_progress_verdict_gates(report)
+    assert report["verdict"] == "SUCCESS"
+    assert report.get("verdict_reason") != "flash_leftovers_failed"
+
+
 def main() -> int:
     test_step_fingerprint_changes_with_path()
     test_step_fingerprint_changes_with_step_hint()
@@ -374,6 +710,18 @@ def main() -> int:
     test_flash_attempt_failed_skyvern_deferred_with_hard_error_still_fails()
     test_flash_attempt_failed_inpage_ran_essay_only_ok()
     test_is_essay_leftover()
+    test_budgeted_empty_cycle_stops()
+    test_budgeted_stuck_on_same_page_stops()
+    test_budgeted_max_advances_stops()
+    test_progress_gates_empty_cycle_demotes_success()
+    test_note_workday_phase_cycle_increments_empty()
+    test_workday_selectors_wire_empty_cycle()
+    test_vision_empty_ignored_when_name_hh_field_is_done()
+    test_vision_still_blocks_when_real_empty_remains()
+    test_fail_closed_vision_does_not_invent_done_name_hh()
+    test_apply_live_vision_gate_ignores_done_name_hh()
+    test_midwizard_footer_advance_refuses_ready_not_next()
+    test_flash_attempt_failed_workday_skip_not_failure()
     print("test_page_progress: OK")
     return 0
 

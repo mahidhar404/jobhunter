@@ -2,5 +2,7 @@
   "id": "gh_race_decline",
   "platform": "greenhouse",
   "fail_class": "race_decline_no_matching_option",
-  "description": "Capco GH race select: decline aliases must match and commit 'I don't wish to answer' (never invent a race). Regression for field_attempts race no_matching_option."
+  "description": "Capco GH race select: decline aliases must match and commit 'I don't wish to answer' (never invent a race). Regression for field_attempts race no_matching_option.",
+  "fidelity": "medium",
+  "live_signoff": false
 }

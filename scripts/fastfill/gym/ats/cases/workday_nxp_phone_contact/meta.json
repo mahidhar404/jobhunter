@@ -1,0 +1,8 @@
+{
+  "id": "workday_nxp_phone_contact",
+  "platform": "workday",
+  "fail_class": "false_incomplete_phone_country",
+  "description": "NXP-shaped My Information phone: Mobile + US (+1) chip + phone number \u2192 required_empty/gaps/ready honest; empty chip stays incomplete.",
+  "fidelity": "low",
+  "live_signoff": false
+}

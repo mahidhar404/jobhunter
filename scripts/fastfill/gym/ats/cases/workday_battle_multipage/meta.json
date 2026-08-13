@@ -1,0 +1,21 @@
+{
+  "id": "workday_battle_multipage",
+  "platform": "workday",
+  "fail_class": "battle_multipage",
+  "description": "High-fidelity-intent 5-step Workday battle gym: My Info→Experience→Education→Questions→Review with fiber stub, Illinois, hierarchical How-Heard (stays open while State filled), County cascade after Illinois, dual FoS Major vs Discipline, date-spin skip, phone country vs number, sticky Submit decoy, empty-cycle Next, wrong last-name autofill reclaim.",
+  "fidelity": "high",
+  "fidelity_notes": "Intentional high: advance gating, widget traps, SPA step fingerprints. Date spins are static prefilled stubs (not live Fiber spinners). Dual FoS is two chips (Major wrong / Discipline correct), not a shared lock. Sticky Submit is a decoy without bottom-navigation-next-button. How-Heard listbox does not close when State is committed. Live headed + flight recorder remain source of truth.",
+  "live_signoff": false,
+  "related_cases": [
+    "workday_multipage_to_review",
+    "workday_address_state_illinois",
+    "workday_education_fos_wrong_chip",
+    "workday_education_fos_dual_alias",
+    "workday_how_heard_hierarchical_chip",
+    "workday_wrong_autofill_relock",
+    "workday_nxp_phone_contact",
+    "crossfill_phone_country",
+    "midwizard_sticky_submit",
+    "false_complete_listbox_open"
+  ]
+}

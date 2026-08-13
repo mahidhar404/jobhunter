@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — Workday FoS dual alias (Arts-Other + Science-Computer)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 560px; margin: 2rem auto; }
+    .field { margin-bottom: 1.25rem; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: #eef; border: 1px solid #ccd; border-radius: 16px;
+      padding: 4px 10px; font-size: 14px; margin-bottom: 6px;
+    }
+    .chip.wrong { background: #fde8e8; border-color: #f5c6c6; }
+    .chip button {
+      border: none; background: transparent; cursor: pointer;
+      font-size: 16px; line-height: 1; padding: 0 2px; color: #555;
+    }
+  </style>
+</head>
+<body>
+  <h1>Education — dual FoS alias (NXP-class)</h1>
+  <p>Arts-Other on fieldOfStudy · Science-Computer on discipline · intent CS</p>
+
+  <div class="field" data-automation-id="formField-fieldOfStudy" id="fos-field">
+    <label>Field of Study*</label>
+    <div id="fos-chip-wrap">
+      <span class="chip wrong" data-automation-id="selectedItem">
+        Arts-Other
+        <button type="button" aria-label="delete selected" data-automation-id="deleteSelected">×</button>
+      </span>
+    </div>
+    <input id="fos-filter" type="text" data-automation-id="fieldOfStudy" value="" />
+  </div>
+
+  <div class="field" data-automation-id="formField-discipline" id="disc-field">
+    <label>Discipline*</label>
+    <div id="disc-chip-wrap">
+      <span class="chip" data-automation-id="selectedItem">
+        Science-Computer
+        <button type="button" aria-label="delete selected" data-automation-id="deleteSelected">×</button>
+      </span>
+    </div>
+    <input id="disc-filter" type="text" data-automation-id="discipline" value="" />
+  </div>
+
+  <script>
+    function wireClear(wrapId) {
+      const wrap = document.getElementById(wrapId);
+      if (!wrap) return;
+      wrap.querySelector('[data-automation-id="deleteSelected"]')?.addEventListener('click', () => {
+        wrap.innerHTML = '';
+      });
+    }
+    wireClear('fos-chip-wrap');
+    wireClear('disc-chip-wrap');
+  </script>
+</body>
+</html>

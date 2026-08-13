@@ -159,39 +159,10 @@ def assert_flash_off_when_unrequested(report: dict, *, path: Path | None = None)
 
 
 def _row_verified(row: dict) -> bool:
-    """Scorecard recount: verified read-back only; never status=stuck."""
-    if not isinstance(row, dict):
-        return False
-    if row.get("ok") is False or row.get("verified") is False:
-        return False
-    if row.get("status") == "stuck":
-        return False
-    raw_rb = row.get("readback") or row.get("shown") or ""
-    # Workday date widgets store structured readback dicts — stringify for checks.
-    if isinstance(raw_rb, dict):
-        parts = [str(v).strip() for v in raw_rb.values() if v not in (None, "")]
-        rb = " ".join(parts)
-    else:
-        rb = str(raw_rb).strip()
-    rb_low = rb.lower()
-    if rb_low in ("type here...", "type here", "start typing...", "start typing", "select one", "select"):
-        return False
-    if rb_low.startswith("type here") or rb_low.startswith("start typing"):
-        return False
-    if row.get("verified") is True:
-        return True
-    widget = row.get("widget") if isinstance(row.get("widget"), dict) else {}
-    if widget.get("verified") is True:
-        return True
-    if rb and rb_low not in ("select one", "select"):
-        return True
-    via = str(row.get("via") or "")
-    ftype = str(row.get("type") or "")
-    if "resume" in via.lower() or ftype == "RESUME_UPLOAD" or row.get("mode") == "file":
-        return row.get("ok") is True
-    if via == "gh_select" and (row.get("shown") or row.get("picked")):
-        return True
-    return False
+    """Scorecard recount — same SSoT as ``field_done`` / ``is_verified_fill_row``."""
+    from fill_verify import is_verified_fill_row
+
+    return is_verified_fill_row(row)
 
 
 def _verified_filled_count(report: dict) -> int | None:

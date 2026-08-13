@@ -2,5 +2,7 @@
   "id": "workday_how_heard_hierarchical_chip",
   "platform": "workday",
   "fail_class": "hierarchical_no_chip",
-  "description": "Workday source--source hierarchy: open category → pick leaf → chip shows leaf (not category filter) → listbox closed → verified only when readback matches picked leaf."
+  "description": "Workday source--source hierarchy (NXP-shaped): open Website > \u2192 pick Web - * leaf \u2192 chip shows leaf \u2192 listbox closed.",
+  "fidelity": "medium",
+  "live_signoff": false
 }

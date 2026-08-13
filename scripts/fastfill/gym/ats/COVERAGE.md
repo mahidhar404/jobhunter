@@ -27,6 +27,8 @@ Dummy-only · never submit · never CAPTCHA · never invent EEO.
 | **page-complete** | false midwizard | `midwizard_sticky_submit` | ADVANCE + empty required → fail gold |
 | **page-complete** | listbox HTML | `false_complete_listbox_open` | uncommitted open menu fails gold |
 | **page-complete** | review hold | unit | FINAL footer allows review when complete |
+| **page-complete** | multipage to review | `workday_multipage_to_review` | contact→experience→education→review FINAL footer |
+| **page-complete** | battle multipage | `workday_battle_multipage` | 5-step high-intent: fiber/IL/dual-FoS/date-spin/phone/sticky-Submit/empty-cycle/HH-open-while-State → Review |
 | **what-next** | footer Next → ADVANCE | unit | `footer_primary_wizard_incomplete` |
 | **what-next** | footer Submit → FINAL | unit | Submit → not wizard incomplete |
 | **what-next** | sticky advance wins | `midwizard_sticky_submit` | Submit+Next visible → ADVANCE primary |
@@ -36,6 +38,7 @@ Dummy-only · never submit · never CAPTCHA · never invent EEO.
 | **what-next** | settle listbox | unit | `_click_next_advance` checks listbox_still_open |
 | **what-next** | cycle demotes incomplete | unit | mid-wizard SUCCESS demoted |
 | **thrash** | field lock skip | `gh_howheard_multiselect` | second fill → skipped_already_correct |
+| **thrash** | wrong autofill reclaim | `workday_wrong_autofill_relock`, `workday_education_fos_wrong_chip` | Arts-Other + CS intent → reclaim not lock |
 | **thrash** | thrash demotes | unit | thrash_retouches demotes SUCCESS |
 | **thrash** | how-heard priority | `gh_howheard_multiselect` | LinkedIn before Indeed; no alias walk |
 | **thrash** | arrowdown waste | unit | stable GH menu ArrowDown ≤1 |
@@ -48,11 +51,11 @@ Dummy-only · never submit · never CAPTCHA · never invent EEO.
 
 | Taxonomy code | Gym class | Case / fixture | Assert |
 |---------------|-----------|----------------|--------|
-| `FAIL_MIDWIZARD` | advance_honesty | `midwizard_sticky_submit` | Footer ADVANCE when required empty; `apply_midwizard_to_decision` demotes SUCCESS |
+| `FAIL_MIDWIZARD` | advance_honesty | `midwizard_sticky_submit`, `workday_multipage_to_review`, `workday_battle_multipage` | Footer ADVANCE when required empty; sticky Submit decoy; battle chain reaches Review FINAL |
 | `FAIL_MIDWIZARD` | false_complete | `false_complete_listbox_open`, unit | `can_claim_ready` refuses `listbox_open`, `advance_blocked_reason` |
 | `FAIL_WRONG_VALUE` | cross_fill | `crossfill_accommodations`, `crossfill_phone_country`, unit | accommodations≠consent; phone≠jobboard; noncompete≠WORK_AUTH; privacy≠NAME_FULL |
 | `FAIL_WRONG_VALUE` | click_wrong | unit, `gh_race_decline` | `soft_value_match` Male≠Female; degree pick rejects A.A.; decline only |
-| `FAIL_THRASH` | thrash | `gh_howheard_multiselect`, unit | field_lock gate; thrash demotes SUCCESS; no reopen after commit |
+| `FAIL_THRASH` | thrash | `gh_howheard_multiselect`, `workday_wrong_autofill_relock`, unit | field_lock gate; thrash demotes SUCCESS; wrong autofill reclaim |
 | `FAIL_BLANK` | false_incomplete | `wd_radio_aria_checked` | `form_gaps` + `leftover_miss_scan` empty when aria-checked No |
 | `FAIL_BLANK` | false_incomplete | unit | instruction-only gap filter (CURRENT TEAMMATES…) |
 | `FAIL_BLANK` | select_commit | `gh_*`, `portal_listbox` | fill + readback commit |
@@ -64,11 +67,11 @@ Dummy-only · never submit · never CAPTCHA · never invent EEO.
 
 | Playbook | Case / test | Proves |
 |----------|-------------|--------|
-| `native_select` | `workday_multipage`, `midwizard_sticky_submit` | ADVANCE footer gate |
+| `native_select` | `workday_multipage`, `workday_multipage_to_review`, `midwizard_sticky_submit` | ADVANCE/FINAL footer gate |
 | `react_select_portal` | `gh_react_select`, `gh_race_decline`, `portal_listbox`, `false_complete_listbox_open`, `crossfill_phone_country` | portal listbox; single commit; false-complete guard |
 | `typable_commit` | `gh_typable_commit` | type filter ≠ commit; one option click |
 | `workday_how_heard` | `gh_howheard_multiselect`, `crossfill_phone_country` | LinkedIn priority chip; no alias thrash; phone≠how-heard |
-| `date_spinner` | unit (`test_verified_select`) | live-only Workday date spins |
+| `date_spinner` | unit (`test_verified_select`), `workday_battle_multipage` stub | prefilled 08/2017 + Present skip (not live Fiber spins) |
 | `text_input` | `salary_blank_skip`, `workday_auth_gate` | blank skip honesty; auth gate probe |
 | `checkbox` | `crossfill_accommodations`, unit | TERMS_CONSENT / accommodations classify |
 | `radio` | `wd_radio_aria_checked`, `crossfill_accommodations` | aria-checked readback; accommodations radio |
@@ -101,17 +104,30 @@ Dummy-only · never submit · never CAPTCHA · never invent EEO.
 | `midwizard_sticky_submit` | midwizard_footer | yes | footer ADVANCE |
 | `salary_blank_skip` | blank_skip | yes | mini-fill passes |
 | `workday_multipage` | multipage_advance | yes | — |
+| `workday_multipage_to_review` | multipage_to_review | yes | `test_multipage_chain_reaches_review` |
+| `workday_battle_multipage` | battle_multipage | yes | `test_battle_multipage_chain_reaches_review` (v1: dual FoS, date-spin skip, phone country, sticky Submit, empty-cycle, last-name reclaim, HH-open-while-State — see `BATTLE_GYM.md`) |
+| `workday_wrong_autofill_relock` | wrong_autofill_relock | yes | `test_wrong_autofill_relock_not_lock` |
+| `workday_education_fos_chip` | education_fos_chip | yes | FoS Science-Computer skip |
+| `workday_education_fos_wrong_chip` | education_fos_wrong | yes | Arts-Other reclaim |
 | `workday_auth_gate` | auth_gate | **passes** (auth probe) | `test_workday_auth_gate_case` |
 
 ## Live-only gaps (tenant drift — not gym-reproducible)
 
-- Workday fiber `searchSelect` two-step category→leaf (Walmart hierarchical how-heard)
+**Honesty:** Gym/unit green does **not** mean live headed success. See
+[`GYM_VS_LIVE.md`](../../GYM_VS_LIVE.md). Every case has `fidelity` +
+`live_signoff: false` in `meta.json`. Live truth = flight recorder + headed
+`reliability_gate.py` (`live_pass`).
+
+- Workday fiber `searchSelect` two-step category→leaf (Walmart hierarchical how-heard) — partially mirrored in `workday_battle_multipage` / hierarchical chip (static options only)
+- Fiber / controlled text **empty_readback** (NXP addressLine2 / county) — battle gym has a **fiber-stubborn blur-clear** stub only (not real Fiber)
 - Virtualized menus with scrollTop (partially covered by `test_enumerate_grows_via_arrowdown_until_stable`)
 - Resume upload verify + filelist empty filename-visible
 - CAPTCHA / Akamai headed pause
 - Real tenant label drift / i18n
-- Phase C experience date spins (Workday `dateSection`)
+- Phase C experience date spins (Workday `dateSection`) — battle gym has a **prefilled stub** (08/2017 + Present) only, not live Fiber spinners
 - **Auth gate full click flow** (reveal → create → fill): covered live in `test_workday_signin_gate.py` — gym HTML probes initial `reveal_email` only (Stream B owns gated clicks)
+- **Ashby / Lever** — no gym HTML cases at all
+- **Battle gym honesty:** `workday_battle_multipage` is high-*intent* composition (v1 cycles: dual FoS Major vs Discipline, date-spin skip stub, phone country vs number, sticky Submit decoy, empty-cycle Next, last-name wrong autofill, HH stays open while State filled). Gold is honest (not weakened). Not pixel-perfect Fiber — see [`BATTLE_GYM.md`](BATTLE_GYM.md); live headed + flight recorder remain source of truth ([`GYM_VS_LIVE.md`](../../GYM_VS_LIVE.md))
 
 ## Run
 
@@ -120,6 +136,15 @@ skyvern_runtime/venv/bin/python scripts/fastfill/gym/ats/adversarial.py
 skyvern_runtime/venv/bin/python scripts/fastfill/gym/ats/detection_matrix.py
 skyvern_runtime/venv/bin/python scripts/fastfill/gym/ats/runner.py --self-test
 skyvern_runtime/venv/bin/python scripts/fastfill/gym/ats/runner.py --list
+# Battle gym (5-step Workday-mirror traps):
+skyvern_runtime/venv/bin/python -c "
+import sys
+from pathlib import Path
+sys.path[:0] = [str(Path('scripts/fastfill/gym/ats').resolve()), str(Path('scripts/fastfill').resolve())]
+from adversarial import test_battle_multipage_chain_reaches_review
+test_battle_multipage_chain_reaches_review()
+print('ok')
+"
 ```
 
-Definition of done: adversarial suite green + detection matrix green + related unit suites + (optional) 2–3 never-seen WD canary with zero false complete/incomplete on covered classes.
+Definition of done: adversarial suite green + detection matrix green + related unit suites + (optional) 2–3 never-seen WD canary with zero false complete/incomplete on covered classes. See `BATTLE_GYM.md`.

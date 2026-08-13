@@ -1,6 +1,12 @@
 {
   "id": "workday_auth_gate_direct",
   "platform": "workday",
-  "tags": ["auth", "sign-in", "create-account"],
-  "description": "Sign-in form visible with Create Account link (no SSO reveal step)"
+  "tags": [
+    "auth",
+    "sign-in",
+    "create-account"
+  ],
+  "description": "Sign-in form visible with Create Account link (no SSO reveal step)",
+  "fidelity": "low",
+  "live_signoff": false
 }

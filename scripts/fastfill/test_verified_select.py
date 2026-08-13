@@ -10,6 +10,32 @@ def test_nudge_listbox_helper_exported():
     assert callable(wait_for_option_texts)
 
 
+def test_mcp_nxp_option_click_helpers():
+    """NXP MCP: scrollIntoView center, wait for list, exact text, never Enter."""
+    import inspect
+
+    from verified_select import (
+        click_option_exact_text,
+        nudge_listbox_after_type,
+        open_list_widget,
+        scroll_widget_into_view,
+    )
+
+    assert callable(scroll_widget_into_view)
+    assert callable(open_list_widget)
+    assert callable(click_option_exact_text)
+    scroll_src = inspect.getsource(scroll_widget_into_view)
+    assert "scrollIntoView" in scroll_src
+    assert "block: 'center'" in scroll_src or 'block: "center"' in scroll_src
+    nudge_src = inspect.getsource(nudge_listbox_after_type)
+    assert "keyboard.press(\"Enter\")" not in nudge_src
+    assert "enter_skipped_mcp" in nudge_src
+    click_src = inspect.getsource(click_option_exact_text)
+    assert "exact=True" in click_src
+    assert "press(\"Enter\")" not in click_src
+    assert "Skills" in click_src or "skills" in click_src.lower()
+
+
 def test_how_heard_triggers_async_nudge_flag():
     """HOW_HEARD / hear-about labels must enable the async option nudge path."""
     import inspect
@@ -614,6 +640,9 @@ def test_enumerate_source_documents_stable_early_exit():
 
 
 if __name__ == "__main__":
+    test_nudge_listbox_helper_exported()
+    test_mcp_nxp_option_click_helpers()
+    test_how_heard_triggers_async_nudge_flag()
     test_location_filter_never_committed_from_input()
     test_yes_no_word_split_and_match()
     test_springfield_narrowing_prefers_illinois()

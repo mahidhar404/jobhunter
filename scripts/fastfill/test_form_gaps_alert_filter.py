@@ -94,12 +94,85 @@ def test_error_node_without_gap_words_still_kept():
     assert gaps_block_ready(norm) is True
 
 
+def test_normalize_gaps_drops_invented_pack_aids_and_committed_phone():
+    """Raw pack aids + committed phone-country chip are not live required gaps."""
+    from form_gaps import is_committed_phone_country_gap, is_raw_optional_pack_aid
+
+    assert is_raw_optional_pack_aid("addressSection_addressLine2") is True
+    assert is_raw_optional_pack_aid("addressSection_regionSubdivision1") is True
+    assert is_raw_optional_pack_aid("worked_here_before") is True
+    assert is_raw_optional_pack_aid("First Name*") is False
+    assert is_committed_phone_country_gap(
+        "Country Phone Code* 1 item selected, United States of America (+1)",
+        "phonenumber--countryphonecode",
+    ) is True
+    assert is_committed_phone_country_gap("Country Phone Code*", "") is False
+
+    norm = normalize_gaps(
+        [
+            {
+                "label": "addressSection_addressLine2",
+                "reason": "required_empty",
+                "automation_id": "addressSection_addressLine2",
+            },
+            {
+                "label": "addressSection_regionSubdivision1",
+                "reason": "required_empty",
+                "automation_id": "addressSection_regionSubdivision1",
+            },
+            {
+                "label": "worked_here_before",
+                "reason": "required_empty",
+                "automation_id": "worked_here_before",
+            },
+            {
+                "label": "Country Phone Code* 1 item selected, United States of America (+1)",
+                "reason": "required_empty",
+                "automation_id": "phonenumber--countryphonecode",
+            },
+            {
+                "label": "First Name*",
+                "reason": "required_empty",
+                "automation_id": "formField-legalName--firstName",
+            },
+        ]
+    )
+    labels = [g["label"] for g in norm]
+    assert labels == ["First Name*"], labels
+    assert gaps_block_ready(norm) is True
+
+
+def test_normalize_gaps_drops_optional_gpa():
+    from form_gaps import gaps_block_ready, normalize_gaps
+
+    norm = normalize_gaps(
+        [
+            {
+                "label": "Overall Result (GPA)",
+                "reason": "required_empty",
+                "automation_id": "formField-gpa",
+            },
+            {
+                "label": "Job Title*",
+                "reason": "required_empty",
+                "automation_id": "jobTitle",
+            },
+        ]
+    )
+    assert [g["label"] for g in norm] == ["Job Title*"]
+    assert gaps_block_ready(
+        [{"label": "Overall Result (GPA)", "reason": "required_empty"}]
+    ) is False
+
+
 def main() -> int:
     test_looks_like_gap_message_validation()
     test_looks_like_gap_message_rejects_cookie_marketing()
     test_normalize_gaps_filters_alert_noise()
     test_normalize_gaps_all_cookie_alerts_do_not_block_ready()
     test_error_node_without_gap_words_still_kept()
+    test_normalize_gaps_drops_invented_pack_aids_and_committed_phone()
+    test_normalize_gaps_drops_optional_gpa()
     print("test_form_gaps_alert_filter: OK")
     return 0
 

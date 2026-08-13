@@ -1,0 +1,14 @@
+{
+  "id": "workday_education_fos_expanded_chip",
+  "platform": "workday",
+  "tags": [
+    "education",
+    "field_of_study",
+    "listbox",
+    "settle"
+  ],
+  "intent": "Computer Science",
+  "notes": "FoS chip committed + aria-expanded listbox \u2014 after settle, advance not blocked.",
+  "fidelity": "low",
+  "live_signoff": false
+}

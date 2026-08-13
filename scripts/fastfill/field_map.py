@@ -266,7 +266,8 @@ PATTERNS = {
     # live, timing out on Create Account because this gate stayed unticked -
     # it reads as a generic instruction rather than the usual terms phrasing.
     # ADA *policy acknowledgment* only — not "do you require accommodations".
-    TERMS_CONSENT: r"terms\s*(and|&)\s*conditions|terms\s*of\s*(use|service)|"
+    TERMS_CONSENT: r"^\s*consent\s*\*?\s*$|"
+                   r"terms\s*(and|&)\s*conditions|terms\s*of\s*(use|service)|"
                    r"privacy\s*(policy|notice|statement)|data\s+privacy|"
                    r"privacy[\s_-]*acknowledge?ment|"
                    r"candidate[\s_-]*privacy|"

@@ -1,0 +1,8 @@
+{
+  "id": "workday_address_state_illinois",
+  "platform": "workday",
+  "family": "address_state",
+  "description": "NXP 2244Z: State/Province countryRegion Illinois via promptOption; How-Heard listbox open must not steal keystrokes or leave no_matching_option pack_incomplete.",
+  "fidelity": "medium",
+  "live_signoff": false
+}

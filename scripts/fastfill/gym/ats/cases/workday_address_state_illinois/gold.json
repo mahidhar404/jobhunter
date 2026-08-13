@@ -1,0 +1,14 @@
+{
+  "fields": [
+    {
+      "key": "address_state",
+      "selector": "[data-automation-id=\"addressSection_countryRegion\"]",
+      "committed": "Illinois",
+      "required": true,
+      "notes": "Dummy profile IL → full name Illinois. Never Idaho."
+    }
+  ],
+  "required_empty": [],
+  "gaps": [],
+  "notes": "Fill must commit Illinois; commit_fill must not treat intent-as-readback as verified."
+}

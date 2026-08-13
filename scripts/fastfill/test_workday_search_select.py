@@ -24,13 +24,19 @@ def test_fiber_search_select_js_calls_tab_onkeydown():
     assert "ambiguous" in src
 
 
-def test_typable_dropdown_prefers_fiber_for_how_heard():
-    from verified_select import typable_dropdown_narrow_and_click
+def test_typable_dropdown_how_heard_does_not_type_as_commit():
+    """MCP NXP: How-Heard is click → category → leaf → chip, never fiber type."""
+    from verified_select import fill_workday_combobox, typable_dropdown_narrow_and_click
 
     src = inspect.getsource(typable_dropdown_narrow_and_click)
-    assert "fiber_search_select" in src
-    assert "prefer_fiber" in src
     assert "HOW_HEARD" in src
+    assert "skip_type" in src
+    prefer = inspect.getsource(typable_dropdown_narrow_and_click)
+    # prefer_fiber must not include HOW_HEARD (SOURCE/SCHOOL/STATE only)
+    assert '"HOW_HEARD"' not in prefer.split("prefer_fiber")[1].split(")")[0]
+    combo = inspect.getsource(fill_workday_combobox)
+    assert "fill_hierarchical_how_heard" in combo
+    assert "how_heard_no_chip" in combo
 
 
 def test_how_heard_fill_uses_hierarchical_mode():
@@ -61,7 +67,9 @@ def test_how_heard_probe_keep_exported():
         "How Did You Hear About Us?*\n1 item selected, Indeed",
         ["Indeed", "LinkedIn"],
     )
-    assert not how_heard_source_committed("1 item selected, Other", ["Indeed"])
+    # Valid sibling leaf is done (CareerBuilder vs Indeed) — unknown agency is not.
+    assert how_heard_source_committed("1 item selected, CareerBuilder", ["Indeed"])
+    assert not how_heard_source_committed("1 item selected, Antal Talent", ["Indeed"])
     assert not how_heard_source_committed("0 items selected", ["Indeed"])
     assert not how_heard_source_committed("", ["Indeed"])
 
@@ -99,3 +107,15 @@ def test_previous_worker_scopes_include_quantiphi_wording():
     radio_src = inspect.getsource(wd._fill_radio_yes_no)
     assert "_verify_radio_checked" in radio_src
     assert "Have you been employed" in radio_src
+
+
+if __name__ == "__main__":
+    test_fiber_search_select_exported()
+    test_fiber_search_select_js_calls_tab_onkeydown()
+    test_typable_dropdown_how_heard_does_not_type_as_commit()
+    test_how_heard_fill_uses_hierarchical_mode()
+    test_how_heard_probe_keep_exported()
+    test_fiber_settles_menu_after_pick()
+    test_picked_option_not_uncommitted_filter()
+    test_previous_worker_scopes_include_quantiphi_wording()
+    print("test_workday_search_select: OK")

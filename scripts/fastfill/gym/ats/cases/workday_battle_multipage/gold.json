@@ -1,0 +1,145 @@
+{
+  "fields": [
+    {
+      "key": "first_name",
+      "selector": "#first-name",
+      "committed": "Test",
+      "required": true
+    },
+    {
+      "key": "last_name",
+      "selector": "#last-name",
+      "committed": "Dummy",
+      "required": true,
+      "notes": "Wrong autofill starts as Test — must reclaim Dummy, never lock-skip."
+    },
+    {
+      "key": "email",
+      "selector": "#email",
+      "committed": "randommail6969@gmail.com",
+      "required": true
+    },
+    {
+      "key": "phone_country",
+      "selector": "#phone-country-control",
+      "committed": "United States of America (+1)",
+      "required": true,
+      "notes": "Phone country ≠ how-heard; never LinkedIn on this field."
+    },
+    {
+      "key": "phone_number",
+      "selector": "#phone-num",
+      "committed": "405-555-0100",
+      "required": true,
+      "notes": "Number only — not +1 / country code."
+    },
+    {
+      "key": "address_line1",
+      "selector": "#address-fiber-committed",
+      "committed": "100 Test Street",
+      "required": true,
+      "notes": "Fiber-stubborn: must commit via Enter/Tab/double-change, not plain blur fill."
+    },
+    {
+      "key": "how_heard",
+      "selector": "#hh-chrome",
+      "committed": "1 item selected, Web - LinkedIn",
+      "required": true,
+      "notes": "Hierarchical Website > Web - LinkedIn leaf chip."
+    },
+    {
+      "key": "address_state",
+      "selector": "[data-automation-id=\"addressSection_countryRegion\"]",
+      "committed": "Illinois",
+      "required": true,
+      "notes": "Dummy IL → Illinois; never Idaho."
+    },
+    {
+      "key": "address_county",
+      "selector": "#county",
+      "committed": "Sangamon",
+      "required": true,
+      "notes": "Live Workday address cascade: County mounts after Illinois."
+    },
+    {
+      "key": "job_title",
+      "selector": "#job-title",
+      "committed": "Applied AI/ML Analyst",
+      "required": true
+    },
+    {
+      "key": "company",
+      "selector": "#company",
+      "committed": "Example Corp",
+      "required": true
+    },
+    {
+      "key": "start_month",
+      "selector": "#start-month",
+      "committed": "08",
+      "required": true,
+      "notes": "Date spin already committed — skip, do not thrash."
+    },
+    {
+      "key": "start_year",
+      "selector": "#start-year",
+      "committed": "2017",
+      "required": true
+    },
+    {
+      "key": "school",
+      "selector": "#school",
+      "committed": "University of Alabama, Tuscaloosa",
+      "required": true
+    },
+    {
+      "key": "major",
+      "selector": "#major-chip-wrap",
+      "committed": "Science-Computer",
+      "required": true,
+      "notes": "Major starts Arts-Other; Discipline match must not skip Major reclaim."
+    },
+    {
+      "key": "discipline",
+      "selector": "#disc-chip-wrap",
+      "committed": "Science-Computer",
+      "required": true,
+      "notes": "Correct Discipline chip must be kept."
+    },
+    {
+      "key": "work_auth",
+      "selector": "#work-auth-control",
+      "committed": "Yes",
+      "required": true
+    }
+  ],
+  "footer_kind": "FINAL",
+  "step": "review",
+  "wizard_steps": ["contact", "experience", "education", "questions", "review"],
+  "spa_fingerprint": {
+    "selector": "[data-automation-id=\"reviewPage\"].active, #step-review.active",
+    "must_be_visible": true,
+    "progress_step": "review"
+  },
+  "listbox_must_be_closed": true,
+  "wrong_autofill_start": {
+    "last_name": "Test",
+    "major": "Arts-Other"
+  },
+  "failure_injectors": [
+    "how_heard_listbox_starts_open",
+    "fiber_stubborn_address_blur_clear",
+    "illinois_vs_idaho_promptOption",
+    "fos_wrong_chip_arts_other",
+    "work_auth_listbox_blocks_advance",
+    "validation_banner_on_incomplete_next",
+    "date_spin_skip_start_08_2017",
+    "dual_fos_major_vs_discipline",
+    "phone_country_vs_number",
+    "sticky_midwizard_submit_decoy",
+    "empty_cycle_next_noop_if_listbox_open",
+    "wrong_autofill_lastname_test_reclaim",
+    "hh_stays_open_while_state_filled"
+  ],
+  "notes": "Battle gym v1 cycle 2 — dummy values only. Empty load must fail gold (ADVANCE footer + empty/wrong required + open listbox). Full fill chain must reach Review FINAL with listboxes closed. Gold is honest: last name Dummy not Test; Major Science-Computer not Arts-Other; phone number is 405-555-0100 not a country code; Illinois commit does not close How-Heard."
+}

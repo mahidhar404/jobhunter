@@ -23,6 +23,7 @@ from button_gate import NAV_KINDS, gate_click  # noqa: E402
 from exp_workday_selectors import (  # noqa: E402
     CREATE_ACCOUNT_LINK_SELECTORS,
     SIGN_IN_WITH_EMAIL_SELECTORS,
+    _workday_prefer_stored_signin,
     workday_auth_gate_action,
 )
 
@@ -90,6 +91,25 @@ def test_app_form_not_sign_in_wall():
         email_count=1,
         password_count=0,
         appish_count=2,  # first name / resume
+    )
+
+
+def test_prefer_stored_suppressed_in_test_mode():
+    stored = {"email": "a@b.co", "password": "secret"}
+    assert not _workday_prefer_stored_signin({"test_mode": True}, stored=stored)
+    assert not _workday_prefer_stored_signin({"dummy": True}, stored=stored)
+    assert _workday_prefer_stored_signin(
+        {"test_mode": False, "dummy": False}, stored=stored
+    )
+
+
+def test_prefer_stored_suppressed_on_force_create():
+    stored = {"email": "a@b.co", "password": "secret"}
+    assert not _workday_prefer_stored_signin(
+        {"test_mode": False, "force_create_account": True}, stored=stored
+    )
+    assert not _workday_prefer_stored_signin(
+        {"test_mode": False, "auth_gate": {"forced": True}}, stored=stored
     )
 
 
@@ -241,6 +261,8 @@ def main() -> int:
     test_sign_in_to_your_account_email_only()
     test_sign_in_wall_with_password()
     test_app_form_not_sign_in_wall()
+    test_prefer_stored_suppressed_in_test_mode()
+    test_prefer_stored_suppressed_on_force_create()
     test_gate_action_create_form_wins()
     test_gate_action_reveal_email_when_hidden()
     test_gate_action_signin_only_no_stored_switches_to_create()

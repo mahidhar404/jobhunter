@@ -3,5 +3,7 @@
   "platform": "generic",
   "fail_class": "cross_fill_accommodations",
   "playbook": "radio",
-  "description": "Accommodations radio vs marketing consent checkbox — classify_field must not cross-fill."
+  "description": "Accommodations radio vs marketing consent checkbox \u2014 classify_field must not cross-fill.",
+  "fidelity": "medium",
+  "live_signoff": false
 }

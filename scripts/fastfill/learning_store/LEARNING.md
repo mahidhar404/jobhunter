@@ -76,4 +76,3 @@ skyvern_runtime/venv/bin/python scripts/fastfill/fast_fill.py URL --headless \
 - Policy facts: `../learning.py` + `learned_fields.json`
 - Replay cache: `../record_replay.py` + `replay_cache.json`
 - Attempt / Fixer: `../field_attempt_log.py`
-- Corpus mining (offline): `../offline/build_corpus.py` — separate; type labels only

@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-08-13T13:34Z",
+  "out_dir": "skyvern_runtime/real_job_results/nxp_reliability_gate_20260813T1154Z",
+  "pass": false,
+  "confidence_lane": "live_workday_artifact",
+  "gym_pass": null,
+  "live_pass": false,
+  "thrash_rewrites": 0,
+  "false_incomplete": 0,
+  "wrong_values": 0,
+  "wrong_value_details": [],
+  "reached_review": false,
+  "ready_for_review": false,
+  "can_claim_ready": false,
+  "may_enter_review_hold": false,
+  "pages_completed": [
+    {
+      "name": "unknown",
+      "pass": false,
+      "reason": "stopped_at_unknown"
+    }
+  ],
+  "verdict": "FAIL",
+  "filled_count": 40,
+  "leftover_count": 46,
+  "invented_leftover_count": 0
+}

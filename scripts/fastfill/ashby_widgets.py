@@ -1160,6 +1160,15 @@ async def list_ashby_field_entries(page) -> list[dict[str, Any]]:
       ).trim().slice(0, 120),
       checked: !!r.checked,
     }));
+    const roleRadios = Array.from(el.querySelectorAll('[role=radio]')).map((r) => ({
+      id: r.id || '',
+      name: r.getAttribute('name') || r.getAttribute('aria-label') || '',
+      opt: (
+        (r.innerText || r.textContent || r.getAttribute('aria-label') || '')
+      ).trim().slice(0, 120),
+      checked: r.getAttribute('aria-checked') === 'true',
+      ariaChecked: r.getAttribute('aria-checked') || '',
+    }));
     const checks = Array.from(el.querySelectorAll('input[type=checkbox]')).map((c) => ({
       id: c.id || '',
       name: c.name || '',
@@ -1208,6 +1217,7 @@ async def list_ashby_field_entries(page) -> list[dict[str, Any]]:
       yesBtn,
       yesnoSelected,
       radios,
+      roleRadios,
       checks,
       hasText: !!text,
       textName: text ? (text.name || text.id || '') : '',
@@ -1568,6 +1578,75 @@ def _ashby_yesno_default_for_label(label: str, values: dict | None = None) -> bo
     return None
 
 
+_SCREENING_STRONG_RE = re.compile(
+    r"fluent|native|full[\s-]*professional|expert|advanced|extensive|"
+    r"production|deployed|professional\s+experience|highly\s+proficient|"
+    r"designed\s+and\s+(built|deployed)|significantly|ship(?:ping|ped)?",
+    re.I,
+)
+
+
+def is_terms_consent_label(label: str) -> bool:
+    """True for TERMS_CONSENT (dummy-yes) — never marketing opt-in."""
+    low = (label or "").lower().strip()
+    if re.search(
+        r"marketing|newsletter|sms|promotional|talent\s*community|opt[\s_-]*in",
+        low,
+    ):
+        return False
+    if re.match(r"consent\s*\*?$", low):
+        return True
+    if re.search(
+        r"i\s+(agree|consent)|terms\s*(and|&)\s*conditions|"
+        r"privacy\s*(policy|notice)|data\s+privacy|data[\s_-]*consent",
+        low,
+    ):
+        return True
+    return False
+
+
+def ashby_screening_dummy_answer(label: str, values: dict | None = None) -> str:
+    """One dummy token per Ashby screening group. Never invents EEO."""
+    low = (label or "").lower()
+    if re.search(r"gender|race|ethnic|hispanic|veteran|disabilit|lgbtq", low):
+        return ""
+    vals = values or {}
+    if is_terms_consent_label(label):
+        return str(vals.get(TERMS_CONSENT) or "Yes")
+    if re.search(r"english|proficiency|language\s+(skill|level)", low):
+        return "Fluent"
+    if re.search(r"production", low):
+        return "production"
+    if re.search(
+        r"machine learning|\bml\b|\bai\b|enjoy most|best describes|best reflects",
+        low,
+    ):
+        return "production"
+    return "Yes"
+
+
+def entry_radios_unanswered(entry: dict | None) -> bool:
+    """True when this field-entry's native / role radios have no selection."""
+    if not isinstance(entry, dict):
+        return False
+    radios = list(entry.get("radios") or []) + list(entry.get("roleRadios") or [])
+    if not radios:
+        return False
+    return not any(
+        (isinstance(r, dict) and (r.get("checked") or str(r.get("ariaChecked") or "").lower() == "true"))
+        for r in radios
+    )
+
+
+def entry_checks_unanswered(entry: dict | None) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    checks = entry.get("checks") or []
+    if not checks:
+        return False
+    return not any(c.get("checked") for c in checks if isinstance(c, dict))
+
+
 async def click_ashby_choice_option(
     page,
     label: str,
@@ -1578,6 +1657,8 @@ async def click_ashby_choice_option(
     """Click Yes/No, rating radio, or checkbox option under an Ashby field label.
 
     Used by Flash leftovers when selector is missing (silent miss recovery).
+    Always scoped to ONE labeled field-entry — never treats a sibling radio
+    group as already done.
     """
     from fill_step_log import note_step
 
@@ -1585,11 +1666,14 @@ async def click_ashby_choice_option(
     if not lab:
         return {"ok": False, "reason": "no_label"}
     want_raw = (value or "").strip()
-    # Prefer Yes/No when value is yes/no-ish
+    # Prefer Yes/No when value is yes/no-ish — fall through on miss so
+    # screening MCQs ("Yes I have production…") still click a radio in-group.
     if re.match(r"^(yes|no)\b", want_raw, re.I) or not want_raw:
         want = _want_yes(want_raw) if want_raw else _ashby_yesno_default_for_label(lab)
         if want is not None:
-            return await _click_yesno_in_entry(page, lab, want, report=report)
+            yn = await _click_yesno_in_entry(page, lab, want, report=report)
+            if yn.get("ok"):
+                return yn
 
     frag = re.escape(lab[:48])
     entry = page.locator(
@@ -1599,7 +1683,7 @@ async def click_ashby_choice_option(
         return {"ok": False, "reason": "entry_not_found"}
 
     # Rating / radio / checkbox option by visible text
-    token = want_raw[:60] if want_raw else ""
+    token = want_raw[:60] if want_raw else ashby_screening_dummy_answer(lab)[:60]
     # Impression/rating scales: prefer N/A or mid option when Flash returns prose
     low_lab = lab.lower()
     if re.search(r"rate|impression|scale|how would you", low_lab):
@@ -1688,148 +1772,192 @@ async def click_ashby_choice_option(
         except Exception as e:
             return {"ok": False, "reason": "option_click_failed", "error": str(e)[:100]}
 
-    # Checkbox groups (preferred location / why interested): match Flash token
-    # when present — never always-first (ATS2-006 / ATS-018 residual).
-    if re.search(
-        r"preferred|location|why (are you|do you)|interested|which of the following",
-        low_lab,
-    ):
-        # Radio single-select (e.g. "Which location are you applying for? Select
-        # one …"). These reach here with a free-text LLM token that rarely matches
-        # an option verbatim; when no token match exists, pick the first concrete
-        # option so a required single-select is answered rather than left blank
-        # (dummy-only, never-submit — the human reviewer corrects the choice).
-        radios = entry.locator("input[type=radio]:not(:disabled)")
-        try:
-            rn = await radios.count()
-        except Exception:
-            rn = 0
-        if rn > 0:
-            async def _radio_label(rloc) -> str:
-                try:
-                    rid = await rloc.get_attribute("id")
-                    if rid:
-                        lab_el = entry.locator(f'label[for="{rid}"]').first
-                        if await lab_el.count():
-                            return (await lab_el.inner_text() or "").strip()
-                except Exception:
-                    pass
-                try:
-                    return (
-                        await rloc.evaluate(
-                            "(el) => { const p = el.closest('label') "
-                            "|| el.parentElement; return (p && p.innerText) || ''; }"
-                        )
-                        or ""
-                    ).strip()
-                except Exception:
-                    return ""
-
-            chosen = None
-            picked_label = ""
-            if token:
-                for i in range(min(rn, 24)):
-                    r = radios.nth(i)
-                    lt = await _radio_label(r)
-                    if lt and token.lower() in lt.lower():
-                        chosen, picked_label = r, lt[:80]
-                        break
-            if chosen is None:
-                chosen = radios.first
-                picked_label = (await _radio_label(chosen))[:80] or "first_option"
+    # Every required radio GROUP in this labeled entry gets one pick.
+    # Do NOT gate on "which of the following" — screening MCQs
+    # (production / English / ML / enjoy-most) were skipped that way.
+    radios = entry.locator("input[type=radio]:not(:disabled), [role=radio]")
+    try:
+        rn = await radios.count()
+    except Exception:
+        rn = 0
+    if rn > 0:
+        async def _radio_label(rloc) -> str:
             try:
-                if not await chosen.is_checked():
-                    await chosen.check(timeout=2000)
-                verified = bool(await chosen.is_checked())
-                note_step(
-                    report,
-                    action="click_choice",
-                    label=lab[:80],
-                    after=picked_label[:40],
-                    via="ashby_choice_flash",
-                    reason="radio_single_select",
-                )
-                return {
-                    "ok": verified,
-                    "verified": verified,
-                    "picked": picked_label,
-                    "mode": "radio",
-                    "reason": None if verified else "radio_not_committed",
-                }
-            except Exception as e:
-                return {"ok": False, "reason": "radio_failed", "error": str(e)[:100]}
+                rid = await rloc.get_attribute("id")
+                if rid:
+                    lab_el = entry.locator(f'label[for="{rid}"]').first
+                    if await lab_el.count():
+                        return (await lab_el.inner_text() or "").strip()
+            except Exception:
+                pass
+            try:
+                return (
+                    await rloc.evaluate(
+                        "(el) => { const p = el.closest('label') "
+                        "|| el.parentElement; return (p && (p.innerText "
+                        "|| p.textContent)) || el.getAttribute('aria-label') "
+                        "|| el.innerText || ''; }"
+                    )
+                    or ""
+                ).strip()
+            except Exception:
+                return ""
 
-        boxes = entry.locator("input[type=checkbox]:not(:disabled)")
+        scored: list[tuple[int, object, str]] = []
+        dummy_tok = (token or ashby_screening_dummy_answer(lab) or "").lower()
+        for i in range(min(rn, 24)):
+            r = radios.nth(i)
+            lt = await _radio_label(r)
+            if not lt:
+                continue
+            score = 0
+            low_opt = lt.lower()
+            if dummy_tok and dummy_tok in low_opt:
+                score += 80
+            if token and token.lower() in low_opt:
+                score += 70
+            if _SCREENING_STRONG_RE.search(lt):
+                score += 40
+            scored.append((score, r, lt[:80]))
+        chosen = None
+        picked_label = ""
+        if scored:
+            scored.sort(key=lambda x: x[0], reverse=True)
+            if scored[0][0] > 0:
+                _, chosen, picked_label = scored[0]
+            else:
+                _, chosen, picked_label = scored[0]
+                picked_label = picked_label or "first_option"
+        if chosen is None:
+            chosen = radios.first
+            picked_label = (await _radio_label(chosen))[:80] or "first_option"
         try:
-            n = await boxes.count()
-            if n > 0:
-                box = None
-                picked_label = "first_checkbox"
-                if token:
-                    # Prefer checkbox whose adjacent label contains the token
-                    for i in range(min(n, 24)):
-                        b = boxes.nth(i)
-                        try:
-                            lab_txt = ""
-                            try:
-                                lid = await b.get_attribute("id")
-                                if lid:
-                                    lab_el = entry.locator(f'label[for="{lid}"]').first
-                                    if await lab_el.count():
-                                        lab_txt = (await lab_el.inner_text() or "").strip()
-                            except Exception:
-                                pass
-                            if not lab_txt:
-                                try:
-                                    lab_txt = (
-                                        await b.evaluate(
-                                            """(el) => {
-                                              const p = el.closest('label')
-                                                || el.parentElement;
-                                              return (p && p.innerText) || '';
-                                            }"""
-                                        )
-                                        or ""
-                                    ).strip()
-                                except Exception:
-                                    lab_txt = ""
-                            if token.lower() in lab_txt.lower():
-                                box = b
-                                picked_label = lab_txt[:80] or token[:80]
-                                break
-                        except Exception:
-                            continue
-                if box is None and n == 1:
-                    box = boxes.first
-                    picked_label = "sole_checkbox"
-                if box is None and token:
-                    return {
-                        "ok": False,
-                        "reason": "checkbox_token_not_found",
-                        "token": token[:60],
-                    }
-                if box is None:
-                    return {"ok": False, "reason": "checkbox_ambiguous_no_token"}
-                if not await box.is_checked():
-                    await box.check(timeout=2000)
-                verified = bool(await box.is_checked())
-                note_step(
-                    report,
-                    action="click_choice",
-                    label=lab[:80],
-                    after=picked_label[:40],
-                    via="ashby_choice_flash",
-                    reason="checkbox_group",
-                )
-                return {
-                    "ok": verified,
-                    "verified": verified,
-                    "picked": picked_label[:80],
-                    "mode": "checkbox",
-                    "reason": None if verified else "checkbox_not_checked",
-                }
+            already = False
+            try:
+                already = bool(await chosen.is_checked())
+            except Exception:
+                aria = (await chosen.get_attribute("aria-checked") or "").lower()
+                already = aria in ("true", "1")
+            if not already:
+                try:
+                    await chosen.check(timeout=2000)
+                except Exception:
+                    await chosen.click(timeout=2000)
+            verified = False
+            try:
+                verified = bool(await chosen.is_checked())
+            except Exception:
+                aria = (await chosen.get_attribute("aria-checked") or "").lower()
+                verified = aria in ("true", "1")
+            if not verified:
+                chk = entry.locator(
+                    "input[type=radio]:checked, [role=radio][aria-checked='true']"
+                ).first
+                verified = bool(await chk.count())
+            note_step(
+                report,
+                action="click_choice",
+                label=lab[:80],
+                after=picked_label[:40],
+                via="ashby_choice_flash",
+                reason="radio_single_select",
+            )
+            return {
+                "ok": verified,
+                "verified": verified,
+                "picked": picked_label,
+                "mode": "radio",
+                "reason": None if verified else "radio_not_committed",
+            }
         except Exception as e:
-            return {"ok": False, "reason": "checkbox_failed", "error": str(e)[:100]}
+            return {"ok": False, "reason": "radio_failed", "error": str(e)[:100]}
+
+    # TERMS_CONSENT dummy-yes: check the consent box in this entry only.
+    # Never click Submit Application.
+    boxes = entry.locator("input[type=checkbox]:not(:disabled)")
+    try:
+        n = await boxes.count()
+        if n > 0 and (
+            is_terms_consent_label(lab)
+            or re.search(
+                r"preferred|location|why (are you|do you)|interested|"
+                r"which of the following|consent",
+                low_lab,
+            )
+        ):
+            box = None
+            picked_label = "first_checkbox"
+            consentish = is_terms_consent_label(lab)
+            if consentish and n == 1:
+                box = boxes.first
+                picked_label = "consent"
+            elif token:
+                for i in range(min(n, 24)):
+                    b = boxes.nth(i)
+                    try:
+                        lab_txt = ""
+                        try:
+                            lid = await b.get_attribute("id")
+                            if lid:
+                                lab_el = entry.locator(f'label[for="{lid}"]').first
+                                if await lab_el.count():
+                                    lab_txt = (await lab_el.inner_text() or "").strip()
+                        except Exception:
+                            pass
+                        if not lab_txt:
+                            try:
+                                lab_txt = (
+                                    await b.evaluate(
+                                        """(el) => {
+                                          const p = el.closest('label')
+                                            || el.parentElement;
+                                          return (p && p.innerText) || '';
+                                        }"""
+                                    )
+                                    or ""
+                                ).strip()
+                            except Exception:
+                                lab_txt = ""
+                        if token.lower() in lab_txt.lower() or (
+                            consentish
+                            and re.search(r"agree|consent|accept", lab_txt, re.I)
+                        ):
+                            box = b
+                            picked_label = lab_txt[:80] or token[:80]
+                            break
+                    except Exception:
+                        continue
+            if box is None and n == 1:
+                box = boxes.first
+                picked_label = "sole_checkbox"
+            if box is None and token and not consentish:
+                return {
+                    "ok": False,
+                    "reason": "checkbox_token_not_found",
+                    "token": token[:60],
+                }
+            if box is None:
+                return {"ok": False, "reason": "checkbox_ambiguous_no_token"}
+            if not await box.is_checked():
+                await box.check(timeout=2000)
+            verified = bool(await box.is_checked())
+            note_step(
+                report,
+                action="click_choice",
+                label=lab[:80],
+                after=picked_label[:40],
+                via="ashby_choice_flash",
+                reason="checkbox_group",
+            )
+            return {
+                "ok": verified,
+                "verified": verified,
+                "picked": picked_label[:80],
+                "mode": "checkbox",
+                "reason": None if verified else "checkbox_not_checked",
+            }
+    except Exception as e:
+        return {"ok": False, "reason": "checkbox_failed", "error": str(e)[:100]}
 
     return {"ok": False, "reason": "no_matching_option"}
 
@@ -2404,39 +2532,74 @@ async def fill_ashby_widgets(page, values: dict, *, report: dict | None = None) 
             "label": label,
             "name": entry.get("path") or "",
             "id": entry.get("path") or "",
-            "type": "radio_group" if (entry.get("radios") or entry.get("yesno")) else "text",
+            "type": (
+                "radio_group"
+                if (
+                    entry.get("radios")
+                    or entry.get("roleRadios")
+                    or entry.get("yesno")
+                )
+                else "checkbox"
+                if entry.get("checks")
+                else "text"
+            ),
             "placeholder": "",
             "aria_label": "",
             "autocomplete": "",
         }
         ftype, layer = classify_field(fake)
         if not ftype:
-            # Unclassified unanswered choice → Flash leftover (never silent skip)
-            unanswered = (
-                (entry.get("yesno") and not entry.get("yesnoSelected"))
-                or (
-                    entry.get("radios")
-                    and not any(
-                        r.get("checked")
-                        for r in (entry.get("radios") or [])
-                        if isinstance(r, dict)
-                    )
+            # Unclassified screening radios / consent: click THIS entry only
+            # (never treat one sibling group as all screening done).
+            if entry_radios_unanswered(entry):
+                want = ashby_screening_dummy_answer(label, values)
+                result = await click_ashby_choice_option(
+                    page, label, want, report=report
                 )
-            )
-            if unanswered:
+                ok = bool(result.get("ok"))
                 filled.append(
                     {
                         "via": "ashby_widgets",
                         "layer": "ashby",
                         "type": None,
                         "label": label[:80],
-                        "mode": "yesno" if entry.get("yesno") else "radio",
-                        "ok": False,
-                        "verified": False,
-                        "reason": "unclassified_unanswered_choice",
-                        "flash_candidate": True,
+                        "mode": result.get("mode") or "radio",
+                        "ok": ok,
+                        "verified": ok,
+                        "value": want[:80],
+                        "picked": result.get("picked"),
+                        "readback": result.get("picked") or "",
+                        "reason": None if ok else (
+                            result.get("reason") or "unclassified_unanswered_choice"
+                        ),
+                        "flash_candidate": not ok,
                     }
                 )
+                continue
+            if entry_checks_unanswered(entry) and is_terms_consent_label(label):
+                want = str(values.get(TERMS_CONSENT) or "Yes")
+                result = await click_ashby_choice_option(
+                    page, label, want, report=report
+                )
+                ok = bool(result.get("ok"))
+                filled.append(
+                    {
+                        "via": "ashby_widgets",
+                        "layer": "ashby",
+                        "type": TERMS_CONSENT,
+                        "label": label[:80],
+                        "mode": "checkbox",
+                        "ok": ok,
+                        "verified": ok,
+                        "value": want,
+                        "picked": result.get("picked"),
+                        "reason": None if ok else (
+                            result.get("reason") or "consent_not_checked"
+                        ),
+                        "flash_candidate": not ok,
+                    }
+                )
+                continue
             continue
 
         # Text / interest / salary / URLs inside Ashby blocks (extract may still
@@ -2534,6 +2697,33 @@ async def fill_ashby_widgets(page, values: dict, *, report: dict | None = None) 
             continue
 
         if ftype not in _ASHBY_CHOICE_TYPES:
+            # INTEREST / novel screening classified as text — still click the
+            # radio GROUP in this entry (one pick; siblings stay independent).
+            if entry_radios_unanswered(entry):
+                want = ashby_screening_dummy_answer(label, values) or str(
+                    values.get(ftype) or "Yes"
+                )
+                result = await click_ashby_choice_option(
+                    page, label, want, report=report
+                )
+                ok = bool(result.get("ok"))
+                filled.append(
+                    {
+                        "via": "ashby_widgets",
+                        "layer": layer or "ashby",
+                        "type": ftype,
+                        "label": label[:80],
+                        "mode": result.get("mode") or "radio",
+                        "ok": ok,
+                        "verified": ok,
+                        "value": want[:80],
+                        "picked": result.get("picked"),
+                        "reason": None if ok else (
+                            result.get("reason") or "screening_radio_click_failed"
+                        ),
+                        "flash_candidate": not ok,
+                    }
+                )
             continue
         if ftype in seen_types and ftype != TERMS_CONSENT:
             continue
@@ -2715,6 +2905,14 @@ async def fill_ashby_widgets(page, values: dict, *, report: dict | None = None) 
             }
         )
 
+    try:
+        from fill_contract import finalize_widget_rows
+
+        filled = await finalize_widget_rows(
+            page, report, filled, via="ashby_widgets"
+        )
+    except Exception:
+        pass
     return filled
 
 

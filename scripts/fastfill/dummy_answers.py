@@ -266,6 +266,19 @@ GH_DEGREE_OPTIONS = [
     "Doctorate",
 ]
 
+# Workday often truncates the committed chip to "Master". Treat these as the
+# same dummy Master's intent so lock_skip is already_correct, not STUCK.
+DEGREE_ALIASES = (
+    "Master's Degree",
+    "Masters Degree",
+    "Master's",
+    "Masters",
+    "Master",
+    "Master of Science",
+    "M.S.",
+    "MS",
+)
+
 
 def answer_for(field_type: str, default: str = "") -> str:
     """Lookup preferred deterministic answer for a canonical field type."""

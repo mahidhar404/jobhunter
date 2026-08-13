@@ -11,13 +11,18 @@ Never CAPTCHA / never submit.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 REASON = "unanswered_choice_group"
 
 
 def leftover_from_ashby_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
-    """Pure: Ashby field-entry → leftover if choice/text still unanswered."""
+    """Pure: Ashby field-entry → leftover if choice/text still unanswered.
+
+    One leftover per field-entry (radio GROUP), never collapsed with siblings.
+    Consent* checkboxes use TERMS_CONSENT dummy-yes; marketing stays unchecked.
+    """
     if not isinstance(entry, dict):
         return None
     label = str(entry.get("label") or "").strip()
@@ -36,9 +41,12 @@ def leftover_from_ashby_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
             "mode": "yesno",
         }
 
-    radios = entry.get("radios") or []
-    if radios and not any(r.get("checked") for r in radios if isinstance(r, dict)):
-        # Consent-only checkbox entries without radios are handled elsewhere
+    radios = list(entry.get("radios") or []) + list(entry.get("roleRadios") or [])
+    if radios and not any(
+        r.get("checked") or str(r.get("ariaChecked") or "").lower() == "true"
+        for r in radios
+        if isinstance(r, dict)
+    ):
         return {
             "label": label[:120],
             "type": None,
@@ -51,6 +59,50 @@ def leftover_from_ashby_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
             "platform": "ashby",
             "mode": "radio",
         }
+
+    checks = entry.get("checks") or []
+    if checks and not any(c.get("checked") for c in checks if isinstance(c, dict)):
+        try:
+            from ashby_widgets import is_terms_consent_label
+            from field_map import MARKETING_CONSENT, TERMS_CONSENT, classify_field
+        except Exception:
+            is_terms_consent_label = None  # type: ignore[assignment]
+            TERMS_CONSENT = "TERMS_CONSENT"  # type: ignore[assignment]
+            MARKETING_CONSENT = "MARKETING_CONSENT"  # type: ignore[assignment]
+            classify_field = None  # type: ignore[assignment]
+        ftype = None
+        if classify_field is not None:
+            ftype, _ = classify_field(
+                {
+                    "label": label,
+                    "name": "",
+                    "id": "",
+                    "type": "checkbox",
+                    "placeholder": "",
+                    "aria_label": "",
+                    "autocomplete": "",
+                }
+            )
+        if ftype == MARKETING_CONSENT:
+            return None
+        consent = ftype == TERMS_CONSENT or (
+            is_terms_consent_label is not None and is_terms_consent_label(label)
+        )
+        if consent or ("*" in label and re.search(r"consent|i agree|terms", label, re.I)):
+            return {
+                "label": label[:120],
+                "type": TERMS_CONSENT,
+                "name": (
+                    checks[0].get("id") if isinstance(checks[0], dict) else ""
+                )
+                or entry.get("path")
+                or "",
+                "reason": REASON,
+                "flash_candidate": True,
+                "via": "enumerate_unanswered_choices",
+                "platform": "ashby",
+                "mode": "checkbox",
+            }
 
     # Required empty text (* in label) — only when hasText and empty
     lab_star = "*" in label

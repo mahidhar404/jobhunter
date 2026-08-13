@@ -1,0 +1,8 @@
+{
+  "id": "workday_education_fos_chip",
+  "platform": "workday",
+  "family": "education_field_of_study",
+  "description": "NXP-shaped Education FoS: Science-Computer chip committed from resume autofill \u2192 verify-before-touch skip, zero thrash on second pass.",
+  "fidelity": "low",
+  "live_signoff": false
+}

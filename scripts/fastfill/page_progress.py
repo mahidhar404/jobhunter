@@ -244,6 +244,151 @@ def note_advance_result(
     }
 
 
+# Budgeted fail-closed state machine — stops empty settle/advance cycling.
+# Env overrides: FASTFILL_MAX_SETTLES, FASTFILL_MAX_ADVANCES, FASTFILL_MAX_EMPTY_CYCLES.
+_DEFAULT_MAX_SETTLES = int(os.environ.get("FASTFILL_MAX_SETTLES") or "8")
+_DEFAULT_MAX_ADVANCES = int(os.environ.get("FASTFILL_MAX_ADVANCES") or "4")
+_DEFAULT_MAX_EMPTY_CYCLES = int(os.environ.get("FASTFILL_MAX_EMPTY_CYCLES") or "2")
+
+
+def budgeted_progress_decision(
+    *,
+    settle_count: int = 0,
+    advance_count: int = 0,
+    empty_cycle_count: int = 0,
+    stuck_on_same_page: bool = False,
+    filled_this_cycle: int = 0,
+    advanced_this_cycle: bool = False,
+    max_settles: int | None = None,
+    max_advances: int | None = None,
+    max_empty_cycles: int | None = None,
+) -> dict[str, Any]:
+    """Decide CONTINUE vs STOP for multipage fill loops (fail-closed).
+
+    An *empty cycle* is a settle/refill pass that neither fills a field nor
+    advances the step fingerprint. Budget exhaustion or ``stuck_on_same_page``
+    must STOP — never keep cycling through pages doing nothing.
+    """
+    ms = max(1, int(max_settles if max_settles is not None else _DEFAULT_MAX_SETTLES))
+    ma = max(1, int(max_advances if max_advances is not None else _DEFAULT_MAX_ADVANCES))
+    me = max(1, int(max_empty_cycles if max_empty_cycles is not None else _DEFAULT_MAX_EMPTY_CYCLES))
+    settles = max(0, int(settle_count))
+    advances = max(0, int(advance_count))
+    empties = max(0, int(empty_cycle_count))
+    is_empty_pass = int(filled_this_cycle or 0) <= 0 and not advanced_this_cycle
+
+    reason = ""
+    action = "CONTINUE"
+    if stuck_on_same_page:
+        action = "STOP"
+        reason = "stuck_on_same_page"
+    elif settles >= ms:
+        action = "STOP"
+        reason = "max_settles"
+    elif advances >= ma:
+        action = "STOP"
+        reason = "max_advances"
+    elif empties >= me:
+        action = "STOP"
+        reason = "empty_cycle"
+    return {
+        "action": action,
+        "reason": reason or None,
+        "settle_count": settles,
+        "advance_count": advances,
+        "empty_cycle_count": empties,
+        "is_empty_pass": is_empty_pass,
+        "stuck_on_same_page": bool(stuck_on_same_page),
+        "budgets": {
+            "max_settles": ms,
+            "max_advances": ma,
+            "max_empty_cycles": me,
+        },
+    }
+
+
+def note_settle_cycle(
+    report: dict,
+    *,
+    filled_this_cycle: int = 0,
+    advanced_this_cycle: bool = False,
+    stuck_on_same_page: bool | None = None,
+) -> dict[str, Any]:
+    """Increment settle/empty budgets on ``report`` and return STOP/CONTINUE."""
+    report["settle_count"] = int(report.get("settle_count") or 0) + 1
+    filled_n = int(filled_this_cycle or 0)
+    moved = bool(advanced_this_cycle)
+    if filled_n <= 0 and not moved:
+        report["empty_cycle_count"] = int(report.get("empty_cycle_count") or 0) + 1
+    stuck = (
+        bool(stuck_on_same_page)
+        if stuck_on_same_page is not None
+        else bool(report.get("stuck_on_same_page"))
+    )
+    decision = budgeted_progress_decision(
+        settle_count=int(report.get("settle_count") or 0),
+        advance_count=int(report.get("advanced_count") or 0),
+        empty_cycle_count=int(report.get("empty_cycle_count") or 0),
+        stuck_on_same_page=stuck,
+        filled_this_cycle=filled_n,
+        advanced_this_cycle=moved,
+    )
+    report["progress_decision"] = decision
+    if decision["action"] == "STOP":
+        report["progress_stop"] = True
+        report["progress_stop_reason"] = decision["reason"]
+        if report.get("verdict") == "SUCCESS":
+            report["verdict"] = "FAIL"
+            report.setdefault("verdict_reason", decision["reason"] or "progress_budget_stop")
+    else:
+        report.setdefault("progress_stop", False)
+    try:
+        from flight_recorder import note_flight
+
+        note_flight(
+            report,
+            "settle",
+            action=str(decision.get("action") or "CONTINUE"),
+            layer="page_progress",
+            advance_decision=str(decision.get("action") or ""),
+            advance_reason=str(decision.get("reason") or "") or None,
+            gate_kind="budgeted_progress",
+            gate_result=str(decision.get("action") or ""),
+            gate_reason=str(decision.get("reason") or "") or None,
+            extra={
+                "settle_count": decision.get("settle_count"),
+                "empty_cycle_count": decision.get("empty_cycle_count"),
+                "filled_this_cycle": filled_n,
+                "advanced_this_cycle": moved,
+            },
+        )
+    except Exception:
+        pass
+    return decision
+
+
+def note_workday_phase_cycle(
+    report: dict,
+    phase: dict | None = None,
+    *,
+    advanced: bool = False,
+) -> dict[str, Any]:
+    """Increment empty_cycle_count for a Workday phase settle/advance attempt."""
+    filled_n = 0
+    if isinstance(phase, dict):
+        filled_n = sum(1 for r in (phase.get("filled") or []) if isinstance(r, dict))
+    stuck = bool(
+        report.get("stuck_on_same_page")
+        or (phase or {}).get("stuck_on_same_page")
+    )
+    return note_settle_cycle(
+        report,
+        filled_this_cycle=filled_n,
+        advanced_this_cycle=bool(advanced),
+        stuck_on_same_page=stuck,
+    )
+
+
 READY_BLOCKING_BLOCKERS = frozenset({
     "auth_wall",
     "page_incomplete",
@@ -299,12 +444,125 @@ def outstanding_required_blanks(report: dict) -> list[dict]:
     return blanks
 
 
+_VISION_NAME_FIRST_RE = re.compile(
+    r"\b(?:first[\s_-]*name|given[\s_-]*name|forename)\b", re.I
+)
+_VISION_NAME_LAST_RE = re.compile(
+    r"\b(?:last[\s_-]*name|family[\s_-]*name|surname)\b", re.I
+)
+_VISION_HOW_HEARD_RE = re.compile(
+    r"how\s+did\s+you\s+hear|how[\s_-]*heard|hear\s+about\s+us", re.I
+)
+_VISION_JOB_TITLE_RE = re.compile(r"\bjob[\s_-]*title\b", re.I)
+_VISION_COMPANY_RE = re.compile(r"\bcompany(?:\s*name)?\b", re.I)
+_VISION_EXP_LOCATION_RE = re.compile(r"\blocation\b", re.I)
+
+
+def _vision_empty_covered_by_filled(empty: dict, report: dict) -> bool:
+    """True when field_is_done already holds for this vision-empty label."""
+    if not isinstance(empty, dict):
+        return False
+    label = str(empty.get("label") or "").strip()
+    if not label or label.lower().startswith("judge_error:"):
+        return False
+    lab = label.lower()
+    try:
+        from field_done import field_is_done_from_row
+    except Exception:
+        return False
+    for row in report.get("filled") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            if not field_is_done_from_row(row).ok:
+                continue
+        except Exception:
+            continue
+        ftype = str(row.get("type") or "").upper()
+        row_lab = str(row.get("label") or "").strip().lower()
+        aid = str(row.get("automation_id") or "").lower()
+        if row_lab and (row_lab == lab or row_lab in lab or lab in row_lab):
+            return True
+        if ftype in ("NAME_FIRST", "FIRST_NAME") and _VISION_NAME_FIRST_RE.search(label):
+            return True
+        if ftype in ("NAME_LAST", "LAST_NAME") and _VISION_NAME_LAST_RE.search(label):
+            return True
+        if ftype in ("HOW_HEARD",) and _VISION_HOW_HEARD_RE.search(label):
+            return True
+        if ftype in ("EXPERIENCE_TITLE",) and _VISION_JOB_TITLE_RE.search(label):
+            return True
+        if ftype in ("EXPERIENCE_COMPANY",) and _VISION_COMPANY_RE.search(label):
+            return True
+        if ftype in ("EXPERIENCE_LOCATION",) and _VISION_EXP_LOCATION_RE.search(label):
+            return True
+        if ftype in ("NAME_FULL",) and (
+            "full name" in lab or lab in ("name", "legal name")
+        ):
+            return True
+        compact_lab = re.sub(r"[^a-z0-9]", "", lab)
+        compact_type = re.sub(r"[^a-z0-9]", "", ftype.lower())
+        compact_aid = re.sub(r"[^a-z0-9]", "", aid)
+        if len(compact_lab) >= 8:
+            if compact_type and (compact_type in compact_lab or compact_lab in compact_type):
+                return True
+            if compact_aid and (compact_aid in compact_lab or compact_lab in compact_aid):
+                return True
+    return False
+
+
+def reconcile_vision_with_done(report: dict) -> dict:
+    """Drop vision empties that field_is_done already covers; do not veto pack fills.
+
+    Mutates ``vision_judge_live``. Does not delete the judge. FAIL_BLANK that
+    only listed already-verified First/Last/How-Heard becomes COMPLETE.
+    ``judge_error`` / BLOCKED / leftover real empties stay fail-closed.
+    """
+    vj = report.get("vision_judge_live")
+    if not isinstance(vj, dict):
+        return report
+    empties = [e for e in (vj.get("empty_fields") or []) if isinstance(e, dict)]
+    kept: list[dict] = []
+    dropped = 0
+    for e in empties:
+        if e.get("required") is False:
+            dropped += 1
+            continue
+        if _vision_empty_covered_by_filled(e, report):
+            dropped += 1
+            continue
+        kept.append(e)
+    if dropped:
+        vj["empty_fields"] = kept
+        vj["vision_empties_ignored_done"] = dropped
+    verdict = str(vj.get("verdict") or "").strip().upper()
+    if verdict == "BLOCKED" or vj.get("blocker"):
+        return report
+    if kept:
+        return report
+    if dropped and verdict in ("FAIL_BLANK", "AMBIGUOUS", "", "COMPLETE"):
+        vj["complete"] = True
+        vj["verdict"] = "COMPLETE"
+        if str(vj.get("confidence") or "").lower() == "ambiguous":
+            vj["confidence"] = "high"
+        note = "vision empties ignored: field_is_done already true"
+        vj["notes"] = f"{(vj.get('notes') or '').strip()} {note}".strip()
+        if report.get("vision_incomplete"):
+            report["vision_incomplete"] = False
+        if report.get("blocker") == "vision_incomplete":
+            report["blocker"] = None
+        if report.get("ready_claim_reason") == "vision_incomplete":
+            report.pop("ready_claim_reason", None)
+    return report
+
+
 def vision_blocks_ready(report: dict) -> bool:
     """True when vision_judge_live forbids Ready (fail-closed on absence).
 
     Ready requires a live ``vision_judge_live`` dict that is not incomplete /
     FAIL_BLANK / BLOCKED / AMBIGUOUS. Missing vision → blocks Ready.
+    Vision empties already covered by ``field_is_done`` do not veto.
     """
+    reconcile_vision_with_done(report)
     vj = report.get("vision_judge_live")
     if not isinstance(vj, dict):
         return True  # fail-closed: no Ready without vision after judge path
@@ -326,6 +584,7 @@ _WD_WIZARD_STEP_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("autofill", ("autofill", "autofill with resume")),
     ("my information", ("my information", "my info", "contact information")),
     ("my experience", ("my experience", "experience", "work experience")),
+    ("my education", ("my education", "education history")),
     (
         "application questions",
         ("application questions", "app questions", "questionnaire"),
@@ -755,6 +1014,10 @@ def can_claim_ready(report: dict) -> bool:
     True only when it is honest to set/keep ready_for_review — not merely
     because the browser was held open. Requires ``vision_judge_live`` present
     and not blocking (skill: Ready only with live judge complete).
+
+    Do not add a parallel oracle: completion uses ``field_done.filled_rows_honest``
+    (same SSoT as ``advance_page_if_ready``). ``vision_judge_live`` is an *input*
+    to this gate, not a second advance voter.
     """
     if report.get("verdict") == "FAIL":
         return False
@@ -787,6 +1050,8 @@ def can_claim_ready(report: dict) -> bool:
                 return False
     if report.get("gaps_block_ready"):
         return False
+    # Reconcile before vision_incomplete blocker — 0842Z names/HH were filled.
+    reconcile_vision_with_done(report)
     blocker = str(report.get("blocker") or "").strip()
     if blocker in READY_BLOCKING_BLOCKERS:
         return False
@@ -798,6 +1063,13 @@ def can_claim_ready(report: dict) -> bool:
         return False
     if _hard_non_essay_leftovers(report):
         return False
+    try:
+        from field_done import filled_rows_honest
+
+        if not filled_rows_honest(report):
+            return False
+    except Exception:
+        pass
     return True
 
 
@@ -869,6 +1141,8 @@ async def apply_live_vision_gate(page, report: dict) -> dict:
     result["never_submit"] = True
     result["submit_clicked"] = False
     report["vision_judge_live"] = result
+    reconcile_vision_with_done(report)
+    result = report.get("vision_judge_live") or result
 
     bad = (
         result.get("complete") is False
@@ -904,6 +1178,8 @@ def flash_attempt_failed(report: dict) -> bool:
     flash = report.get("flash") if isinstance(report.get("flash"), dict) else {}
     skipped = flash.get("skipped_reason")
     if skipped == "no_leftovers":
+        return False
+    if skipped in ("workday_two_phase", "workday", "workday_headed_until_review"):
         return False
     if skipped == "blocker":
         return True
@@ -1043,6 +1319,30 @@ def apply_progress_verdict_gates(report: dict) -> dict:
     if report.get("stuck_on_same_page") and report.get("verdict") == "SUCCESS":
         report["verdict"] = "FAIL"
         report.setdefault("verdict_reason", "stuck_on_same_page")
+
+    # Budgeted fail-closed: empty settle/advance cycling must never claim SUCCESS.
+    # Consult the decision even when note_settle_cycle was not the caller.
+    try:
+        decision = budgeted_progress_decision(
+            settle_count=int(report.get("settle_count") or 0),
+            advance_count=int(report.get("advanced_count") or 0),
+            empty_cycle_count=int(report.get("empty_cycle_count") or 0),
+            stuck_on_same_page=bool(report.get("stuck_on_same_page")),
+        )
+        report.setdefault("progress_decision", decision)
+        if decision.get("action") == "STOP":
+            report["progress_stop"] = True
+            report["progress_stop_reason"] = (
+                decision.get("reason") or report.get("progress_stop_reason")
+            )
+    except Exception:
+        pass
+    if report.get("progress_stop") and report.get("verdict") == "SUCCESS":
+        report["verdict"] = "FAIL"
+        report.setdefault(
+            "verdict_reason",
+            report.get("progress_stop_reason") or "progress_budget_stop",
+        )
 
     if flash_attempt_failed(report) and report.get("verdict") == "SUCCESS":
         report["verdict"] = "FAIL"

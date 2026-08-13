@@ -1,0 +1,9 @@
+{
+  "id": "workday_wrong_autofill_relock",
+  "platform": "workday",
+  "family": "education_field_of_study",
+  "fail_class": "wrong_autofill_relock",
+  "description": "Arts-Other chip from resume autofill with CS intent \u2014 must reclaim Science-Computer, not field-lock skip.",
+  "fidelity": "medium",
+  "live_signoff": false
+}

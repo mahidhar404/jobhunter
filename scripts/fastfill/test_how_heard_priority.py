@@ -88,8 +88,26 @@ def test_gh_aliases_for_uses_priority() -> None:
     assert "Other" in cands
 
 
-def test_verified_rejects_unrelated_how_heard_chip() -> None:
-    """Wrong committed chip must not count as filled (Glassdoor when LinkedIn intended)."""
+def test_any_valid_leaf_chip_is_committed() -> None:
+    """0842Z: CareerBuilder vs Glassdoor is not a fight — any valid source chip is done."""
+    from verified_select import committed_how_heard_leaf, how_heard_source_committed
+
+    cb = "1 item selected, Web - CareerBuilder"
+    gd = "1 item selected, Glassdoor"
+    assert how_heard_source_committed(cb, ["Glassdoor", "LinkedIn"])
+    assert how_heard_source_committed(gd, ["CareerBuilder", "LinkedIn"])
+    assert committed_how_heard_leaf(cb) == "CareerBuilder"
+    assert committed_how_heard_leaf(gd) == "Glassdoor"
+    # Empty / category / unknown agency still not done
+    assert not how_heard_source_committed("0 items selected", ["Glassdoor"])
+    assert not how_heard_source_committed("Internet job board", ["Glassdoor"])
+    assert not how_heard_source_committed(
+        "1 item selected, Antal Talent", ["LinkedIn", "Glassdoor"]
+    )
+
+
+def test_verified_accepts_sibling_valid_how_heard_chip() -> None:
+    """Committed Glassdoor chip is done even when dummy intent was LinkedIn."""
     from fill_verify import is_verified_fill_row
 
     row = {
@@ -97,6 +115,22 @@ def test_verified_rejects_unrelated_how_heard_chip() -> None:
         "value": "LinkedIn",
         "picked": "LinkedIn",
         "readback": "1 item selected, Glassdoor",
+        "option_clicked": True,
+        "verified": True,
+        "ok": True,
+    }
+    assert is_verified_fill_row(row) is True
+
+
+def test_verified_rejects_unrelated_how_heard_chip() -> None:
+    """Unknown agency chip must not count as a valid source (Antal Talent ≠ LinkedIn)."""
+    from fill_verify import is_verified_fill_row
+
+    row = {
+        "type": "HOW_HEARD",
+        "value": "LinkedIn",
+        "picked": "LinkedIn",
+        "readback": "1 item selected, Antal Talent",
         "option_clicked": True,
         "verified": True,
         "ok": True,
@@ -151,6 +185,42 @@ def test_gh_select_how_heard_priority_readback_verified() -> None:
     assert is_verified_fill_row(row) is True
 
 
+def test_web_prefix_leaf_soft_match() -> None:
+    from fill_verify import how_heard_option_matches_priority, pick_how_heard_from_options
+
+    opts = ["Web - CareerBuilder", "Web - Craigslist", "Web - Indeed"]
+    assert pick_how_heard_from_options(opts) == "Web - Indeed"
+    assert pick_how_heard_from_options(["LinkedIn", "Web - LinkedIn", "Indeed"]) == (
+        "Web - LinkedIn"
+    )
+    assert how_heard_option_matches_priority("CareerBuilder", "Web - CareerBuilder")
+    assert how_heard_option_matches_priority("LinkedIn", "Web - LinkedIn")
+
+
+def test_category_rank_prefers_website() -> None:
+    from verified_select import _rank_how_heard_categories
+
+    ranked = _rank_how_heard_categories(
+        ["Advertising >", "Employee Referral >", "Website >", "Job Board >"],
+        ["Website", "Job Board", "Internet job board"],
+    )
+    assert ranked[0].startswith("Website")
+
+
+def test_dummy_internet_job_board_still_ranks_website_first() -> None:
+    """Dummy HOW_HEARD category must not rank Job Board above Website."""
+    from fill_verify import how_heard_category_candidates
+    from verified_select import _rank_how_heard_categories
+
+    cats = how_heard_category_candidates({"HOW_HEARD": "Internet job board"})
+    assert cats[0] == "Website"
+    ranked = _rank_how_heard_categories(
+        ["Website >", "Job Board >", "Employee Referral >"],
+        cats,
+    )
+    assert ranked[0].startswith("Website")
+
+
 def main() -> None:
     test_priority_list_order()
     test_pick_linkedin_over_glassdoor_other()
@@ -162,10 +232,15 @@ def main() -> None:
     test_job_board_generic_when_only_boards()
     test_candidates_follow_priority()
     test_gh_aliases_for_uses_priority()
+    test_any_valid_leaf_chip_is_committed()
+    test_verified_accepts_sibling_valid_how_heard_chip()
     test_verified_rejects_unrelated_how_heard_chip()
     test_verified_accepts_priority_leaf_without_chrome()
     test_gh_select_wrong_readback_not_verified()
     test_gh_select_how_heard_priority_readback_verified()
+    test_web_prefix_leaf_soft_match()
+    test_category_rank_prefers_website()
+    test_dummy_internet_job_board_still_ranks_website_first()
     print("test_how_heard_priority: OK")
 
 

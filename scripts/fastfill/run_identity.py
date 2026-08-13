@@ -376,6 +376,38 @@ def _pdf_email_matches(resume_pdf: Path, email: str) -> str:
     return found
 
 
+_ALLOCATED_DUMMY_EMAIL_RE = re.compile(
+    r"^randommail6969\+[a-z0-9]{12}@gmail\.com$",
+    re.I,
+)
+
+
+def is_allocated_dummy_email(email: str) -> bool:
+    """True when email is a prepare_dummy_run randommail6969+{12}@gmail.com alias."""
+    return bool(_ALLOCATED_DUMMY_EMAIL_RE.match((email or "").strip()))
+
+
+def keep_run_email(values: dict, report: dict | None = None) -> str:
+    """Reuse the run's dummy email. Never remint mid-fill (0842 identity mismatch).
+
+    ``force_create_account`` / Workday create must keep ``values[EMAIL]`` identical
+    to the resume compiled by ``prepare_dummy_run``. Prefer ``report["identity_email"]``
+    when a stored overlay replaced ``values[EMAIL]``.
+    """
+    pinned = ""
+    if isinstance(report, dict):
+        pinned = str(
+            report.get("identity_email") or report.get("email") or ""
+        ).strip()
+    existing = str(values.get(EMAIL) or "").strip()
+    if is_allocated_dummy_email(pinned):
+        values[EMAIL] = pinned
+        return pinned
+    if is_allocated_dummy_email(existing):
+        return existing
+    return existing or pinned
+
+
 def prepare_dummy_run(
     *,
     compile_pdf: bool = True,

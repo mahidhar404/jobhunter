@@ -125,6 +125,24 @@ _row("thrash", "arrowdown_waste", "unit", "test_thrash_arrowdown_at_most_one",
 # --- crossfill ---
 _row("crossfill", "phone_not_jobboard", "crossfill_phone_country", "test_crossfill_phone_html",
      "Phone country chip ≠ LinkedIn job board")
+_row("crossfill", "nxp_phone_country_chip", "workday_nxp_phone_contact",
+     "test_nxp_phone_contact_fixture_zero_required_empty",
+     "NXP US (+1) chip → zero required_empty/gaps; empty chip incomplete")
+_row("thrash", "education_fos_chip", "workday_education_fos_chip",
+     "test_education_fos_chip_second_pass_zero_fill",
+     "FoS Science-Computer chip → second pass 0 fill/filter typing")
+_row("thrash", "education_fos_wrong_chip", "workday_education_fos_wrong_chip",
+     "test_education_fos_wrong_chip_reclaim",
+     "FoS Arts-Other wrong autofill → reclaim Science-Computer")
+_row("thrash", "wrong_autofill_relock", "workday_wrong_autofill_relock",
+     "test_wrong_autofill_relock_not_lock",
+     "Arts-Other chip + CS intent → reclaim not field-lock skip")
+_row("page_complete", "multipage_to_review", "workday_multipage_to_review",
+     "test_multipage_chain_reaches_review",
+     "Static contact→experience→education→review chain reaches FINAL footer")
+_row("page_complete", "battle_multipage", "workday_battle_multipage",
+     "test_battle_multipage_chain_reaches_review",
+     "5-step battle gym: fiber/IL/FoS/listbox traps → Review FINAL")
 _row("crossfill", "accommodations_not_consent", "crossfill_accommodations", "test_crossfill_accommodations_html",
      "ACCOMMODATIONS ≠ MARKETING_CONSENT classify")
 _row("crossfill", "noncompete_not_workauth", "unit", "test_crossfill_noncompete_unit",
@@ -320,7 +338,7 @@ async def _async_detect_option_hierarchical_leaf_chip() -> None:
             page,
             inp,
             leaf_candidates=["LinkedIn", "Indeed"],
-            category_candidates=["Internet job board", "Job Board"],
+            category_candidates=["Website", "Job Board", "Internet job board"],
         )
         assert hier.get("ok") and hier.get("committed"), hier
         picked = str(hier.get("picked") or "")
@@ -758,6 +776,42 @@ def test_crossfill_privacy_unit() -> None:
     test_crossfill_privacy_not_name_full()
 
 
+def test_nxp_phone_contact_fixture_zero_required_empty() -> None:
+    from test_field_done import test_live_phone_country_fixture
+
+    test_live_phone_country_fixture()
+
+
+def test_education_fos_chip_second_pass_zero_fill() -> None:
+    from test_workday_education_fos_chip import test_education_fos_chip_second_pass_zero_fill
+
+    test_education_fos_chip_second_pass_zero_fill()
+
+
+def test_education_fos_wrong_chip_reclaim() -> None:
+    from test_workday_education_fos_chip import test_education_fos_wrong_chip_reclaim
+
+    test_education_fos_wrong_chip_reclaim()
+
+
+def test_wrong_autofill_relock_not_lock() -> None:
+    from adversarial import test_wrong_autofill_relock_not_lock
+
+    test_wrong_autofill_relock_not_lock()
+
+
+def test_multipage_chain_reaches_review() -> None:
+    from adversarial import test_multipage_chain_reaches_review
+
+    test_multipage_chain_reaches_review()
+
+
+def test_battle_multipage_chain_reaches_review() -> None:
+    from adversarial import test_battle_multipage_chain_reaches_review
+
+    test_battle_multipage_chain_reaches_review()
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -792,6 +846,7 @@ _TEST_MAP: dict[str, Callable[[], None]] = {
     "test_what_next_auth_switch": test_what_next_auth_switch,
     "test_what_next_auth_stored_signin": test_what_next_auth_stored_signin,
     "test_what_next_auth_gate_fixture": test_what_next_auth_gate_fixture,
+    "test_what_next_auth_gate_direct_html": test_what_next_auth_gate_direct_html,
     "test_what_next_probe_footer": test_what_next_probe_footer,
     "test_what_next_settle_listbox": test_what_next_settle_listbox,
     "test_what_next_cycle_demotes": test_what_next_cycle_demotes,
@@ -804,6 +859,12 @@ _TEST_MAP: dict[str, Callable[[], None]] = {
     "test_crossfill_accommodations_html": test_crossfill_accommodations_html,
     "test_crossfill_noncompete_unit": test_crossfill_noncompete_unit,
     "test_crossfill_privacy_unit": test_crossfill_privacy_unit,
+    "test_nxp_phone_contact_fixture_zero_required_empty": test_nxp_phone_contact_fixture_zero_required_empty,
+    "test_education_fos_chip_second_pass_zero_fill": test_education_fos_chip_second_pass_zero_fill,
+    "test_education_fos_wrong_chip_reclaim": test_education_fos_wrong_chip_reclaim,
+    "test_wrong_autofill_relock_not_lock": test_wrong_autofill_relock_not_lock,
+    "test_multipage_chain_reaches_review": test_multipage_chain_reaches_review,
+    "test_battle_multipage_chain_reaches_review": test_battle_multipage_chain_reaches_review,
 }
 
 

@@ -345,6 +345,32 @@ def _attach_fill_step_log(
             attach_field_locks(report)
         except Exception as e:
             report.setdefault("errors", []).append({"field_lock_attach": str(e)[:120]})
+        try:
+            from action_supervisor import attach_action_supervisor
+
+            attach_action_supervisor(report)
+        except Exception as e:
+            report.setdefault("errors", []).append({"action_supervisor_attach": str(e)[:120]})
+        try:
+            from flight_recorder import attach_flight_recorder, note_flight
+
+            flight = attach_flight_recorder(report, out_dir=cycle_dir)
+            if flight is not None:
+                print(
+                    f"[flight] attached → {flight.jsonl_path} (+ {flight.log_path.name})",
+                    flush=True,
+                )
+                note_flight(
+                    report,
+                    "run_start",
+                    action="run_start",
+                    layer="fast_fill",
+                    gate_kind="flight",
+                    gate_result="on",
+                    gate_reason=f"headed={bool(report.get('headed'))}",
+                )
+        except Exception as e:
+            report.setdefault("errors", []).append({"flight_attach": str(e)[:120]})
         print(
             f"[step_log] attached → {log.jsonl_path} (cycle_dir={cycle_dir})",
             flush=True,
@@ -1381,28 +1407,42 @@ async def run_inpage_flash_leftovers(
             "unanswered_radio_group",
             "l01_miss_scan:unanswered_ashby_yesno",
             "l01_miss_scan:unanswered_radio_group",
+            "l01_miss_scan:unanswered_ashby_consent",
+            "live_required_empty:empty_required_radio_group",
+            "empty_required_radio_group",
+            "unclassified",
         )
         _choice_modes = ("yesno", "yesno_segmented", "radio", "checkbox")
-        if (
-            (not sel or reason in _choice_reasons or mode in _choice_modes)
-            and not essayish
-            and (
-                reason in _choice_reasons
-                or mode in _choice_modes
-                or re.search(
+        _reason_l = reason.lower()
+        _is_choice = (
+            reason in _choice_reasons
+            or mode in _choice_modes
+            or "radio" in _reason_l
+            or "yesno" in _reason_l
+            or "consent" in _reason_l
+            or "unanswered_choice" in _reason_l
+            or bool(
+                re.search(
                     r"\byes\b.+\bno\b|hybrid|rate|impression|preferred|"
-                    r"which of the following|why are you interested",
+                    r"which of the following|why are you interested|"
+                    r"which best|which statement|proficiency|"
+                    r"production environment|consent\s*\*?",
                     label,
                     re.I,
                 )
             )
-        ):
+        )
+        if (not sel or _is_choice) and not essayish and _is_choice:
             try:
-                choice_val = str(val or "")
+                from ashby_widgets import ashby_screening_dummy_answer
+
+                choice_val = str(val or "") or ashby_screening_dummy_answer(label, values)
                 if re.search(r"hybrid|able to meet this requirement", label, re.I):
                     choice_val = "Yes"
                 elif re.search(r"rate|impression|scale", label, re.I):
                     choice_val = choice_val if re.match(r"^[1-4]|n/?a$", choice_val, re.I) else "N/A"
+                elif ftype == TERMS_CONSENT or re.match(r"consent\s*\*?$", label.strip(), re.I):
+                    choice_val = str(values.get(TERMS_CONSENT) or "Yes")
                 ch = await click_ashby_choice_option(
                     page, label, choice_val, report=report
                 )
@@ -2198,6 +2238,12 @@ GENERIC_SELECTOR_PACK: list[tuple[str, str, str]] = [
         "fill",
     ),
     ("input[autocomplete='address-level2'], input[name*='city' i], input[id*='city' i]", ADDRESS_CITY, "fill"),
+    (
+        "input[name*='county' i], input[id*='county' i], "
+        "input[name*='regionSubdivision' i], input[id*='regionSubdivision' i]",
+        ADDRESS_COUNTY,
+        "fill",
+    ),
     # ATS2-008: state is usually a select/combobox — never bare text fill
     (
         "select[autocomplete='address-level1'], select[name*='state' i], select[id*='state' i], "
@@ -3521,6 +3567,28 @@ async def dismiss_cookie_banners(page) -> dict:
     return out
 
 
+def skip_ashby_location_zip(
+    platform: str | None = None, report: dict | None = None
+) -> bool:
+    """True when Ashby location→zip must not run (Workday postalCode owns zip).
+
+    0842: ``ashby_location_zip`` claimed ADDRESS_ZIP on nxp.wd3 after contact
+    pack already filled postalCode.
+    """
+    plat = str(platform or (report or {}).get("platform") or "").strip().lower()
+    if plat == "workday":
+        return True
+    url = str(
+        (report or {}).get("url")
+        or (report or {}).get("final_url")
+        or (report or {}).get("start_url")
+        or ""
+    )
+    if re.search(r"myworkdayjobs\.com|myworkdaysite\.com", url, re.I):
+        return True
+    return False
+
+
 async def required_empty_on_page(page, report: dict | None = None) -> list[dict]:
     """Page-complete probe for generic ATS / unknown multipage forms.
 
@@ -3576,6 +3644,12 @@ async def _demote_filled_against_required_empty(page, report: dict, values: dict
     Also one last Ashby zip refill if zip remains empty after earlier fills.
     """
     empties = await required_empty_on_page(page, report)
+    try:
+        from field_done import filter_required_empty_false_incomplete
+
+        empties = await filter_required_empty_false_incomplete(page, report, empties)
+    except Exception:
+        pass
     report["required_empty_after_fill"] = empties
 
     demoted: list[dict] = []
@@ -3639,7 +3713,21 @@ async def _demote_filled_against_required_empty(page, report: dict, values: dict
             how_heard_source_committed,
             is_multiselect_uncommitted,
             is_uncommitted_filter_text as _hh_filter_text,
+            filter_phone_country_false_empties,
+            phone_country_verified_snips_from_report,
+            read_phone_country_field_snip,
         )
+
+        live_pc_snip = await read_phone_country_field_snip(page)
+        fallbacks = phone_country_verified_snips_from_report(report)
+        empties = filter_phone_country_false_empties(
+            empties,
+            live_pc_snip,
+            fallback_snips=fallbacks,
+        )
+        report["required_empty_after_fill"] = empties
+        empty_ids = " ".join(str(e.get("id") or "") for e in empties).lower()
+        empty_reasons = " ".join(str(e.get("reason") or "") for e in empties).lower()
 
         live_hh_snip = ""
         try:
@@ -3722,7 +3810,12 @@ async def _demote_filled_against_required_empty(page, report: dict, values: dict
         zip_still_empty = True
 
     # If Ashby zip still empty, try one more location→zip settle before demoting.
-    if zip_still_empty and values.get(ADDRESS_ZIP):
+    # Never on Workday — postalCode is a different widget (0842 second writer).
+    if (
+        zip_still_empty
+        and values.get(ADDRESS_ZIP)
+        and not skip_ashby_location_zip(str(report.get("platform") or ""), report)
+    ):
         try:
             from ashby_widgets import _ashby_zip_field_present
 
@@ -4541,15 +4634,28 @@ async def _demote_filled_against_required_empty(page, report: dict, values: dict
         for d in demoted
     ]
     report["live_zip_readback"] = (live_zip or "")[:32]
-    # Honest leftovers: sync live required empties not already tracked
+    # Honest leftovers: sync live required empties not already tracked.
+    # Skip empties field_is_done already covers (0842Z country phone dual-oracle).
     existing_keys = {
         str(u.get("selector") or u.get("label") or u.get("type") or "").lower()
         for u in (report.get("leftovers") or [])
         if isinstance(u, dict)
     }
+    done_keys: set[str] = set()
+    try:
+        from field_done import field_is_done_from_row
+
+        for f in report.get("filled") or []:
+            if isinstance(f, dict) and field_is_done_from_row(f).ok:
+                done_keys |= _field_identity_keys(f)
+    except Exception:
+        done_keys = set()
     for e in empties:
         eid = str(e.get("id") or "").lower()
         if not eid or eid in existing_keys:
+            continue
+        e_keys = _field_identity_keys({"label": eid, "automation_id": eid})
+        if done_keys and _identity_keys_overlap(e_keys, done_keys):
             continue
         row = enrich_gh_id_leftover(
             {
@@ -4564,13 +4670,7 @@ async def _demote_filled_against_required_empty(page, report: dict, values: dict
         existing_keys.add(eid)
         # Also key by enriched label so we don't double-add
         existing_keys.add(str(row.get("label") or "").lower())
-    # Post L0/1 choice miss scan (radios / Ashby yesno / empty selects) → Flash
-    try:
-        from leftover_miss_scan import promote_l01_misses
-
-        await promote_l01_misses(page, report)
-    except Exception as e:
-        report.setdefault("errors", []).append({"l01_miss_scan": str(e)[:120]})
+    # leftover_miss_scan lives in the refill loop only — not a second voter here.
     # Drop ghost Ashby _systemfield_resume leftovers when resume path succeeded
     if report_has_verified_resume(report) or report.get("resume_verified"):
         try:
@@ -4616,6 +4716,14 @@ async def try_advance_if_page_complete(page, report: dict | None = None) -> dict
         )
 
     required_empty = await required_empty_on_page(page, report)
+    try:
+        from field_done import filter_required_empty_false_incomplete
+
+        required_empty = await filter_required_empty_false_incomplete(
+            page, report, required_empty
+        )
+    except Exception:
+        pass
     result["required_empty_before_advance"] = required_empty
 
     # Find an ADVANCE control (never FINAL) — needed for stuck detection even
@@ -5497,6 +5605,56 @@ async def _read_locator_value(loc) -> str:
 # is_verified_fill_row imported from fill_verify (shared with Workday path)
 
 
+async def _supervise_selector_result(
+    page,
+    report: dict | None,
+    result: dict,
+    *,
+    before: str = "",
+    intent: str = "",
+    locator=None,
+) -> dict:
+    """Action-wise audit after one _fill_selector touch (never raises)."""
+    if not report or report.get("_supervisor_skip"):
+        return result
+    try:
+        from fill_contract import commit_fill
+
+        meta = {
+            "type": result.get("type") or "",
+            "selector": result.get("selector") or "",
+            "automation_id": result.get("automation_id") or "",
+            "label": result.get("label") or "",
+            "mode": result.get("mode") or "",
+        }
+
+        async def _noop_fill() -> dict:
+            return dict(result)
+
+        fr = await commit_fill(
+            page,
+            meta,
+            intent or str(result.get("value") or ""),
+            _noop_fill,
+            via=str(result.get("via") or "fill_selector"),
+            locator=locator,
+            report=report,
+            before=before,
+        )
+        return fr.row
+    except Exception as e:
+        report.setdefault("errors", []).append({"fill_contract": str(e)[:120]})
+    return result
+
+
+def _automation_id_from_selector(sel: str) -> str:
+    """Extract data-automation-id from a CSS selector when present."""
+    if not sel:
+        return ""
+    m = re.search(r"data-automation-id=['\"]([^'\"]+)['\"]", sel, re.I)
+    return (m.group(1) if m else "").strip()
+
+
 async def _fill_selector(
     page,
     sel: str,
@@ -5507,46 +5665,103 @@ async def _fill_selector(
     report: dict | None = None,
 ) -> dict:
     """Fill one CSS selector. ok/verified only after read-back (file = action ok)."""
+    aid = _automation_id_from_selector(sel)
     out: dict[str, Any] = {"selector": sel, "type": ftype, "mode": mode}
+    if aid:
+        out["automation_id"] = aid
     # Field lock: skip re-touch of commit-verified fields (no DOM probe)
     try:
         from field_lock import gate_field_action, get_field_locks, resolve_lock_report
 
         g = gate_field_action(
-            report, field_type=ftype, selector=sel, label=str(ftype or "")
+            report,
+            field_type=ftype,
+            selector=sel,
+            automation_id=aid or None,
+            label=str(ftype or "") or None,
         )
         if g and g.get("action") == "lock_skip":
-            sess = get_field_locks(resolve_lock_report(report))
-            skip = (
-                sess.lock_skip_result(g, field_type=ftype)
-                if sess
-                else {
-                    "reason": "field_locked_skip",
-                    "skipped_locked": True,
-                    "skipped_already_correct": True,
-                    "ok": True,
-                    "verified": True,
-                    "readback": g.get("readback"),
-                }
-            )
-            out.update(skip)
-            out["selector"] = sel
-            out["type"] = ftype
-            out["mode"] = mode
+            lock_rb = str(g.get("readback") or "")[:120]
+            lock_ok = False
             try:
-                note_step(
-                    report,
-                    action="lock_skip",
-                    field_type=ftype,
-                    label=str(ftype or sel)[:80],
-                    after=str(g.get("readback") or "")[:120],
-                    via="field_lock",
-                    reason="field_locked_skip",
-                    extra={"thrash_retouch": True, "selector": sel[:120]},
+                from field_done import field_is_done_from_readback
+
+                lock_meta = {"type": ftype or "", "selector": sel, "mode": mode}
+                if aid:
+                    lock_meta["automation_id"] = aid
+                lock_ok = bool(
+                    field_is_done_from_readback(lock_rb, lock_meta, str(value or "")).ok
                 )
             except Exception:
-                pass
-            return out
+                lock_ok = False
+            if not lock_ok:
+                try:
+                    from field_lock import unlock_if_not_done
+
+                    unlock_if_not_done(
+                        report,
+                        field_type=ftype or None,
+                        selector=sel,
+                        automation_id=aid or None,
+                        intent=str(value or "") or None,
+                        readback=lock_rb,
+                    )
+                except Exception:
+                    pass
+            else:
+                sess = get_field_locks(resolve_lock_report(report))
+                skip = (
+                    sess.lock_skip_result(g, automation_id=aid or None, field_type=ftype)
+                    if sess
+                    else {
+                        "reason": "field_locked_skip",
+                        "skipped_locked": True,
+                        "skipped_already_correct": True,
+                        "ok": True,
+                        "verified": True,
+                        "readback": g.get("readback"),
+                    }
+                )
+                out.update(skip)
+                out["selector"] = sel
+                out["type"] = ftype
+                out["mode"] = mode
+                if aid:
+                    out["automation_id"] = aid
+                try:
+                    note_step(
+                        report,
+                        action="lock_skip",
+                        field_type=ftype,
+                        label=str(aid or ftype or sel)[:80],
+                        after=str(g.get("readback") or "")[:120],
+                        via="field_lock",
+                        reason="field_locked_skip",
+                        extra={"thrash_retouch": True, "selector": sel[:120]},
+                    )
+                except Exception:
+                    pass
+                try:
+                    from flight_recorder import note_flight
+
+                    note_flight(
+                        report,
+                        "gate",
+                        action="skip",
+                        layer="pack",
+                        field_type=ftype,
+                        automation_id=aid or None,
+                        selector=sel,
+                        intent=value,
+                        gate_kind="lock_skip",
+                        gate_result="skip",
+                        gate_reason="field_locked_skip",
+                        readback=str(g.get("readback") or "")[:120] or None,
+                        extra={"thrash_retouch": True},
+                    )
+                except Exception:
+                    pass
+                return out
     except Exception:
         pass
     try:
@@ -5672,14 +5887,49 @@ async def _fill_selector(
             return {**out, "ok": False, "verified": False, "error": str(e)[:200]}
 
     loc = page.locator(sel).first
+    before_rb = ""
     try:
         if await loc.count() == 0:
-            return {**out, "ok": False, "verified": False, "reason": "not_in_dom"}
+            return await _supervise_selector_result(
+                page,
+                report,
+                {**out, "ok": False, "verified": False, "reason": "not_in_dom"},
+                intent=str(value),
+            )
         # Nested input for Workday wrappers
         if mode != "combobox":
             inner = page.locator(f"{sel} input").first
             if await inner.count() and await inner.is_visible(timeout=400):
                 loc = inner
+        before_rb = await _read_locator_value(loc)
+
+        touch_meta = {
+            "type": ftype,
+            "selector": sel,
+            "mode": mode,
+        }
+        if aid:
+            touch_meta["automation_id"] = aid
+        try:
+            from fill_contract import verify_before_touch
+
+            touch = await verify_before_touch(
+                page, touch_meta, str(value), report=report
+            )
+            if touch.action == "skip_lock" and touch.row:
+                return {**out, **touch.row}
+        except Exception:
+            pass
+
+        async def _done(result: dict) -> dict:
+            return await _supervise_selector_result(
+                page,
+                report,
+                {**out, **result},
+                before=before_rb,
+                intent=str(value),
+                locator=loc,
+            )
 
         if mode == "combobox" or _looks_like_combobox_locator(await _locator_meta(page, loc)):
             detail = await fill_custom_widget(
@@ -5698,32 +5948,51 @@ async def _fill_selector(
             if not verified and not readback:
                 # Do not fall back to filter input_value
                 readback = ""
-            return {
-                **out,
-                "ok": verified,
-                "verified": verified,
-                "value": value,
-                "readback": (str(readback)[:120] if readback else ""),
-                "widget": detail,
-                "reason": None if verified else (
-                    detail.get("error") or "combobox_unverified"
-                ),
-            }
+            return await _done(
+                {
+                    "ok": verified,
+                    "verified": verified,
+                    "value": value,
+                    "readback": (str(readback)[:120] if readback else ""),
+                    "widget": detail,
+                    "reason": None if verified else (
+                        detail.get("error") or "combobox_unverified"
+                    ),
+                }
+            )
 
         tag = (await loc.evaluate("el => (el.tagName || '').toLowerCase()"))
         itype = ((await loc.get_attribute("type")) or "text").lower()
+        fiber_meta: dict[str, Any] = {}
         if tag == "select":
-            skip_ok, skip_rb = await _locator_already_correct(loc, str(value))
+            skip_ok, skip_rb = await _locator_already_correct(
+                loc, str(value), field_type=str(ftype or "")
+            )
             if skip_ok:
-                return {
-                    **out,
-                    "ok": True,
-                    "verified": True,
-                    "value": value,
-                    "readback": (skip_rb or "")[:120],
-                    "reason": "already_correct_skip",
-                    "skipped_already_correct": True,
-                }
+                skip_meta = {"type": ftype or "", "selector": sel, "mode": mode}
+                if aid:
+                    skip_meta["automation_id"] = aid
+                try:
+                    from field_done import field_is_done_from_readback
+
+                    skip_ok = bool(
+                        field_is_done_from_readback(
+                            skip_rb, skip_meta, str(value)
+                        ).ok
+                    )
+                except Exception:
+                    skip_ok = False
+            if skip_ok:
+                return await _done(
+                    {
+                        "ok": True,
+                        "verified": True,
+                        "value": value,
+                        "readback": (skip_rb or "")[:120],
+                        "reason": "already_correct_skip",
+                        "skipped_already_correct": True,
+                    }
+                )
             try:
                 await loc.select_option(label=value, timeout=3000)
             except Exception:
@@ -5735,15 +6004,16 @@ async def _fill_selector(
             except Exception:
                 already = False
             if want_on and already:
-                return {
-                    **out,
-                    "ok": True,
-                    "verified": True,
-                    "value": value,
-                    "readback": "checked",
-                    "reason": "already_correct_skip",
-                    "skipped_already_correct": True,
-                }
+                return await _done(
+                    {
+                        "ok": True,
+                        "verified": True,
+                        "value": value,
+                        "readback": "checked",
+                        "reason": "already_correct_skip",
+                        "skipped_already_correct": True,
+                    }
+                )
             if want_on:
                 await loc.check(timeout=3000)
             checked = False
@@ -5751,40 +6021,88 @@ async def _fill_selector(
                 checked = await loc.is_checked()
             except Exception:
                 checked = True
-            return {
-                **out,
-                "ok": checked,
-                "verified": checked,
-                "value": value,
-                "readback": "checked" if checked else "",
-            }
-        else:
-            # SKIP thrash: never clear()/fill() when readback already matches
-            skip_ok, skip_rb = await _locator_already_correct(loc, str(value))
-            if skip_ok:
-                return {
-                    **out,
-                    "ok": True,
-                    "verified": True,
+            return await _done(
+                {
+                    "ok": checked,
+                    "verified": checked,
                     "value": value,
-                    "readback": (skip_rb or "")[:120],
-                    "reason": "already_correct_skip",
-                    "skipped_already_correct": True,
+                    "readback": "checked" if checked else "",
                 }
-            await loc.fill(str(value), timeout=4000)
+            )
+        else:
+            # SKIP thrash: never clear()/fill() when field_is_done agrees
+            skip_ok, skip_rb = await _locator_already_correct(
+                loc, str(value), field_type=str(ftype or "")
+            )
+            if skip_ok:
+                skip_meta = {"type": ftype or "", "selector": sel, "mode": mode}
+                if aid:
+                    skip_meta["automation_id"] = aid
+                try:
+                    from field_done import field_is_done_from_readback
+
+                    skip_ok = bool(
+                        field_is_done_from_readback(
+                            skip_rb, skip_meta, str(value)
+                        ).ok
+                    )
+                except Exception:
+                    skip_ok = False
+            if skip_ok:
+                return await _done(
+                    {
+                        "ok": True,
+                        "verified": True,
+                        "value": value,
+                        "readback": (skip_rb or "")[:120],
+                        "reason": "already_correct_skip",
+                        "skipped_already_correct": True,
+                    }
+                )
+            if itype == "password":
+                await loc.fill(str(value), timeout=4000)
+            else:
+                from verified_select import (
+                    fill_text_fiber_then_read,
+                    is_stubborn_text_field,
+                )
+
+                stubborn = is_stubborn_text_field(
+                    automation_id=aid,
+                    field_type=str(ftype or ""),
+                    selector=sel,
+                )
+                fiber_meta = await fill_text_fiber_then_read(
+                    loc, str(value), stubborn=stubborn, page=page
+                )
 
         readback = await _read_locator_value(loc)
         verified = _value_matches_readback(str(value), readback)
-        return {
-            **out,
-            "ok": verified,
-            "verified": verified,
-            "value": value,
-            "readback": (readback or "")[:120],
-            "reason": None if verified else "readback_empty_or_mismatch",
-        }
+        extra: dict[str, Any] = {}
+        if fiber_meta.get("algorithm"):
+            extra["algorithm"] = fiber_meta.get("algorithm")
+        if fiber_meta.get("fiber_onChange"):
+            extra["fiber_onChange"] = True
+        if fiber_meta.get("empty_readback_fiber_retry"):
+            extra["empty_readback_fiber_retry"] = True
+        return await _done(
+            {
+                "ok": verified,
+                "verified": verified,
+                "value": value,
+                "readback": (readback or "")[:120],
+                "reason": None if verified else "readback_empty_or_mismatch",
+                **extra,
+            }
+        )
     except Exception as e:
-        return {**out, "ok": False, "verified": False, "error": str(e)[:200]}
+        return await _supervise_selector_result(
+            page,
+            report,
+            {**out, "ok": False, "verified": False, "error": str(e)[:200]},
+            before=before_rb,
+            intent=str(value),
+        )
 
 
 async def _locator_meta(page, loc) -> dict:
@@ -7072,10 +7390,41 @@ async def sweep_midtier_policy_comboboxes(
     return rows
 
 
+def _pack_item_locked(
+    report: dict | None, ftype: str, sel: str, aid: str | None
+) -> bool:
+    """True when field_lock already owns this pack identity (no DOM probe)."""
+    try:
+        from field_lock import get_field_locks, resolve_lock_report
+
+        sess = get_field_locks(resolve_lock_report(report))
+        if sess is None:
+            return False
+        return bool(
+            sess.is_locked(
+                field_type=ftype, selector=sel, automation_id=aid or None
+            )
+        )
+    except Exception:
+        return False
+
+
 async def apply_selector_pack(
     page, platform: str, values: dict, report: dict | None = None
 ) -> list[dict]:
-    """Layer 0.5: platform-specific stable selectors (page or Frame)."""
+    """Layer 0.5: platform-specific stable selectors (page or Frame).
+
+    Vanilla native text/select/checkbox rows are set in one ``page.evaluate``
+    via ``batch_fill_simple``; widgets and batch misses stay on sequential
+    ``_fill_selector`` (never asyncio.gather — focus steal).
+    """
+    from batch_fill import (
+        batch_fill_simple,
+        batch_result_verified,
+        is_batchable_row,
+        normalize_batch_mode,
+    )
+
     filled: list[dict] = []
     pack = SELECTOR_PACKS.get(platform) or []
     seen_types: set[str] = set()
@@ -7087,42 +7436,17 @@ async def apply_selector_pack(
         # If value looks like full address, strip to street
         local_values[ADDRESS_LINE1] = _street_line(str(local_values[ADDRESS_LINE1]))
 
-    for sel, ftype, mode in pack:
-        confirm_email = ftype == EMAIL and bool(
-            re.search(
-                r"confirm|re[-_]?enter|verify|userName|user[_-]?name|fbclc_userName",
-                sel,
-                re.I,
-            )
-        )
-        if ftype in seen_types and ftype != RESUME_UPLOAD:
-            # SmartRecruiters / Taleo / SF: confirm-email & username reuse EMAIL.
-            if not confirm_email:
-                continue
-        # Skip locked fields before any DOM work (no thrash retouch)
-        try:
-            from field_lock import get_field_locks, resolve_lock_report
-
-            sess = get_field_locks(resolve_lock_report(report))
-            if sess is not None and sess.is_locked(field_type=ftype, selector=sel):
-                continue
-        except Exception:
-            pass
+    def _usable(ftype: str, confirm_email: bool) -> bool:
         if ftype == RESUME_UPLOAD and resume_done:
-            continue
-        if ftype == RESUME_UPLOAD:
-            val = str(local_values.get(RESUME_UPLOAD) or DUMMY_PDF)
-        else:
-            val = local_values.get(ftype)
-            if not val or not validate_filled(ftype, str(val)):
-                continue
-        _pack_t0 = time.monotonic()
-        result = await _fill_selector(
-            page, sel, ftype, str(val), mode=mode, report=report
-        )
-        _pack_dt = time.monotonic() - _pack_t0
-        if os.environ.get("FASTFILL_PACK_TIMING") == "1" and _pack_dt > 1.0:
-            print(f"[pack_timing] {platform} {ftype} mode={mode} {_pack_dt:.2f}s", flush=True)
+            return False
+        if ftype in seen_types and ftype != RESUME_UPLOAD and not confirm_email:
+            return False
+        return True
+
+    async def _commit_pack_result(
+        sel: str, ftype: str, mode: str, result: dict
+    ) -> bool:
+        nonlocal resume_done
         row = {
             "via": f"{platform}_selector_pack",
             "layer": "0.5",
@@ -7132,35 +7456,181 @@ async def apply_selector_pack(
         _record_fill_attempt(
             report, {**row, "type": ftype}, success=ok, via_override=row["via"]
         )
-        if ok:
-            filled.append(
-                {
-                    **row,
-                    "ok": True,
-                    "verified": True,
-                }
-            )
-            try:
-                from field_lock import lock_verified_field
+        if not ok:
+            return False
+        filled.append({**row, "ok": True, "verified": True})
+        try:
+            from field_lock import lock_verified_field
 
-                lock_verified_field(
-                    report,
-                    {**row, "type": ftype, "ok": True, "verified": True},
-                    field_type=ftype,
-                    selector=sel,
-                    via=row["via"],
-                )
+            pack_aid = str(row.get("automation_id") or "") or _automation_id_from_selector(
+                sel
+            )
+            lock_verified_field(
+                report,
+                {**row, "type": ftype, "ok": True, "verified": True},
+                field_type=ftype,
+                selector=sel,
+                automation_id=pack_aid or None,
+                via=row["via"],
+            )
+        except Exception:
+            pass
+        seen_types.add(ftype)
+        if ftype == RESUME_UPLOAD:
+            resume_done = True
+        # Ashby: Location combobox remounts dependent zip — settle before next pack item.
+        # Never on Workday (skip_ashby_location_zip) — postalCode is already filled.
+        if (
+            not skip_ashby_location_zip(platform, report)
+            and platform == "ashby"
+            and ftype == ADDRESS_CITY
+            and mode == "combobox"
+        ):
+            try:
+                await page.wait_for_timeout(700)
             except Exception:
                 pass
-            seen_types.add(ftype)
-            if ftype == RESUME_UPLOAD:
-                resume_done = True
-            # Ashby: Location combobox remounts dependent zip — settle before next pack item
-            if platform == "ashby" and ftype == ADDRESS_CITY and mode == "combobox":
+        return True
+
+    async def _fill_one(sel: str, ftype: str, mode: str, val: str) -> None:
+        _pack_t0 = time.monotonic()
+        result = await _fill_selector(
+            page, sel, ftype, str(val), mode=mode, report=report
+        )
+        _pack_dt = time.monotonic() - _pack_t0
+        if os.environ.get("FASTFILL_PACK_TIMING") == "1" and _pack_dt > 1.0:
+            print(f"[pack_timing] {platform} {ftype} mode={mode} {_pack_dt:.2f}s", flush=True)
+        await _commit_pack_result(sel, ftype, mode, result)
+
+    candidates: list[dict[str, Any]] = []
+    for sel, ftype, mode in pack:
+        confirm_email = ftype == EMAIL and bool(
+            re.search(
+                r"confirm|re[-_]?enter|verify|userName|user[_-]?name|fbclc_userName",
+                sel,
+                re.I,
+            )
+        )
+        pack_aid = _automation_id_from_selector(sel)
+        if _pack_item_locked(report, ftype, sel, pack_aid or None):
+            continue
+        if ftype == RESUME_UPLOAD:
+            val = str(local_values.get(RESUME_UPLOAD) or DUMMY_PDF)
+        else:
+            val = local_values.get(ftype)
+            if not val or not validate_filled(ftype, str(val)):
+                continue
+        candidates.append(
+            {
+                "sel": sel,
+                "ftype": ftype,
+                "mode": mode,
+                "val": str(val),
+                "aid": pack_aid,
+                "confirm_email": confirm_email,
+            }
+        )
+
+    i = 0
+    n = len(candidates)
+    while i < n:
+        run: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        while i < n:
+            c = candidates[i]
+            if not _usable(c["ftype"], c["confirm_email"]):
+                i += 1
+                continue
+            plan_row = {
+                "selector": c["sel"],
+                "value": c["val"],
+                "type": c["ftype"],
+                "mode": normalize_batch_mode(c["mode"]),
+            }
+            if is_batchable_row(plan_row):
+                run.append((c, plan_row))
+                i += 1
+            else:
+                break
+        if run:
+            still: list[tuple[dict[str, Any], dict[str, Any]]] = []
+            for c, plan_row in run:
                 try:
-                    await page.wait_for_timeout(700)
+                    from fill_contract import verify_before_touch
+
+                    touch_meta = {
+                        "type": c["ftype"],
+                        "selector": c["sel"],
+                        "mode": c["mode"],
+                    }
+                    if c["aid"]:
+                        touch_meta["automation_id"] = c["aid"]
+                    touch = await verify_before_touch(
+                        page, touch_meta, str(c["val"]), report=report
+                    )
+                    if touch.action == "skip_lock" and touch.row:
+                        skip_row = {
+                            "selector": c["sel"],
+                            "type": c["ftype"],
+                            "mode": c["mode"],
+                            **touch.row,
+                        }
+                        if c["aid"]:
+                            skip_row["automation_id"] = c["aid"]
+                        await _commit_pack_result(
+                            c["sel"], c["ftype"], c["mode"], skip_row
+                        )
+                        continue
                 except Exception:
                     pass
+                still.append((c, plan_row))
+            if still:
+                results = await batch_fill_simple(
+                    page, [p for _, p in still]
+                )
+                by_sel: dict[str, dict] = {}
+                batch_failed = (
+                    len(results) == 1
+                    and not results[0].get("selector")
+                    and results[0].get("ok") is False
+                )
+                if not batch_failed:
+                    for r in results:
+                        if isinstance(r, dict) and r.get("selector"):
+                            by_sel[str(r["selector"])] = r
+                for c, plan_row in still:
+                    br = by_sel.get(c["sel"])
+                    if br and batch_result_verified(plan_row, br):
+                        result = {
+                            "selector": c["sel"],
+                            "type": c["ftype"],
+                            "mode": c["mode"],
+                            "ok": True,
+                            "verified": True,
+                            "value": c["val"],
+                            "readback": str(br.get("readback") or "")[:120],
+                            "reason": br.get("reason") or "batch_fill",
+                            "via": f"{platform}_selector_pack",
+                        }
+                        if br.get("reason") == "already_correct_skip":
+                            result["skipped_already_correct"] = True
+                        if c["aid"]:
+                            result["automation_id"] = c["aid"]
+                        result = await _supervise_selector_result(
+                            page, report, result, intent=str(c["val"])
+                        )
+                        rb = str(result.get("readback") or "").strip()
+                        if is_verified_fill_row(result) and rb:
+                            await _commit_pack_result(
+                                c["sel"], c["ftype"], c["mode"], result
+                            )
+                            continue
+                    # Miss / empty readback → sequential Playwright / fiber path
+                    await _fill_one(c["sel"], c["ftype"], c["mode"], c["val"])
+        if i < n:
+            c = candidates[i]
+            if _usable(c["ftype"], c["confirm_email"]):
+                await _fill_one(c["sel"], c["ftype"], c["mode"], c["val"])
+            i += 1
     return filled
 
 
@@ -7204,6 +7674,16 @@ def _unclassified_skip_quietly(label: str, field: dict) -> bool:
         return True
     if re.search(r"^type\s+your\s+response$", label.strip(), re.I):
         return True
+    try:
+        from workday_date_readback import (
+            is_date_spin_theater_label,
+            is_optional_gpa_label,
+        )
+
+        if is_date_spin_theater_label(label) or is_optional_gpa_label(label):
+            return True
+    except Exception:
+        pass
     return False
 
 
@@ -7311,6 +7791,196 @@ def _radio_group_name(field: dict, sel: str) -> str:
     return group_name
 
 
+_EXTRACT_BATCH_HTML = frozenset(
+    {
+        "text",
+        "email",
+        "tel",
+        "url",
+        "password",
+        "search",
+        "textarea",
+        "number",
+        "",
+        "select",
+        "checkbox",
+    }
+)
+
+
+async def _batch_fill_extract_vanilla(
+    page,
+    raw_fields: list,
+    values: dict,
+    filled_types: set[str],
+    *,
+    platform: str = "unknown",
+    report: dict | None = None,
+) -> tuple[list[dict], set[int]]:
+    """One-evaluate Layer 0/1 vanilla fills; misses stay for sequential extract."""
+    from batch_fill import (
+        batch_fill_simple,
+        batch_result_verified,
+        is_batchable_row,
+    )
+
+    filled_out: list[dict] = []
+    ok_idx: set[int] = set()
+    plan: list[dict] = []
+    metas: list[tuple] = []
+
+    for idx, raw in enumerate(raw_fields):
+        field = _normalize_extracted(raw if isinstance(raw, dict) else {})
+        ftype, layer = classify_field(field)
+        if not ftype or layer == "honeypot_skipped":
+            continue
+        if ftype in (COVER_LETTER, RESUME_UPLOAD):
+            continue
+        if platform == "ashby" and ftype in (ADDRESS_CITY, ADDRESS_ZIP):
+            continue
+        if platform == "greenhouse" and ftype in _GH_SELECT_FIELD_TYPES:
+            continue
+        label = str(field.get("label") or field.get("name") or field.get("id") or "?")
+        if _skip_already_filled_type(ftype, label, filled_types):
+            continue
+        if ftype in OPTIONAL_LEAVE_BLANK_TYPES or is_phone_extension_field(label, ftype):
+            if not (values.get(ftype) or "").strip():
+                continue
+        if _is_custom_widget(field):
+            continue
+        tag = (field.get("tag") or "input").lower()
+        html = (field.get("type") or "text").lower()
+        if html in (
+            "radio",
+            "radio_group",
+            "checkbox_group",
+            "file",
+            "date",
+            "datetime-local",
+            "month",
+            "week",
+            "time",
+        ):
+            continue
+        if tag == "select" or html == "select":
+            mode = "select"
+        elif html == "checkbox":
+            mode = "checkbox"
+        elif tag in ("input", "textarea") and html in _EXTRACT_BATCH_HTML:
+            mode = "text"
+        else:
+            continue
+        if ftype == TERMS_CONSENT:
+            val = values.get(TERMS_CONSENT) or "Yes"
+        else:
+            val = values.get(ftype)
+            if not val or not validate_filled(ftype, str(val)):
+                continue
+        sel = field.get("selector") or ""
+        if not sel:
+            if field.get("id"):
+                sel = f"#{field['id']}"
+            elif field.get("name"):
+                sel = f"[name={json.dumps(field['name'])}]"
+        plan_row = {
+            "selector": sel,
+            "value": str(val),
+            "type": ftype,
+            "mode": mode,
+        }
+        if not is_batchable_row(plan_row):
+            continue
+        aid = _automation_id_from_selector(sel) or str(field.get("id") or "")
+        if _pack_item_locked(report, ftype, sel, aid or None):
+            continue
+        try:
+            from fill_contract import verify_before_touch
+
+            touch_meta = {
+                "type": ftype,
+                "selector": sel,
+                "mode": mode,
+                "label": label,
+            }
+            if aid:
+                touch_meta["automation_id"] = aid
+            touch = await verify_before_touch(
+                page, touch_meta, str(val), report=report
+            )
+            if touch.action == "skip_lock" and touch.row:
+                filled_out.append(
+                    {
+                        "via": "extract+classify",
+                        "layer": layer,
+                        "label": label[:60],
+                        "selector": sel,
+                        "type": ftype,
+                        **touch.row,
+                    }
+                )
+                ok_idx.add(idx)
+                continue
+        except Exception:
+            pass
+        plan.append(plan_row)
+        metas.append((idx, ftype, layer, val, sel, label, aid))
+
+    if not plan:
+        return filled_out, ok_idx
+    results = await batch_fill_simple(page, plan)
+    by_sel: dict[str, dict] = {}
+    batch_failed = (
+        len(results) == 1
+        and not results[0].get("selector")
+        and results[0].get("ok") is False
+    )
+    if not batch_failed:
+        for r in results:
+            if isinstance(r, dict) and r.get("selector"):
+                by_sel[str(r["selector"])] = r
+    for (idx, ftype, layer, val, sel, label, aid), plan_row in zip(metas, plan):
+        br = by_sel.get(sel)
+        if not batch_result_verified(plan_row, br):
+            continue
+        row = {
+            "via": "extract+classify",
+            "layer": layer,
+            "label": label[:60],
+            "selector": sel,
+            "type": ftype,
+            "value": val,
+            "readback": str(br.get("readback") or "")[:120],
+            "ok": True,
+            "verified": True,
+            "reason": br.get("reason") or "batch_fill",
+        }
+        if br.get("reason") == "already_correct_skip":
+            row["skipped_already_correct"] = True
+        if aid:
+            row["automation_id"] = aid
+        row = await _supervise_selector_result(
+            page, report, row, intent=str(val)
+        )
+        if not is_verified_fill_row(row) or not str(row.get("readback") or "").strip():
+            continue
+        try:
+            from field_lock import lock_verified_field
+
+            lock_verified_field(
+                report,
+                row,
+                field_type=ftype,
+                selector=sel,
+                automation_id=aid or None,
+                via=row.get("via"),
+            )
+        except Exception:
+            pass
+        filled_out.append(row)
+        ok_idx.add(idx)
+    return filled_out, ok_idx
+
+
 async def fill_from_extract(
     page,
     values: dict,
@@ -7342,8 +8012,27 @@ async def fill_from_extract(
 
     resume_done = RESUME_UPLOAD in already_types
     filled_types = set(already_types)
+    batch_ok_idx: set[int] = set()
+    try:
+        extra_filled, batch_ok_idx = await _batch_fill_extract_vanilla(
+            page,
+            raw_fields,
+            values,
+            filled_types,
+            platform=platform,
+            report=report,
+        )
+        filled.extend(extra_filled)
+        for row in extra_filled:
+            ft = row.get("type")
+            if ft:
+                filled_types.add(str(ft))
+    except Exception:
+        batch_ok_idx = set()
 
     for idx, raw in enumerate(raw_fields):
+        if idx in batch_ok_idx:
+            continue
         try:
             await wait_while_paused(page, report)
         except Exception:
@@ -8835,17 +9524,68 @@ async def _resume_fill_after_hold(
             except Exception:
                 pass
         else:
-            # Non-Workday: light leftover rescan via same-session helpers if any.
+            # Non-Workday: leftover Flash must finish remaining radios + consent.
+            # Hold-incomplete is not "done" — Continue resumes inpage leftovers.
             out["workday_continue"] = False
             note_fill_activity(
                 layer="1",
                 action="rescan after hold",
-                detail="leftovers / already_correct",
+                detail="leftovers / radios / consent",
             )
             try:
                 await push_fill_activity(page)
             except Exception:
                 pass
+            try:
+                from unanswered_choices import scan_and_promote_unanswered
+
+                await scan_and_promote_unanswered(
+                    page, report, platform=platform
+                )
+            except Exception as e:
+                report.setdefault("errors", []).append(
+                    {"hold_resume_unanswered": str(e)[:120]}
+                )
+            try:
+                from leftover_miss_scan import promote_l01_misses
+
+                await promote_l01_misses(page, report)
+            except Exception as e:
+                report.setdefault("errors", []).append(
+                    {"hold_resume_l01": str(e)[:120]}
+                )
+            if str(platform or "").lower() == "ashby":
+                try:
+                    already = {
+                        f.get("type")
+                        for f in (report.get("filled") or [])
+                        if isinstance(f, dict) and f.get("type")
+                    }
+                    ashby_filled = await fill_ashby_widgets(
+                        page, values, report=report
+                    )
+                    _merge_ashby_reassert_rows(report, already, ashby_filled)
+                    out["ashby_widgets_resume"] = True
+                except Exception as e:
+                    report.setdefault("errors", []).append(
+                        {"hold_resume_ashby": str(e)[:120]}
+                    )
+            if report.get("flash_leftovers_requested") or _flash_candidate_leftovers(
+                report
+            ):
+                try:
+                    inpage = await run_inpage_flash_leftovers(page, report, values)
+                    report["flash"] = inpage
+                    out["inpage_flash_resume"] = True
+                except Exception as e:
+                    report.setdefault("errors", []).append(
+                        {"hold_resume_inpage": str(e)[:120]}
+                    )
+            try:
+                _finalize(report)
+            except Exception:
+                pass
+            out["leftover_resume"] = True
     except Exception as e:
         report.setdefault("errors", []).append(
             {"resume_fill_after_hold": str(e)[:160]}
@@ -10555,6 +11295,8 @@ async def run_fast_fill_async(
                 )
 
                 force_ca = consume_create_account_sentinel()
+                if force_ca:
+                    report["force_create_account"] = True
                 auth_pre = await run_auth_gate_before_pack(
                     page,
                     values,
@@ -11197,9 +11939,13 @@ async def run_fast_fill_async(
                 ) > 0
                 if formish:
                     try:
-                        lever_filled = await fill_lever_widgets(fill_ctx, values)
+                        lever_filled = await fill_lever_widgets(
+                            fill_ctx, values, report=report
+                        )
                         if not lever_filled and fill_ctx is not page:
-                            lever_filled = await fill_lever_widgets(page, values)
+                            lever_filled = await fill_lever_widgets(
+                                page, values, report=report
+                            )
                         for f in lever_filled or []:
                             if f.get("ok") and f.get("verified"):
                                 ftype = f.get("type")
@@ -11292,7 +12038,7 @@ async def run_fast_fill_async(
                 try:
                     import os as _os
 
-                    from page_progress import capture_step_fingerprint
+                    from page_progress import capture_step_fingerprint, note_settle_cycle
 
                     max_advances = int(_os.environ.get("FASTFILL_MAX_ADVANCES", "4"))
                     advance_rounds: list[dict] = []
@@ -11313,6 +12059,12 @@ async def run_fast_fill_async(
                             {k: v for k, v in adv.items() if k != "clicks"}
                         )
                         if not adv.get("advanced"):
+                            # No advance → empty settle; budgeted STOP if cycling
+                            note_settle_cycle(
+                                report,
+                                filled_this_cycle=0,
+                                advanced_this_cycle=False,
+                            )
                             break
                         changed = False
                         for _ in range(20):
@@ -11324,15 +12076,33 @@ async def run_fast_fill_async(
                                 changed = True
                                 break
                         if not changed:
+                            report["stuck_on_same_page"] = True
+                            note_settle_cycle(
+                                report,
+                                filled_this_cycle=0,
+                                advanced_this_cycle=False,
+                                stuck_on_same_page=True,
+                            )
                             break
                         report["multipage_steps"] = int(
                             report.get("multipage_steps") or 0
                         ) + 1
+                        note_settle_cycle(
+                            report,
+                            filled_this_cycle=1,
+                            advanced_this_cycle=True,
+                        )
+                        if report.get("progress_stop"):
+                            break
                     report["page_advance"] = (
                         dict(advance_rounds[-1]) if advance_rounds else {}
                     )
                     report["page_advance"]["clicks"] = last_clicks
                     report["page_advance"]["rounds"] = len(advance_rounds)
+                    if report.get("progress_decision"):
+                        report["page_advance"]["progress_decision"] = report[
+                            "progress_decision"
+                        ]
                     report["page_advance_rounds"] = advance_rounds
                 except Exception as e:
                     report.setdefault("errors", []).append(
@@ -11416,7 +12186,10 @@ async def run_fast_fill_async(
         # Flash leftovers MUST run before hold-open (same session when possible).
         # In-page first so headed review shows filled leftovers; Skyvern only if
         # still needed and not holding a headed browser for human review.
-        from flash_leftovers import build_leftovers_handoff, run_flash_leftovers
+        from flash_leftovers import (
+            build_leftovers_handoff,
+            run_flash_leftovers,
+        )
         from page_progress import apply_progress_verdict_gates
 
         report = _finalize(report)
@@ -11469,6 +12242,17 @@ async def run_fast_fill_async(
             except Exception as e:
                 report.setdefault("errors", []).append(
                     {"enumerate_unanswered": str(e)[:160]}
+                )
+            # Per-entry Ashby radios + consent (name-collision groups + checkboxes)
+            # must reach Flash even when refill_passes=0 / hold-open is next.
+            try:
+                from leftover_miss_scan import promote_l01_misses
+
+                await promote_l01_misses(page, report)
+                report = _finalize(report)
+            except Exception as e:
+                report.setdefault("errors", []).append(
+                    {"l01_miss_scan_pre_flash": str(e)[:160]}
                 )
         if flash_leftovers and (
             report.get("leftover_count", 0) > 0
@@ -11978,6 +12762,21 @@ def _field_identity_keys(row: dict) -> set[str]:
     return keys
 
 
+def _identity_keys_overlap(a: set[str], b: set[str], *, min_len: int = 8) -> bool:
+    """Exact or distinctive substring overlap (0842Z countryPhoneCode vs phonenumber--countryphonecode)."""
+    if a & b:
+        return True
+    for x in a:
+        if len(x) < min_len:
+            continue
+        for y in b:
+            if len(y) < min_len:
+                continue
+            if x in y or y in x:
+                return True
+    return False
+
+
 def _finalize(report: dict, *, close_step_log: bool = False) -> dict:
     # Safety invariants — every report JSON must carry these.
     report["never_submit"] = True
@@ -12018,6 +12817,44 @@ def _finalize(report: dict, *, close_step_log: bool = False) -> dict:
             "run_id": step_log.run_id,
             "steps_index": str(step_log.out_dir / "steps" / "index.html"),
         }
+        try:
+            from flight_recorder import finalize_flight, get_flight, note_flight
+
+            note_flight(
+                report,
+                "run_end",
+                action="run_end",
+                layer="fast_fill",
+                gate_kind="flight",
+                gate_result=str(report.get("verdict") or ""),
+                gate_reason=(
+                    f"filled={len(report.get('filled') or [])} "
+                    f"leftovers={len(report.get('leftovers') or [])} "
+                    f"advance_blocked={report.get('advance_blocked_reason')}"
+                ),
+                advance_decision=(
+                    "STOP"
+                    if report.get("progress_stop") or report.get("advance_blocked_reason")
+                    else None
+                ),
+                advance_reason=str(
+                    report.get("progress_stop_reason")
+                    or report.get("advance_blocked_reason")
+                    or ""
+                )
+                or None,
+            )
+            finalize_flight(report)
+            flight = get_flight(report)
+            if flight is not None:
+                report["flight_recorder_summary"] = {
+                    "jsonl": str(flight.jsonl_path),
+                    "log": str(flight.log_path),
+                    "event_count": flight._seq,
+                    "run_id": flight.run_id,
+                }
+        except Exception as e:
+            report.setdefault("errors", []).append({"flight_finalize": str(e)[:120]})
     # Promote nested widget/gh evidence onto verified before counting
     for f in report.get("filled") or []:
         if not isinstance(f, dict):
@@ -12077,7 +12914,7 @@ def _finalize(report: dict, *, close_step_log: bool = False) -> dict:
             if sel and sel in _verified_selectors:
                 return True
             u_keys = _field_identity_keys(u)
-            if u_keys and u_keys & _verified_identity_keys:
+            if u_keys and _identity_keys_overlap(u_keys, _verified_identity_keys):
                 return True
             return False
 
@@ -12086,6 +12923,12 @@ def _finalize(report: dict, *, close_step_log: bool = False) -> dict:
             for u in report["leftovers"]
             if not (isinstance(u, dict) and _leftover_is_verified_filled(u))
         ]
+    try:
+        from leftover_miss_scan import demote_invented_leftovers
+
+        demote_invented_leftovers(report)
+    except Exception:
+        pass
     report["leftover_count"] = len(report.get("leftovers") or [])
     # Persist scan/plan artifacts when an artifact dir is known
     try:
@@ -12193,6 +13036,68 @@ async def _maybe_shot(page, screenshot: bool | Path, report: dict) -> None:
         report.setdefault("errors", []).append({"screenshot": str(e)[:160]})
 
 
+_NON_JSON_TYPES = frozenset(
+    {
+        "Locator",
+        "Page",
+        "Browser",
+        "BrowserContext",
+        "ActionSupervisor",
+        "FillStepLog",
+        "FieldAttemptLog",
+        "FieldLockSession",
+    }
+)
+
+
+def report_for_json(report: dict | None) -> dict:
+    """Return a JSON-serializable copy of a fill report.
+
+    Strips live handles (``_page``, log objects, locators) and breaks circular
+    references so ``json.dumps`` never raises on headed runs.
+    """
+    if not report:
+        return {}
+
+    def _sanitize(obj: Any, seen: set[int]) -> Any:
+        if obj is None or isinstance(obj, (bool, int, float, str)):
+            return obj
+        oid = id(obj)
+        if isinstance(obj, dict):
+            if oid in seen:
+                return "<circular>"
+            seen.add(oid)
+            out: dict[str, Any] = {}
+            for k, v in obj.items():
+                ks = str(k)
+                if ks.startswith("_"):
+                    continue
+                out[ks] = _sanitize(v, seen)
+            seen.discard(oid)
+            return out
+        if isinstance(obj, (list, tuple)):
+            if oid in seen:
+                return ["<circular>"]
+            seen.add(oid)
+            out_list = [_sanitize(x, seen) for x in obj]
+            seen.discard(oid)
+            return out_list
+        if isinstance(obj, set):
+            return sorted(str(x) for x in obj)
+        cn = type(obj).__name__
+        if cn in _NON_JSON_TYPES:
+            return f"<{cn}>"
+        if hasattr(obj, "jsonl_path") or hasattr(obj, "audit_path"):
+            return f"<{cn}>"
+        try:
+            json.dumps(obj)
+            return obj
+        except (TypeError, ValueError):
+            return f"<{cn}>"
+
+    return _sanitize(dict(report), set())
+
+
 def run_fast_fill(
     url: str,
     *,
@@ -12255,14 +13160,17 @@ def run_fast_fill(
         # Drop non-JSON attempt logger object before serialize
         log_obj = report.pop("_attempt_log", None)
         step_obj = report.pop("_fill_step_log", None)
+        flight_obj = report.pop("_flight_recorder", None)
         report.pop("_page", None)
         try:
-            out_path.write_text(json.dumps(report, indent=2, default=str))
+            out_path.write_text(json.dumps(report_for_json(report), indent=2, default=str))
         finally:
             if log_obj is not None:
                 report["_attempt_log"] = log_obj
             if step_obj is not None:
                 report["_fill_step_log"] = step_obj
+            if flight_obj is not None:
+                report["_flight_recorder"] = flight_obj
         report["report_path"] = str(out_path)
     return report
 
@@ -12441,6 +13349,20 @@ def main() -> int:
         help="Disable in-page Pause/Continue overlay (also: FASTFILL_FILL_PAUSE=0)",
     )
     ap.add_argument(
+        "--flight-recorder",
+        action="store_true",
+        default=None,
+        help=(
+            "Emit live flight.jsonl + flight.log decision trace (default ON when headed). "
+            "Also: FASTFILL_FLIGHT=1. See scripts/fastfill/LIVE_VISIBILITY.md."
+        ),
+    )
+    ap.add_argument(
+        "--no-flight-recorder",
+        action="store_true",
+        help="Disable flight recorder even when headed (also: FASTFILL_FLIGHT=0)",
+    )
+    ap.add_argument(
         "--captcha-timeout",
         type=int,
         default=int(DEFAULT_CAPTCHA_TIMEOUT_S),
@@ -12561,6 +13483,11 @@ def main() -> int:
         fill_pause = True
     else:
         fill_pause = None  # headed default ON
+
+    if args.no_flight_recorder:
+        os.environ["FASTFILL_FLIGHT"] = "0"
+    elif args.flight_recorder:
+        os.environ["FASTFILL_FLIGHT"] = "1"
 
     if args.no_refill_wait_enter:
         refill_wait_enter: bool | None = False

@@ -1,0 +1,16 @@
+{
+  "expectations": [
+    {
+      "field": "formField-fieldOfStudy",
+      "must_not_contain": "Arts-Other",
+      "notes": "Wrong autofill chip must be cleared from fieldOfStudy wrap."
+    },
+    {
+      "field": "formField-discipline",
+      "must_contain": "Science-Computer",
+      "notes": "Matching discipline chip preserved."
+    }
+  ],
+  "intent": "Computer Science",
+  "notes": "NXP dual-alias FoS: prefer-match on discipline must not skip reclaim on fieldOfStudy."
+}

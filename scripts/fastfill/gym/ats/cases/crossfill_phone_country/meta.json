@@ -3,5 +3,7 @@
   "platform": "workday",
   "fail_class": "cross_fill_phone",
   "playbook": "react_select_portal",
-  "description": "Adjacent phone-country and how-heard selects; fill must not cross-contaminate (phone≠jobboard)."
+  "description": "Adjacent phone-country and how-heard selects; fill must not cross-contaminate (phone\u2260jobboard).",
+  "fidelity": "medium",
+  "live_signoff": false
 }

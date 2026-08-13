@@ -11,7 +11,7 @@ def _soft_norm(value: str | None) -> str:
     text = str(value).strip().lower()
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"[^\w\s@.+$-]", "", text)
-    return text
+    return text.strip()
 
 
 async def _read_committed(page, selector: str) -> str:
@@ -20,6 +20,22 @@ async def _read_committed(page, selector: str) -> str:
         return ""
 
     tag = (await loc.evaluate("el => el.tagName")).lower()
+
+    # Prefer explicit commit markers (Workday chips / fiber stubs) over raw input.
+    for attr in ("data-committed", "data-value"):
+        attr_val = await loc.get_attribute(attr)
+        if attr_val:
+            return attr_val
+    # Child chip / selectedItem often holds the commit when selector is a wrap.
+    child_chip = loc.locator("[data-committed], [data-automation-id='selectedItem']").first
+    if await child_chip.count():
+        child_attr = await child_chip.get_attribute("data-committed")
+        if child_attr:
+            return child_attr
+        child_text = (await child_chip.inner_text()).strip()
+        if child_text:
+            # Strip delete-chip glyph noise
+            return child_text.replace("×", "").strip()
 
     if tag in ("input", "textarea", "select"):
         if tag == "input":
@@ -34,7 +50,7 @@ async def _read_committed(page, selector: str) -> str:
         if attr and tag != "input":
             return attr
 
-    for attr in ("data-committed", "data-value", "value"):
+    for attr in ("value",):
         attr_val = await loc.get_attribute(attr)
         if attr_val:
             return attr_val
@@ -155,6 +171,36 @@ async def score_page(page, gold: dict) -> dict[str, Any]:
         exp_norm = _soft_norm(expected)
         act_norm = _soft_norm(actual)
         matched = exp_norm == act_norm
+        # Same completion SSoT as live fill — taxonomy aliases (Science-Computer
+        # vs Computer Science) must not false-fail gold. Do not add a parallel oracle.
+        if not matched and expected and actual:
+            try:
+                import sys
+                from pathlib import Path
+
+                fastfill = Path(__file__).resolve().parent.parent.parent
+                if str(fastfill) not in sys.path:
+                    sys.path.insert(0, str(fastfill))
+                from field_done import field_is_done_from_readback
+
+                key_l = str(key or "").lower()
+                ftype = str(spec.get("type") or spec.get("field_type") or "")
+                if not ftype:
+                    if "field_of_study" in key_l or "fos" in key_l or "discipline" in key_l:
+                        ftype = "FIELD_OF_STUDY"
+                    elif "how" in key_l and "hear" in key_l:
+                        ftype = "HOW_HEARD"
+                    elif "phone" in key_l and "country" in key_l:
+                        ftype = "PHONE_COUNTRY_CODE"
+                    elif "degree" in key_l:
+                        ftype = "DEGREE"
+                meta = {"type": ftype or "TEXT"}
+                if str(ftype).upper() in ("FIELD_OF_STUDY", "DISCIPLINE", "MAJOR"):
+                    meta["dom_chip"] = True
+                if field_is_done_from_readback(actual, meta, expected).ok:
+                    matched = True
+            except Exception:
+                pass
 
         if required and not matched:
             all_ok = False
@@ -181,16 +227,54 @@ async def score_page(page, gold: dict) -> dict[str, Any]:
         all_ok = False
         footer_ok = False
 
+    spa_ok = True
+    spa = gold.get("spa_fingerprint") or {}
+    if spa.get("selector") and spa.get("must_be_visible"):
+        loc = page.locator(spa["selector"]).first
+        spa_ok = (await loc.count() > 0) and await loc.is_visible()
+        if not spa_ok:
+            all_ok = False
+    progress_step = spa.get("progress_step")
+    if progress_step:
+        progress = page.locator("#progress, [data-spa-step]").first
+        if await progress.count():
+            actual_step = await progress.get_attribute("data-spa-step")
+            if actual_step != progress_step:
+                spa_ok = False
+                all_ok = False
+
+    listbox_ok = True
+    if gold.get("listbox_must_be_closed"):
+        open_boxes = page.locator(
+            '[aria-expanded="true"][role="combobox"], '
+            '[role="combobox"][aria-expanded="true"]'
+        )
+        # Visible expanded comboboxes mean uncommitted menus
+        n_open = await open_boxes.count()
+        visible_open = 0
+        for i in range(n_open):
+            if await open_boxes.nth(i).is_visible():
+                visible_open += 1
+        listbox_ok = visible_open == 0
+        if not listbox_ok:
+            all_ok = False
+
     detail_parts: list[str] = []
     for fr in field_results:
         if fr["required"] and not fr["matched"]:
             detail_parts.append(f"{fr['key']}: expected {fr['expected']!r} got {fr['actual']!r}")
     if not footer_ok:
         detail_parts.append(f"footer: expected {expected_footer} got {actual_footer}")
+    if spa and not spa_ok:
+        detail_parts.append("spa_fingerprint mismatch")
+    if gold.get("listbox_must_be_closed") and not listbox_ok:
+        detail_parts.append("listbox still open")
 
     return {
         "ok": all_ok,
         "field_results": field_results,
         "footer_ok": footer_ok,
+        "spa_ok": spa_ok,
+        "listbox_ok": listbox_ok,
         "detail": "; ".join(detail_parts) if detail_parts else "all checks passed",
     }

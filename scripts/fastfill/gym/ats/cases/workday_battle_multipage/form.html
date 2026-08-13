@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — Workday Battle Multipage (high-fidelity intent)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 620px; margin: 2rem auto 5rem; color: #222; }
+    label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+    input[type=text], input[type=email], input[type=tel] {
+      width: 100%; box-sizing: border-box; padding: 8px 12px;
+      border: 1px solid #ccc; border-radius: 4px; margin-bottom: 0.75rem;
+    }
+    .field { margin-bottom: 1.1rem; }
+    .step { display: none; }
+    .step.active { display: block; }
+    .actions { margin-top: 1.5rem; }
+    button { padding: 8px 18px; margin-right: 8px; }
+    .progress { color: #555; font-size: 0.9rem; margin-bottom: 0.75rem; }
+    .banner {
+      display: none; background: #fdecea; border: 1px solid #f5c2c0;
+      color: #842029; padding: 10px 12px; border-radius: 6px; margin-bottom: 1rem;
+    }
+    .banner.visible { display: block; }
+    .hint { color: #666; font-size: 0.88rem; margin-bottom: 1rem; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: #fde8e8; border: 1px solid #f5c6c6; border-radius: 16px;
+      padding: 4px 10px; font-size: 14px; margin-bottom: 6px;
+    }
+    .chip.ok { background: #e8f0fe; border-color: #c6dafc; }
+    .chip button {
+      border: none; background: transparent; cursor: pointer;
+      font-size: 16px; line-height: 1; padding: 0 2px; color: #555;
+    }
+    [role="listbox"], .menu {
+      border: 1px solid #ccc; border-radius: 4px; padding: 6px; margin-top: 4px;
+      background: #fff; box-shadow: 0 4px 14px rgba(0,0,0,.08);
+    }
+    [data-automation-id="promptOption"], [role="option"] {
+      padding: 6px 8px; cursor: pointer; border-radius: 3px;
+    }
+    [data-automation-id="promptOption"]:hover, [role="option"]:hover { background: #eef; }
+    .review-summary { background: #f6f8fa; border-radius: 6px; padding: 1rem; }
+    .review-summary dt { font-weight: 600; margin-top: 0.5rem; }
+    .review-summary dd { margin: 0.15rem 0 0 0; }
+    .fiber-proxy { position: relative; }
+    .fiber-proxy input.fiber-display { background: #fafafa; }
+    nav.steps-rail { font-size: 0.8rem; color: #777; margin-bottom: 0.5rem; }
+    .date-spin {
+      display: flex; gap: 8px; align-items: center; margin-bottom: 0.5rem;
+    }
+    .date-spin input { width: 4.5rem; margin-bottom: 0; }
+    .select__control {
+      border: 1px solid #ccc; border-radius: 4px; padding: 8px 12px;
+      cursor: pointer; background: #fff; min-height: 20px;
+    }
+    .select__placeholder { color: #999; }
+    .sticky-decoy {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: #f5f5f5; border-top: 1px solid #ddd;
+      padding: 10px 24px; display: flex; gap: 12px; justify-content: flex-end;
+      z-index: 40;
+    }
+    .sticky-decoy.hidden { display: none; }
+    .sticky-decoy .decoy-submit { background: #1f5eff; color: #fff; border: 0; }
+  </style>
+</head>
+<body>
+  <!--
+    Battle gym v1 — static SPA-ish Workday mirror (dummy only, never submit).
+    Cycle 1 traps: date-spin skip, dual FoS Major vs Discipline, phone country
+    vs number, sticky mid-wizard Submit decoy, empty-cycle Next (listbox open),
+    wrong last-name autofill reclaim. Cycle 2: How-Heard stays open while State
+    is filled (interacting trap). v0 traps kept: fiber address, open HH,
+    Illinois vs Idaho, validation banners, SPA fingerprints.
+    Honest limits: not pixel-perfect Fiber, no real auth/CAPTCHA/resume upload.
+  -->
+  <h1>Workday Application — Battle Gym</h1>
+  <p class="hint">
+    Dummy applicant: Test Dummy · randommail6969@gmail.com · never submit.
+    Fidelity intent: high for advance gates + widget traps; live Workday still required.
+  </p>
+  <nav class="steps-rail" aria-label="progress" id="steps-rail">
+    My Information · My Experience · My Education · Application Questions · Review
+  </nav>
+  <p class="progress" id="progress" data-spa-step="contact" data-fingerprint="contactInformationPage|contact">
+    Step 1 of 5 — My Information
+  </p>
+  <div id="validation-banner" class="banner" role="alert" data-automation-id="errorMessage">
+    Please correct the following errors before continuing.
+  </div>
+
+  <!-- ========== PAGE 1: My Information ========== -->
+  <div id="step-contact" class="step active" data-step="contact"
+       data-automation-id="contactInformationPage">
+    <h2>My Information</h2>
+
+    <div class="field">
+      <label for="first-name">First Name <span aria-hidden="true">*</span></label>
+      <input id="first-name" name="firstName" type="text" required
+             data-automation-id="legalNameSection_firstName" value="" placeholder="Legal first name">
+    </div>
+    <div class="field">
+      <label for="last-name">Last Name <span aria-hidden="true">*</span></label>
+      <!-- Wrong autofill injector: "Test" (first-name bleed) must reclaim Dummy, never lock-skip -->
+      <input id="last-name" name="lastName" type="text" required
+             data-automation-id="legalNameSection_lastName"
+             data-wrong-autofill="Test" value="Test" placeholder="Legal last name">
+      <p class="hint">Wrong autofill: last name starts as Test — reclaim Dummy, do not lock-skip.</p>
+    </div>
+    <div class="field">
+      <label for="email">Email <span aria-hidden="true">*</span></label>
+      <input id="email" name="email" type="email" required
+             data-automation-id="email" value="" placeholder="test+gym@example.com">
+    </div>
+
+    <!-- Phone country vs number (cross-fill: never put LinkedIn / dial code in the number) -->
+    <div class="field" data-automation-id="formField-phoneNumber--countryPhoneCode" id="phone-country-field">
+      <label for="phone-country-control">Country Phone Code <span aria-hidden="true">*</span></label>
+      <div id="phone-country-control" class="select__control" role="combobox"
+           aria-expanded="false" aria-haspopup="listbox" tabindex="0"
+           data-automation-id="phone-country" data-field-type="PHONE_COUNTRY" data-committed="">
+        <span class="select__placeholder">Select country code…</span>
+      </div>
+      <div id="phone-country-menu" class="menu" role="listbox" aria-label="Phone country" style="display:none;">
+        <div role="option" data-automation-id="promptOption">United States of America (+1)</div>
+        <div role="option" data-automation-id="promptOption">United Kingdom (+44)</div>
+        <div role="option" data-automation-id="promptOption">India (+91)</div>
+      </div>
+    </div>
+    <div class="field" data-automation-id="formField-phoneNumber">
+      <label for="phone-num">Phone Number <span aria-hidden="true">*</span></label>
+      <input id="phone-num" type="tel" name="phoneNumber" aria-required="true"
+             value="" data-automation-id="phone-number"
+             placeholder="Number only — not country code">
+    </div>
+
+    <!-- Fiber-stubborn: display input clears on blur unless commit via fiber proxy -->
+    <div class="field fiber-proxy" data-automation-id="formField-addressLine1">
+      <label for="address-fiber">Address Line 1 <span aria-hidden="true">*</span></label>
+      <input id="address-fiber" class="fiber-display" type="text"
+             data-automation-id="addressSection_addressLine1"
+             aria-required="true" value="" placeholder="Street address"
+             autocomplete="off">
+      <input id="address-fiber-committed" type="hidden" data-committed="" value="">
+      <p class="hint" id="fiber-hint">Fiber stub: plain fill evaporates on blur until committed.</p>
+    </div>
+
+    <!-- How-Heard hierarchical — starts OPEN (focus steal / keystroke trap) -->
+    <div class="field" data-automation-id="formField-source" id="hh-wrap">
+      <label for="hh-input">How Did You Hear About Us? <span aria-hidden="true">*</span></label>
+      <div data-automation-id="multiSelectContainer">
+        <span id="hh-chrome">0 items selected</span>
+        <input id="hh-input" data-automation-id="source--source" role="combobox"
+               aria-required="true" aria-expanded="true" value="" autocomplete="off">
+      </div>
+      <div id="hh-menu" role="listbox" data-automation-id="promptLeafNode" class="menu">
+        <div id="hh-top"></div>
+        <div id="hh-sub" style="display:none;"></div>
+      </div>
+    </div>
+
+    <!-- State: promptOption without role=option — Illinois, never Idaho -->
+    <div class="field" data-automation-id="formField-countryRegion" id="state-wrap">
+      <label for="state-btn">State <span aria-hidden="true">*</span></label>
+      <button type="button" id="state-btn"
+              data-automation-id="addressSection_countryRegion"
+              name="countryRegion" aria-haspopup="listbox" aria-expanded="false"
+              data-committed="">
+        Select One
+      </button>
+      <div id="state-menu" class="menu" style="display:none;" data-automation-id="promptLeafNode">
+        <div data-automation-id="promptOption" data-automation-label="Idaho">Idaho</div>
+        <div data-automation-id="promptOption" data-automation-label="Illinois">Illinois</div>
+        <div data-automation-id="promptOption" data-automation-label="Indiana">Indiana</div>
+        <div data-automation-id="promptOption" data-automation-label="Iowa">Iowa</div>
+      </div>
+    </div>
+
+    <!-- Live Workday: County/regionSubdivision appears after State commit -->
+    <div class="field" id="county-wrap" data-automation-id="formField-regionSubdivision1"
+         style="display:none;">
+      <label for="county">County <span aria-hidden="true">*</span></label>
+      <input id="county" type="text" name="county" aria-required="true"
+             data-automation-id="addressSection_regionSubdivision1" value=""
+             placeholder="County">
+      <p class="hint">Address cascade: County mounts after Illinois — do not ADVANCE without it.</p>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="btn-contact-next"
+              data-automation-id="bottom-navigation-next-button">Save and Continue</button>
+    </div>
+  </div>
+
+  <!-- ========== PAGE 2: Experience ========== -->
+  <div id="step-experience" class="step" data-step="experience"
+       data-automation-id="workExperiencePage">
+    <h2 data-automation-id="myExperiencePage">My Experience</h2>
+    <div class="field">
+      <label for="job-title">Job Title <span aria-hidden="true">*</span></label>
+      <input id="job-title" name="jobTitle" type="text" required
+             data-automation-id="jobTitle" value="" placeholder="Most recent role">
+    </div>
+    <div class="field">
+      <label for="company">Company <span aria-hidden="true">*</span></label>
+      <input id="company" name="company" type="text" required
+             data-automation-id="companyName" value="" placeholder="Employer">
+    </div>
+
+    <!-- Date spin skip: start already committed; Present checked → end date must stay empty -->
+    <div class="field" data-automation-id="formField-startDate" id="start-date-wrap">
+      <label>From <span aria-hidden="true">*</span></label>
+      <div class="date-spin" data-automation-id="dateSection" data-skip-intent="already_correct">
+        <span data-automation-id="dateSectionMonth-display" aria-label="Month — From*">08</span>
+        <span data-automation-id="dateSectionYear-display" aria-label="Year — From*">2017</span>
+        <input id="start-month" type="text" data-automation-id="dateSectionMonth-input"
+               aria-label="Month — From*" aria-required="true" value="08" maxlength="2">
+        <input id="start-year" type="text" data-automation-id="dateSectionYear-input"
+               aria-label="Year — From*" aria-required="true" value="2017" maxlength="4">
+      </div>
+      <p class="hint">Date spin already committed (08/2017) — skip, do not thrash.</p>
+    </div>
+    <div class="field">
+      <label>
+        <input id="currently-work" type="checkbox" checked name="currentlyWorkHere">
+        I currently work here
+      </label>
+    </div>
+    <div class="field" data-automation-id="formField-endDate" id="end-date-wrap">
+      <label>To</label>
+      <div class="date-spin" data-automation-id="dateSection">
+        <span id="end-month-display" data-automation-id="dateSectionMonth-display">MM</span>
+        <span id="end-year-display" data-automation-id="dateSectionYear-display">YYYY</span>
+        <input id="end-month" type="text" data-automation-id="dateSectionMonth-input"
+               aria-label="Month — To" value="" placeholder="MM" disabled>
+        <input id="end-year" type="text" data-automation-id="dateSectionYear-input"
+               aria-label="Year — To" value="" placeholder="YYYY" disabled>
+      </div>
+      <p class="hint">Present checked — end date skip (empty is correct).</p>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="btn-exp-back">Back</button>
+      <button type="button" id="btn-exp-next"
+              data-automation-id="bottom-navigation-next-button">Save and Continue</button>
+    </div>
+  </div>
+
+  <!-- ========== PAGE 3: Education ========== -->
+  <div id="step-education" class="step" data-step="education"
+       data-automation-id="educationPage">
+    <h2>My Education</h2>
+    <div class="field">
+      <label for="school">School or University <span aria-hidden="true">*</span></label>
+      <input id="school" name="school" type="text" required
+             data-automation-id="schoolName" value="" placeholder="Institution">
+    </div>
+
+    <!-- Dual FoS alias: Major (wrong Arts-Other) vs Discipline (correct Science-Computer) -->
+    <div class="field" data-automation-id="formField-major" id="major-field">
+      <label for="major-filter">Major <span aria-hidden="true">*</span></label>
+      <div id="major-chip-wrap">
+        <span class="chip" id="major-chip" data-automation-id="selectedItem"
+              data-committed="Arts-Other">
+          Arts-Other
+          <button type="button" aria-label="delete selected"
+                  data-automation-id="deleteSelected">×</button>
+        </span>
+      </div>
+      <input id="major-filter" type="text" name="major" aria-required="true"
+             role="combobox" aria-expanded="false" value="" autocomplete="off"
+             data-automation-id="major">
+      <div id="major-menu" role="listbox" class="menu" style="display:none;">
+        <div role="option" data-automation-id="promptOption">Arts-Other</div>
+        <div role="option" data-automation-id="promptOption">Science-Computer</div>
+        <div role="option" data-automation-id="promptOption">Computer Science</div>
+        <div role="option" data-automation-id="promptOption">Engineering-Other</div>
+      </div>
+      <p class="hint">Wrong Major chip Arts-Other — reclaim Science-Computer. Do not lock-skip because Discipline matches.</p>
+    </div>
+
+    <div class="field" data-automation-id="formField-discipline" id="disc-field">
+      <label for="disc-filter">Discipline <span aria-hidden="true">*</span></label>
+      <div id="disc-chip-wrap">
+        <span class="chip ok" id="disc-chip" data-automation-id="selectedItem"
+              data-committed="Science-Computer">
+          Science-Computer
+          <button type="button" aria-label="delete selected"
+                  data-automation-id="deleteSelected">×</button>
+        </span>
+      </div>
+      <input id="disc-filter" type="text" name="discipline" aria-required="true"
+             role="combobox" aria-expanded="false" value="" autocomplete="off"
+             data-automation-id="discipline">
+      <div id="disc-menu" role="listbox" class="menu" style="display:none;">
+        <div role="option" data-automation-id="promptOption">Arts-Other</div>
+        <div role="option" data-automation-id="promptOption">Science-Computer</div>
+        <div role="option" data-automation-id="promptOption">Computer Science</div>
+      </div>
+      <p class="hint">Matching Discipline chip — keep. Prefer-match here must not skip Major reclaim.</p>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="btn-edu-back">Back</button>
+      <button type="button" id="btn-edu-next"
+              data-automation-id="bottom-navigation-next-button">Save and Continue</button>
+    </div>
+  </div>
+
+  <!-- ========== PAGE 4: Application Questions ========== -->
+  <div id="step-questions" class="step" data-step="questions"
+       data-automation-id="applicationQuestionsPage">
+    <h2>Application Questions</h2>
+    <p class="hint">Listbox starts expanded — must refuse Advance until closed + committed.</p>
+
+    <div class="field" id="work-auth-field">
+      <label for="work-auth-control">Are you legally authorized to work in the US?*</label>
+      <div id="work-auth-control" class="select__control" role="combobox"
+           aria-expanded="true" aria-haspopup="listbox" tabindex="0"
+           data-automation-id="workAuth" data-committed="">
+        <span class="select__placeholder" style="color:#999">Select One</span>
+      </div>
+      <div id="work-auth-menu" class="menu" role="listbox" aria-label="Work auth">
+        <div role="option" data-automation-id="promptOption">Yes</div>
+        <div role="option" data-automation-id="promptOption">No</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="btn-q-back">Back</button>
+      <button type="button" id="btn-q-next"
+              data-automation-id="bottom-navigation-next-button">Save and Continue</button>
+    </div>
+  </div>
+
+  <!-- ========== PAGE 5: Review ========== -->
+  <div id="step-review" class="step" data-step="review"
+       data-automation-id="reviewPage">
+    <h2>Review</h2>
+    <p>Please review your application before submitting.</p>
+    <dl class="review-summary" id="review-summary"></dl>
+    <div class="actions">
+      <button type="button" id="btn-review-back">Back</button>
+      <button type="button" id="btn-submit"
+              data-automation-id="bottom-navigation-next-button">Submit</button>
+    </div>
+  </div>
+
+  <!-- Sticky mid-wizard Submit decoy (hidden on Review). Never submit. -->
+  <div id="sticky-decoy" class="sticky-decoy" data-footer-kind="ADVANCE">
+    <button type="button" id="btn-decoy-submit" class="decoy-submit"
+            data-automation-id="submitApplication">Submit</button>
+  </div>
+
+  <script>
+    (function () {
+      var STEPS = ['contact', 'experience', 'education', 'questions', 'review'];
+      var LABELS = [
+        'My Information', 'My Experience', 'My Education',
+        'Application Questions', 'Review'
+      ];
+      var PAGE_AIDS = [
+        'contactInformationPage', 'workExperiencePage', 'educationPage',
+        'applicationQuestionsPage', 'reviewPage'
+      ];
+      var idx = 0;
+      var progress = document.getElementById('progress');
+      var banner = document.getElementById('validation-banner');
+      var decoy = document.getElementById('sticky-decoy');
+
+      function spaFingerprint() {
+        return PAGE_AIDS[idx] + '|' + STEPS[idx];
+      }
+      function showBanner(msg) {
+        banner.textContent = msg || 'Please correct the following errors before continuing.';
+        banner.classList.add('visible');
+      }
+      function hideBanner() { banner.classList.remove('visible'); }
+
+      function showStep(i) {
+        idx = i;
+        STEPS.forEach(function (name, j) {
+          var el = document.getElementById('step-' + name);
+          if (el) el.classList.toggle('active', j === i);
+        });
+        progress.textContent = 'Step ' + (i + 1) + ' of 5 — ' + LABELS[i];
+        progress.setAttribute('data-spa-step', STEPS[i]);
+        progress.setAttribute('data-automation-id', PAGE_AIDS[i] + '_progress');
+        progress.setAttribute('data-fingerprint', spaFingerprint());
+        decoy.classList.toggle('hidden', i === 4);
+        hideBanner();
+        if (i === 4) buildReview();
+      }
+
+      function buildReview() {
+        var dl = document.getElementById('review-summary');
+        dl.innerHTML = '';
+        function row(label, val) {
+          if (!val) return;
+          var dt = document.createElement('dt'); dt.textContent = label;
+          var dd = document.createElement('dd'); dd.textContent = val;
+          dl.appendChild(dt); dl.appendChild(dd);
+        }
+        row('Name',
+          document.getElementById('first-name').value.trim() + ' ' +
+          document.getElementById('last-name').value.trim());
+        row('Email', document.getElementById('email').value.trim());
+        row('Phone Country', document.getElementById('phone-country-control').getAttribute('data-committed') || '');
+        row('Phone', document.getElementById('phone-num').value.trim());
+        row('Address', document.getElementById('address-fiber-committed').value.trim() ||
+          document.getElementById('address-fiber-committed').getAttribute('data-committed'));
+        row('How Heard', document.getElementById('hh-input').getAttribute('data-committed') || '');
+        row('State', document.getElementById('state-btn').getAttribute('data-committed') ||
+          document.getElementById('state-btn').textContent.trim());
+        row('Job Title', document.getElementById('job-title').value.trim());
+        row('Company', document.getElementById('company').value.trim());
+        row('Start Date',
+          (document.getElementById('start-month').value.trim() || '') + '/' +
+          (document.getElementById('start-year').value.trim() || ''));
+        row('School', document.getElementById('school').value.trim());
+        var major = document.querySelector('#major-chip-wrap [data-automation-id="selectedItem"]');
+        row('Major', major ? (major.getAttribute('data-committed') || major.textContent.replace('×', '').trim()) : '');
+        var disc = document.querySelector('#disc-chip-wrap [data-automation-id="selectedItem"]');
+        row('Discipline', disc ? (disc.getAttribute('data-committed') || disc.textContent.replace('×', '').trim()) : '');
+        row('Work Auth', document.getElementById('work-auth-control').getAttribute('data-committed') || '');
+      }
+
+      /* ---- Fiber-stubborn address ---- */
+      var fiberDisplay = document.getElementById('address-fiber');
+      var fiberCommitted = document.getElementById('address-fiber-committed');
+      var fiberPending = '';
+
+      fiberDisplay.addEventListener('input', function () {
+        fiberPending = fiberDisplay.value;
+      });
+      fiberDisplay.addEventListener('blur', function () {
+        var committed = fiberCommitted.getAttribute('data-committed') || '';
+        if (fiberPending && fiberPending === committed) {
+          fiberDisplay.value = committed;
+          return;
+        }
+        fiberDisplay.value = committed;
+        fiberPending = '';
+      });
+      fiberDisplay.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          var v = fiberDisplay.value.trim();
+          if (v) {
+            fiberCommitted.value = v;
+            fiberCommitted.setAttribute('data-committed', v);
+            fiberPending = v;
+          }
+        }
+      });
+      fiberDisplay.addEventListener('commitFiber', function () {
+        var v = fiberDisplay.value.trim();
+        if (v) {
+          fiberCommitted.value = v;
+          fiberCommitted.setAttribute('data-committed', v);
+          fiberPending = v;
+        }
+      });
+      var lastFiber = { v: '', t: 0 };
+      fiberDisplay.addEventListener('change', function () {
+        var now = Date.now();
+        var v = fiberDisplay.value.trim();
+        if (v && v === lastFiber.v && (now - lastFiber.t) < 400) {
+          fiberCommitted.value = v;
+          fiberCommitted.setAttribute('data-committed', v);
+        }
+        lastFiber = { v: v, t: now };
+      });
+
+      /* ---- How-Heard hierarchy (starts open) ---- */
+      var CATEGORIES = [
+        { label: 'Website', drill: true },
+        { label: 'Job Board', drill: true },
+        { label: 'Employee Referral', drill: true }
+      ];
+      var WEB_LEAVES = [
+        'Web - CareerBuilder', 'Web - Indeed', 'Web - LinkedIn', 'Web - Glassdoor'
+      ];
+      var BOARD_LEAVES = ['Indeed', 'LinkedIn', 'Glassdoor'];
+      var hhInput = document.getElementById('hh-input');
+      var hhMenu = document.getElementById('hh-menu');
+      var hhTop = document.getElementById('hh-top');
+      var hhSub = document.getElementById('hh-sub');
+      var hhChrome = document.getElementById('hh-chrome');
+
+      function hhOpen() {
+        hhMenu.style.display = 'block';
+        hhInput.setAttribute('aria-expanded', 'true');
+      }
+      function hhClose() {
+        hhMenu.style.display = 'none';
+        hhInput.setAttribute('aria-expanded', 'false');
+      }
+      function renderHHTop() {
+        hhTop.innerHTML = '';
+        hhSub.style.display = 'none';
+        CATEGORIES.forEach(function (c) {
+          var el = document.createElement('div');
+          el.setAttribute('role', 'option');
+          el.setAttribute('data-automation-id', 'promptOption');
+          el.textContent = c.label + ' >';
+          el.onclick = function () { openHHSub(c.label); };
+          hhTop.appendChild(el);
+        });
+        hhOpen();
+      }
+      function openHHSub(cat) {
+        hhTop.innerHTML = '';
+        hhSub.style.display = 'block';
+        hhSub.innerHTML = '';
+        var leaves = cat === 'Website' ? WEB_LEAVES : BOARD_LEAVES;
+        leaves.forEach(function (l) {
+          var el = document.createElement('div');
+          el.setAttribute('role', 'option');
+          el.setAttribute('data-automation-id', 'promptOption');
+          el.textContent = l;
+          el.onclick = function () { pickHH(l); };
+          hhSub.appendChild(el);
+        });
+      }
+      function pickHH(l) {
+        hhChrome.textContent = '1 item selected, ' + l;
+        hhInput.value = '1 item selected, ' + l;
+        hhInput.setAttribute('data-committed', l);
+        hhClose();
+      }
+      hhInput.addEventListener('focus', renderHHTop);
+      hhInput.addEventListener('click', renderHHTop);
+      renderHHTop(); // injector: starts open
+
+      /* ---- State Illinois ---- */
+      var stateBtn = document.getElementById('state-btn');
+      var stateMenu = document.getElementById('state-menu');
+      function openState() {
+        // Cycle 2 interacting trap: filling State must NOT close How-Heard.
+        // Live Workday often leaves the HH listbox open; Next stays a no-op.
+        stateMenu.style.display = 'block';
+        stateBtn.setAttribute('aria-expanded', 'true');
+      }
+      function closeState() {
+        stateMenu.style.display = 'none';
+        stateBtn.setAttribute('aria-expanded', 'false');
+      }
+      function syncCounty(state) {
+        var wrap = document.getElementById('county-wrap');
+        var inp = document.getElementById('county');
+        if (!wrap || !inp) return;
+        if (state === 'Illinois') {
+          wrap.style.display = 'block';
+        } else {
+          wrap.style.display = 'none';
+          inp.value = '';
+        }
+      }
+      stateBtn.addEventListener('click', function () {
+        if (stateMenu.style.display === 'none') openState();
+        else closeState();
+      });
+      stateMenu.querySelectorAll('[data-automation-id="promptOption"]').forEach(function (el) {
+        el.addEventListener('click', function () {
+          var label = el.getAttribute('data-automation-label') || el.textContent.trim();
+          stateBtn.textContent = label;
+          stateBtn.setAttribute('data-committed', label);
+          closeState();
+          syncCounty(label);
+        });
+      });
+
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { hhClose(); closeState(); closePhoneCountry(); }
+      });
+
+      /* ---- Phone country vs number ---- */
+      var pcControl = document.getElementById('phone-country-control');
+      var pcMenu = document.getElementById('phone-country-menu');
+      function closePhoneCountry() {
+        pcMenu.style.display = 'none';
+        pcControl.setAttribute('aria-expanded', 'false');
+      }
+      function openPhoneCountry() {
+        pcMenu.style.display = 'block';
+        pcControl.setAttribute('aria-expanded', 'true');
+      }
+      pcControl.addEventListener('click', function () {
+        if (pcMenu.style.display === 'none') openPhoneCountry();
+        else closePhoneCountry();
+      });
+      pcMenu.querySelectorAll('[role="option"]').forEach(function (opt) {
+        opt.addEventListener('click', function () {
+          var v = opt.textContent.trim();
+          pcControl.innerHTML = '<span class="select__single-value">' + v + '</span>';
+          pcControl.setAttribute('data-committed', v);
+          closePhoneCountry();
+        });
+      });
+
+      /* ---- Date spin Present skip ---- */
+      var currentlyWork = document.getElementById('currently-work');
+      var endMonth = document.getElementById('end-month');
+      var endYear = document.getElementById('end-year');
+      function syncPresent() {
+        var on = currentlyWork.checked;
+        endMonth.disabled = on;
+        endYear.disabled = on;
+        if (on) {
+          endMonth.value = '';
+          endYear.value = '';
+          document.getElementById('end-month-display').textContent = 'MM';
+          document.getElementById('end-year-display').textContent = 'YYYY';
+        }
+      }
+      currentlyWork.addEventListener('change', syncPresent);
+      syncPresent();
+
+      /* ---- Dual FoS chip widgets ---- */
+      function wireFos(prefix, okLabels) {
+        var wrap = document.getElementById(prefix + '-chip-wrap');
+        var filter = document.getElementById(prefix + '-filter');
+        var menu = document.getElementById(prefix + '-menu');
+        function showChip(label) {
+          wrap.innerHTML = '';
+          var span = document.createElement('span');
+          var ok = okLabels.indexOf(label) >= 0;
+          span.className = 'chip' + (ok ? ' ok' : '');
+          span.id = prefix + '-chip';
+          span.setAttribute('data-automation-id', 'selectedItem');
+          span.setAttribute('data-committed', label);
+          span.textContent = label + ' ';
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.setAttribute('aria-label', 'delete selected');
+          btn.setAttribute('data-automation-id', 'deleteSelected');
+          btn.textContent = '×';
+          btn.onclick = clearChip;
+          span.appendChild(btn);
+          wrap.appendChild(span);
+        }
+        function clearChip() {
+          wrap.innerHTML = '';
+          filter.value = '';
+          filter.setAttribute('aria-expanded', 'false');
+          menu.style.display = 'none';
+        }
+        var existing = wrap.querySelector('[data-automation-id="deleteSelected"]');
+        if (existing) existing.onclick = clearChip;
+        filter.addEventListener('focus', function () {
+          menu.style.display = 'block';
+          filter.setAttribute('aria-expanded', 'true');
+        });
+        filter.addEventListener('input', function () {
+          var q = filter.value.toLowerCase();
+          menu.style.display = 'block';
+          filter.setAttribute('aria-expanded', 'true');
+          Array.from(menu.querySelectorAll('[role="option"]')).forEach(function (el) {
+            el.style.display = !q || el.textContent.toLowerCase().indexOf(q) >= 0 ? '' : 'none';
+          });
+        });
+        menu.querySelectorAll('[role="option"]').forEach(function (el) {
+          el.addEventListener('click', function () {
+            showChip(el.textContent.trim());
+            filter.value = '';
+            menu.style.display = 'none';
+            filter.setAttribute('aria-expanded', 'false');
+          });
+        });
+        return { committed: function () {
+          var chip = wrap.querySelector('[data-automation-id="selectedItem"]');
+          if (!chip) return '';
+          return (chip.getAttribute('data-committed') || chip.textContent.replace('×', '').trim());
+        }, filter: filter };
+      }
+      var majorW = wireFos('major', ['Science-Computer', 'Computer Science']);
+      var discW = wireFos('disc', ['Science-Computer', 'Computer Science']);
+
+      /* ---- Work auth open listbox ---- */
+      var waControl = document.getElementById('work-auth-control');
+      var waMenu = document.getElementById('work-auth-menu');
+      waMenu.querySelectorAll('[role="option"]').forEach(function (opt) {
+        opt.addEventListener('click', function () {
+          var v = opt.textContent.trim();
+          waControl.innerHTML = '<span class="select__single-value">' + v + '</span>';
+          waControl.setAttribute('data-committed', v);
+          waControl.setAttribute('aria-expanded', 'false');
+          waMenu.style.display = 'none';
+        });
+      });
+
+      function listboxOpenOnPage() {
+        if (idx === 0 && hhInput.getAttribute('aria-expanded') === 'true') return true;
+        if (idx === 0 && stateBtn.getAttribute('aria-expanded') === 'true') return true;
+        if (idx === 0 && pcControl.getAttribute('aria-expanded') === 'true') return true;
+        if (idx === 2 && majorW.filter.getAttribute('aria-expanded') === 'true') return true;
+        if (idx === 2 && discW.filter.getAttribute('aria-expanded') === 'true') return true;
+        if (idx === 3 && waControl.getAttribute('aria-expanded') === 'true') return true;
+        return false;
+      }
+
+      function notWrongAutofill(el) {
+        var wrong = el.getAttribute('data-wrong-autofill') || '';
+        var v = el.value.trim();
+        return !!(v && v !== wrong);
+      }
+
+      function phoneLooksLikeCountry(v) {
+        return /\+1|\+44|\+91|united states|country code/i.test(v);
+      }
+
+      function contactComplete() {
+        var first = document.getElementById('first-name').value.trim();
+        var lastOk = notWrongAutofill(document.getElementById('last-name'));
+        var email = document.getElementById('email').value.trim();
+        var addr = fiberCommitted.getAttribute('data-committed') || '';
+        var hh = hhInput.getAttribute('data-committed') || '';
+        var st = stateBtn.getAttribute('data-committed') || '';
+        var pc = pcControl.getAttribute('data-committed') || '';
+        var pn = document.getElementById('phone-num').value.trim();
+        if (phoneLooksLikeCountry(pn)) return false;
+        var countyWrap = document.getElementById('county-wrap');
+        var countyVisible = countyWrap && countyWrap.style.display !== 'none';
+        var countyOk = !countyVisible || !!(document.getElementById('county').value.trim());
+        return !!(first && lastOk && email && addr && hh && st && pc && pn && countyOk);
+      }
+
+      function startDateOk() {
+        return document.getElementById('start-month').value.trim() === '08' &&
+          document.getElementById('start-year').value.trim() === '2017';
+      }
+
+      function fosOk(label) {
+        return label === 'Science-Computer' || label === 'Computer Science';
+      }
+
+      /* ---- Advance gates (empty-cycle: Next is a no-op while listbox open) ---- */
+      document.getElementById('btn-contact-next').addEventListener('click', function () {
+        if (listboxOpenOnPage()) {
+          showBanner('Cannot continue while a listbox is still open.');
+          return; // fingerprint unchanged
+        }
+        if (!contactComplete()) {
+          showBanner('Required fields are incomplete on My Information.');
+          return;
+        }
+        showStep(1);
+      });
+
+      document.getElementById('btn-exp-back').addEventListener('click', function () { showStep(0); });
+      document.getElementById('btn-exp-next').addEventListener('click', function () {
+        if (!document.getElementById('job-title').value.trim() ||
+            !document.getElementById('company').value.trim()) {
+          showBanner('Required experience fields are empty.');
+          return;
+        }
+        if (!startDateOk()) {
+          showBanner('Start date spin must stay 08/2017 (skip, do not thrash).');
+          return;
+        }
+        if (currentlyWork.checked && (endMonth.value.trim() || endYear.value.trim())) {
+          showBanner('End date must stay empty while I currently work here is checked.');
+          return;
+        }
+        showStep(2);
+      });
+
+      document.getElementById('btn-edu-back').addEventListener('click', function () { showStep(1); });
+      document.getElementById('btn-edu-next').addEventListener('click', function () {
+        if (listboxOpenOnPage()) {
+          showBanner('Cannot continue while a listbox is still open.');
+          return;
+        }
+        var school = document.getElementById('school').value.trim();
+        var major = majorW.committed();
+        var disc = discW.committed();
+        if (!school) {
+          showBanner('School is required.');
+          return;
+        }
+        if (!fosOk(major)) {
+          showBanner('Major must be Science-Computer (wrong autofill Arts-Other blocked). Discipline match is not enough.');
+          return;
+        }
+        if (!fosOk(disc)) {
+          showBanner('Discipline must stay Science-Computer.');
+          return;
+        }
+        showStep(3);
+      });
+
+      document.getElementById('btn-q-back').addEventListener('click', function () { showStep(2); });
+      document.getElementById('btn-q-next').addEventListener('click', function () {
+        if (listboxOpenOnPage()) {
+          showBanner('Cannot continue while a listbox is still open.');
+          return;
+        }
+        var wa = waControl.getAttribute('data-committed') || '';
+        if (!wa) {
+          showBanner('Work authorization is required.');
+          return;
+        }
+        showStep(4);
+      });
+
+      document.getElementById('btn-review-back').addEventListener('click', function () { showStep(3); });
+      document.getElementById('btn-submit').addEventListener('click', function (e) {
+        e.preventDefault();
+        alert('Gym fixture — submit blocked (never submit).');
+      });
+      document.getElementById('btn-decoy-submit').addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        showBanner('Sticky Submit is a mid-wizard decoy — never submit. Use Save and Continue.');
+      });
+
+      window.__battleGym = {
+        showStep: showStep,
+        commitFiber: function (v) {
+          fiberDisplay.value = v;
+          fiberCommitted.value = v;
+          fiberCommitted.setAttribute('data-committed', v);
+        },
+        listboxOpen: listboxOpenOnPage,
+        step: function () { return STEPS[idx]; },
+        fingerprint: spaFingerprint,
+        hhClose: hhClose,
+        hhOpen: hhOpen
+      };
+    })();
+  </script>
+</body>
+</html>

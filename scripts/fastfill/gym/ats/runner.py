@@ -233,7 +233,7 @@ async def _self_test_async() -> dict[str, Any]:
 
 
 def run_ats_gym(smoke: bool = True) -> dict[str, Any]:
-    """Run gym self-test; exported for improvement_cycle integration."""
+    """Run gym self-test (smoke or full)."""
     import asyncio
 
     if not smoke:
@@ -261,12 +261,18 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.list:
+        print("# fidelity live_signoff case — gym green ≠ live (see GYM_VS_LIVE.md)")
         for cid in list_cases():
             meta_path = CASES_DIR / cid / "meta.json"
+            fid = "?"
+            signoff = "?"
             desc = ""
             if meta_path.is_file():
-                desc = json.loads(meta_path.read_text()).get("description", "")
-            print(f"{cid}\t{desc}")
+                meta = json.loads(meta_path.read_text())
+                desc = meta.get("description", "")
+                fid = meta.get("fidelity", "?")
+                signoff = meta.get("live_signoff", "?")
+            print(f"{fid}\t{signoff}\t{cid}\t{desc}")
         return 0
 
     if args.self_test:

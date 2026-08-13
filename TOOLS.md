@@ -217,36 +217,16 @@ skyvern_runtime/venv/bin/python scripts/fastfill/fill_attribution.py --self-test
 skyvern_runtime/venv/bin/python scripts/fastfill/vision_judge.py --self-test
 # Agent role prompts: scripts/fastfill/CYCLE_AGENTS.md
 
-# Offline gym → gated live canary (preferred before endless live train)
-# Gyms: scripts/fastfill/gym/ (ATS fixtures + FormFactory). Docs: gym/README.md
+# Offline ATS gym (gym green ≠ live). Docs: scripts/fastfill/gym/README.md
 skyvern_runtime/venv/bin/python scripts/fastfill/gym/ats/runner.py --self-test
-skyvern_runtime/venv/bin/python scripts/fastfill/gym/formfactory_runner.py --self-test
-skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --phase train_offline
-skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --phase gate_live
-skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --phase canary_live --limit 7
-# One shot: offline green → arm → eval_suite --limit 7 → LIVE_CANARY_DONE hard stop
-skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --phase offline_then_canary
-skyvern_runtime/venv/bin/python scripts/fastfill/improvement_cycle.py --status
-# Live train / headed / eval_suite refuse until ARMED and not DONE (override: --force-live)
-
-# Live fill monitor (DOM + step-log watchdog — alongside headed cycle)
-# Detects Sign-in-vs-Create-account, midwizard advance, salary blanks.
-# --correct writes .force_create_account / .fill_paused (never CAPTCHA / never submit)
-# Stale skip: CAPTCHA budget / login wall / no progress → FIX_SKIPPED + next job
-skyvern_runtime/venv/bin/python scripts/fastfill/live_fill_monitor.py --self-test
+skyvern_runtime/venv/bin/python scripts/fastfill/live_gate.py --status
+# Live eval/cycle refuse until ARMED and not DONE (override: --force-live)
 skyvern_runtime/venv/bin/python scripts/fastfill/test_stale_skip.py
-# One command (headed train + monitor + skip policy):
-skyvern_runtime/venv/bin/python scripts/fastfill/run_headed_cycle_with_monitor.py \
-  --limit 4 --working-streak 3 --min-platforms 3 --require-workday
-# Or: improvement_cycle.py --phase train --mode attended --with-monitor …
 # Skip budgets (env): FASTFILL_CAPTCHA_TIMEOUT_S=120 FASTFILL_STALE_NO_PROGRESS_S=180
 #   FASTFILL_STALE_ZERO_ACTIVITY_S=120 FASTFILL_HOLD_SUPPRESS_GRACE_S=120
 #   FASTFILL_LOGIN_WALL_SKIP_S=60 FASTFILL_AGENT4_WAIT_S=45 FASTFILL_FILL_PAUSE=0
 # Stale-skip does NOT fire during CAPTCHA wait / hold / Agent4 FIX wait / recent steps;
 # CAPTCHA attended budget still skips Stripe-forever walls separately.
-# Separate terminals (legacy):
-#   T1: improvement_cycle.py --phase train --mode attended --limit 4 …
-#   T2: live_fill_monitor.py --watch-latest --correct
 
 # Record/replay cache (selector→type only; no PII values)
 skyvern_runtime/venv/bin/python scripts/fastfill/record_replay.py --list

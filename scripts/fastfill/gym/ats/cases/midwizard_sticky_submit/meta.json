@@ -2,5 +2,7 @@
   "id": "midwizard_sticky_submit",
   "platform": "generic",
   "fail_class": "midwizard_footer",
-  "description": "Mid-wizard page with sticky Next and Submit; footer is ADVANCE when required fields remain empty."
+  "description": "Mid-wizard page with sticky Next and Submit; footer is ADVANCE when required fields remain empty.",
+  "fidelity": "medium",
+  "live_signoff": false
 }

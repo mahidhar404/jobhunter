@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym — Workday Wrong Autofill Re-lock</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 560px; margin: 2rem auto; }
+    label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+    .field { margin-bottom: 1.25rem; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: #fde8e8; border: 1px solid #f5c6c6; border-radius: 16px;
+      padding: 4px 10px; font-size: 14px; margin-bottom: 6px;
+    }
+    .chip button {
+      border: none; background: transparent; cursor: pointer;
+      font-size: 16px; line-height: 1; padding: 0 2px; color: #555;
+    }
+    input[type=text] {
+      border: 1px solid #ccc; border-radius: 4px; padding: 8px 12px; width: 100%;
+      box-sizing: border-box;
+    }
+    #menu { border: 1px solid #ccc; border-radius: 4px; padding: 4px; margin-top: 4px; display: none; }
+    [role="option"] { padding: 6px 8px; cursor: pointer; border-radius: 3px; }
+    [role="option"]:hover { background: #eef; }
+    button.nav { margin-top: 1.5rem; padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <h1>Education — Field of Study (re-lock guard)</h1>
+  <p>Resume autofill committed Arts-Other · intent Computer Science — must reclaim, never lock-skip.</p>
+
+  <div class="field" data-automation-id="formField-fieldOfStudy" id="fos-field">
+    <label for="fos-filter">Field of Study*</label>
+    <div id="fos-chip-wrap">
+      <span class="chip" id="fos-chip" data-automation-id="selectedItem">
+        Arts-Other
+        <button type="button" aria-label="delete selected" data-automation-id="deleteSelected">×</button>
+      </span>
+    </div>
+    <input id="fos-filter" type="text" name="fieldOfStudy" aria-required="true"
+           role="combobox" aria-expanded="false" value="" autocomplete="off"
+           data-automation-id="fieldOfStudy" />
+    <div id="menu" role="listbox">
+      <div role="option" data-automation-id="promptOption">Arts-Other</div>
+      <div role="option" data-automation-id="promptOption">Science-Computer</div>
+      <div role="option" data-automation-id="promptOption">Computer Science</div>
+      <div role="option" data-automation-id="promptOption">Engineering-Other</div>
+    </div>
+  </div>
+
+  <button class="nav" data-automation-id="bottom-navigation-next-button">Save and Continue</button>
+
+  <script>
+    const chipWrap = document.getElementById('fos-chip-wrap');
+    const filter = document.getElementById('fos-filter');
+    const menu = document.getElementById('menu');
+
+    function showChip(label) {
+      chipWrap.innerHTML = '';
+      const span = document.createElement('span');
+      span.className = 'chip';
+      span.id = 'fos-chip';
+      span.setAttribute('data-automation-id', 'selectedItem');
+      span.setAttribute('data-committed', label);
+      span.textContent = label + ' ';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.setAttribute('aria-label', 'delete selected');
+      btn.setAttribute('data-automation-id', 'deleteSelected');
+      btn.textContent = '×';
+      btn.onclick = clearChip;
+      span.appendChild(btn);
+      chipWrap.appendChild(span);
+    }
+
+    function clearChip() {
+      chipWrap.innerHTML = '';
+      filter.value = '';
+      filter.setAttribute('aria-expanded', 'false');
+      menu.style.display = 'none';
+    }
+
+    document.getElementById('fos-chip').querySelector('button').onclick = clearChip;
+
+    filter.addEventListener('focus', () => {
+      menu.style.display = 'block';
+      filter.setAttribute('aria-expanded', 'true');
+    });
+
+    filter.addEventListener('input', () => {
+      const q = filter.value.toLowerCase();
+      menu.style.display = 'block';
+      filter.setAttribute('aria-expanded', 'true');
+      Array.from(menu.querySelectorAll('[role="option"]')).forEach(el => {
+        const t = el.textContent.toLowerCase();
+        el.style.display = !q || t.includes(q) ? '' : 'none';
+      });
+    });
+
+    menu.querySelectorAll('[role="option"]').forEach(el => {
+      el.addEventListener('click', () => {
+        showChip(el.textContent.trim());
+        filter.value = '';
+        menu.style.display = 'none';
+        filter.setAttribute('aria-expanded', 'false');
+      });
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!document.getElementById('fos-field').contains(e.target)) {
+        menu.style.display = 'none';
+        filter.setAttribute('aria-expanded', 'false');
+      }
+    });
+  </script>
+</body>
+</html>

@@ -22,7 +22,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -43,6 +43,110 @@ def _run(cmd: list[str], *, label: str) -> tuple[int, str]:
     return proc.returncode, f"[{label}]\n{out}"
 
 
+def gate_unit_script(script: str) -> tuple[int, str]:
+    """Run a unit test module; exit 0 only when all tests pass."""
+    return _run([str(PY), str(HERE / script)], label=script)
+
+
+def gate_tier1() -> tuple[int, str]:
+    """Offline merge hygiene: unit + gym + re-score last live artifact.
+
+    Does **not** run a headed browser. Exit 0 with gym green is ``gym_pass`` only.
+    ``live_pass`` comes solely from scoring an existing live artifact (may be stale)
+    and is reported separately — never promote gym green to live signoff.
+    See ``GYM_VS_LIVE.md``.
+    """
+    parts: list[str] = []
+    worst = 0
+    gym_labels = {
+        "test_field_done.py",
+        "test_action_supervisor.py",
+        "test_fill_contract.py",
+        "adversarial.py",
+        "detection_matrix.py",
+    }
+    gym_codes: list[int] = []
+    live_code: int | None = None
+    live_pass: bool | None = None
+
+    steps: list[tuple[str, Callable[[], tuple[int, str]]]] = [
+        ("test_field_done.py", lambda: gate_unit_script("test_field_done.py")),
+        ("test_action_supervisor.py", lambda: gate_unit_script("test_action_supervisor.py")),
+    ]
+    fill_contract = HERE / "test_fill_contract.py"
+    if fill_contract.is_file():
+        steps.append(
+            ("test_fill_contract.py", lambda: gate_unit_script("test_fill_contract.py"))
+        )
+    steps.extend(
+        [
+            (
+                "adversarial.py",
+                lambda: _run([str(PY), str(HERE / "gym/ats/adversarial.py")], label="adversarial"),
+            ),
+            (
+                "detection_matrix.py",
+                lambda: _run(
+                    [str(PY), str(HERE / "gym/ats/detection_matrix.py")],
+                    label="detection_matrix",
+                ),
+            ),
+            (
+                "reliability_gate --skip-run",
+                lambda: _run(
+                    [str(PY), str(HERE / "reliability_gate.py"), "--skip-run"],
+                    label="reliability_gate --skip-run",
+                ),
+            ),
+        ]
+    )
+    for label, fn in steps:
+        c, o = fn()
+        parts.append(o)
+        if label in gym_labels:
+            gym_codes.append(c)
+        elif label == "reliability_gate --skip-run":
+            live_code = c
+            # Prefer explicit live_pass from gate JSON when present
+            gate_path = HERE / "reliability_gate.json"
+            if gate_path.is_file():
+                try:
+                    g = json.loads(gate_path.read_text(encoding="utf-8"))
+                    if "live_pass" in g:
+                        live_pass = bool(g.get("live_pass"))
+                    else:
+                        live_pass = bool(g.get("pass"))
+                except Exception:
+                    live_pass = c == 0
+            else:
+                live_pass = c == 0
+        if c != 0:
+            worst = max(worst, c if c else 1)
+
+    gym_pass = all(c == 0 for c in gym_codes) if gym_codes else False
+    summary = {
+        "confidence_lane": "offline_tier1_hygiene",
+        "gym_pass": gym_pass,
+        "live_pass": live_pass,
+        "live_score_exit": live_code,
+        "live_signoff_ok": bool(live_pass),
+        "note": (
+            "gym_pass≠live_pass. Headed reliability_gate (no --skip-run) + "
+            "flight_recorder are live truth. See GYM_VS_LIVE.md."
+        ),
+    }
+    parts.append("[tier1_honesty]\n" + json.dumps(summary, indent=2))
+    # Persist beside reliability_gate for dashboards
+    out = HERE / "tier1_gate_honesty.json"
+    try:
+        out.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+    # Exit non-zero if gym failed OR live artifact score failed (honest).
+    # Callers must still read live_pass — gym green alone is not signoff.
+    return worst, "\n".join(parts)
+
+
 def gate_unit_honesty() -> tuple[int, str]:
     """L0: honest metrics + vision + attribution self-tests."""
     parts: list[str] = []
@@ -59,10 +163,14 @@ def gate_unit_honesty() -> tuple[int, str]:
     return code, "\n".join(parts)
 
 
-def gate_scorecard_eval() -> tuple[int, str]:
+def gate_scorecard_eval(*, fail_if_missing: bool = False) -> tuple[int, str]:
     """L1: scorecard on eval_results with --gate (Flash-off + honesty)."""
     if not EVAL_DIR.is_dir():
-        return 0, "[scorecard] skip — no eval_results dir yet"
+        msg = "[scorecard] FAIL — no eval_results dir (run eval_suite first)"
+        return (1 if fail_if_missing else 0), msg
+    if not any(EVAL_DIR.glob("eval_*.json")):
+        msg = "[scorecard] FAIL — eval_results/ exists but no eval_*.json artifacts"
+        return (1 if fail_if_missing else 0), msg
     return _run(
         [str(PY), str(HERE / "scorecard_fast.py"), "--eval", "--gate"],
         label="scorecard_fast --eval --gate",
@@ -317,6 +425,16 @@ def main() -> int:
     ap.add_argument("--eval-limit", type=int, default=0)
     ap.add_argument("--eval-strict-safety", action="store_true")
     ap.add_argument("--eval-strict", action="store_true")
+    ap.add_argument(
+        "--tier1",
+        action="store_true",
+        help="Tier-1 lane: field_done + action_supervisor + gym + reliability_gate --skip-run",
+    )
+    ap.add_argument(
+        "--fail-missing-eval",
+        action="store_true",
+        help="Fail (not skip) when skyvern_runtime/eval_results/ is missing or empty",
+    )
     args = ap.parse_args()
 
     if args.self_test:
@@ -324,6 +442,30 @@ def main() -> int:
         print(json.dumps(result, indent=2))
         print("regression_gates self-test OK")
         return 0
+
+    if args.tier1:
+        c, o = gate_tier1()
+        print(o)
+        honesty_path = HERE / "tier1_gate_honesty.json"
+        gym_p = live_p = None
+        if honesty_path.is_file():
+            try:
+                h = json.loads(honesty_path.read_text(encoding="utf-8"))
+                gym_p, live_p = h.get("gym_pass"), h.get("live_pass")
+            except Exception:
+                pass
+        if c == 0:
+            print(
+                f"\n=== regression_gates --tier1: exit 0 "
+                f"(gym_pass={gym_p} live_pass={live_p}) — NOT live signoff ==="
+            )
+        else:
+            print(
+                f"\n=== regression_gates --tier1: FAIL exit={c} "
+                f"(gym_pass={gym_p} live_pass={live_p}) ==="
+            )
+        print("See GYM_VS_LIVE.md — headed reliability_gate + flight_recorder for live.")
+        return c
 
     logs: list[str] = []
     worst = 0
@@ -333,7 +475,7 @@ def main() -> int:
     worst = max(worst, c)
 
     if not args.skip_scorecard:
-        c, o = gate_scorecard_eval()
+        c, o = gate_scorecard_eval(fail_if_missing=True)
         logs.append(o)
         worst = max(worst, 1 if c else 0)
 

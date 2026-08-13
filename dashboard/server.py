@@ -4106,6 +4106,8 @@ def _configure_fastfill_child_env(
         addr = (address_text or "").strip()
         if addr:
             env["FASTFILL_ADDRESS_TEXT"] = addr
+    env.setdefault("FASTFILL_ACTION_SUPERVISOR", "1")
+    env.setdefault("FASTFILL_STRICT_COMPLETION", "1")
 
 
 def _playwright_fastfill_argv(

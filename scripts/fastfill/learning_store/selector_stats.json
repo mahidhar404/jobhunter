@@ -1540,31 +1540,31 @@
     "workday": {
       "selectors": {
         "#emailAddress": {
-          "attempts": 30,
-          "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 30,
-          "success_rate": 1.0,
-          "type": "contact_email",
-          "updated_at": "2026-08-11T19:52:16Z"
-        },
-        "[data-automation-id=\"createAccountCheckbox\"]": {
-          "attempts": 14,
-          "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 14,
-          "success_rate": 1.0,
-          "type": "createAccountCheckbox",
-          "updated_at": "2026-08-11T19:52:16Z"
-        },
-        "[data-automation-id=\"email\"]": {
-          "attempts": 39,
+          "attempts": 49,
           "fail": 0,
           "host": "nxp.wd3.myworkdayjobs.com",
-          "success": 39,
+          "success": 49,
+          "success_rate": 1.0,
+          "type": "contact_email",
+          "updated_at": "2026-08-13T13:34:51Z"
+        },
+        "[data-automation-id=\"createAccountCheckbox\"]": {
+          "attempts": 29,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 29,
+          "success_rate": 1.0,
+          "type": "createAccountCheckbox",
+          "updated_at": "2026-08-13T13:34:51Z"
+        },
+        "[data-automation-id=\"email\"]": {
+          "attempts": 55,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 55,
           "success_rate": 1.0,
           "type": "email",
-          "updated_at": "2026-08-12T06:00:32Z"
+          "updated_at": "2026-08-13T13:34:51Z"
         },
         "[data-automation-id=\"formField-candidateIsPreviousWorker\"]": {
           "attempts": 7,
@@ -1576,49 +1576,67 @@
           "updated_at": "2026-08-11T19:52:16Z"
         },
         "[data-automation-id=\"formField-country\"] button": {
-          "attempts": 38,
-          "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 38,
-          "success_rate": 1.0,
-          "type": "addressSection_country",
-          "updated_at": "2026-08-11T19:52:16Z"
-        },
-        "[data-automation-id=\"formField-countryRegion\"] button": {
-          "attempts": 29,
-          "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 29,
-          "success_rate": 1.0,
-          "type": "addressSection_countryRegion",
-          "updated_at": "2026-08-11T19:52:16Z"
-        },
-        "[data-automation-id=\"formField-phoneNumber\"] input[type=\"text\"]": {
-          "attempts": 39,
-          "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 39,
-          "success_rate": 1.0,
-          "type": "phone-number",
-          "updated_at": "2026-08-11T19:52:16Z"
-        },
-        "[data-automation-id=\"formField-phoneType\"] button": {
-          "attempts": 36,
-          "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 36,
-          "success_rate": 1.0,
-          "type": "phone-device-type",
-          "updated_at": "2026-08-11T19:52:16Z"
-        },
-        "[data-automation-id=\"password\"]": {
-          "attempts": 40,
+          "attempts": 60,
           "fail": 0,
           "host": "nxp.wd3.myworkdayjobs.com",
-          "success": 40,
+          "success": 60,
+          "success_rate": 1.0,
+          "type": "addressSection_country",
+          "updated_at": "2026-08-13T13:34:51Z"
+        },
+        "[data-automation-id=\"formField-countryRegion\"] button": {
+          "attempts": 46,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 46,
+          "success_rate": 1.0,
+          "type": "addressSection_countryRegion",
+          "updated_at": "2026-08-13T13:34:51Z"
+        },
+        "[data-automation-id=\"formField-degree\"]": {
+          "attempts": 14,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 14,
+          "success_rate": 1.0,
+          "type": "education/formField-degree",
+          "updated_at": "2026-08-13T13:34:51Z"
+        },
+        "[data-automation-id=\"formField-fieldOfStudy\"]": {
+          "attempts": 14,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 14,
+          "success_rate": 1.0,
+          "type": "education/formField-fieldOfStudy",
+          "updated_at": "2026-08-13T09:39:58Z"
+        },
+        "[data-automation-id=\"formField-phoneNumber\"] input[type=\"text\"]": {
+          "attempts": 61,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 61,
+          "success_rate": 1.0,
+          "type": "phone-number",
+          "updated_at": "2026-08-13T13:34:51Z"
+        },
+        "[data-automation-id=\"formField-phoneType\"] button": {
+          "attempts": 58,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 58,
+          "success_rate": 1.0,
+          "type": "phone-device-type",
+          "updated_at": "2026-08-13T13:34:51Z"
+        },
+        "[data-automation-id=\"password\"]": {
+          "attempts": 56,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 56,
           "success_rate": 1.0,
           "type": "password",
-          "updated_at": "2026-08-12T06:00:32Z"
+          "updated_at": "2026-08-13T13:34:51Z"
         },
         "[data-automation-id=\"phone-sms-opt-in\"]": {
           "attempts": 8,
@@ -1630,22 +1648,22 @@
           "updated_at": "2026-08-11T19:52:16Z"
         },
         "[data-automation-id=\"verifyPassword\"]": {
-          "attempts": 21,
+          "attempts": 36,
           "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 21,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 36,
           "success_rate": 1.0,
           "type": "verifyPassword",
-          "updated_at": "2026-08-11T19:52:16Z"
+          "updated_at": "2026-08-13T13:34:51Z"
         },
         "ashby_zip_input": {
-          "attempts": 22,
+          "attempts": 29,
           "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 22,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 29,
           "success_rate": 1.0,
           "type": "ADDRESS_ZIP",
-          "updated_at": "2026-08-11T19:52:16Z"
+          "updated_at": "2026-08-13T08:45:06Z"
         },
         "candidateIsPreviousWorker[value=false]": {
           "attempts": 23,
@@ -1655,6 +1673,15 @@
           "success_rate": 1.0,
           "type": "worked_here_before",
           "updated_at": "2026-08-11T19:50:34Z"
+        },
+        "input[data-automation-id=\"dateSectionYear-input\"]:visible": {
+          "attempts": 7,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 7,
+          "success_rate": 1.0,
+          "type": "YEARS_EXPERIENCE",
+          "updated_at": "2026-08-13T11:46:23Z"
         },
         "input[data-automation-id=\"email\"]:visible": {
           "attempts": 1,
@@ -1675,22 +1702,22 @@
           "updated_at": "2026-08-11T10:49:21Z"
         },
         "input[name=\"addressLine1\"]": {
-          "attempts": 39,
+          "attempts": 61,
           "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 39,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 61,
           "success_rate": 1.0,
           "type": "addressSection_addressLine1",
-          "updated_at": "2026-08-11T19:52:16Z"
+          "updated_at": "2026-08-13T13:34:51Z"
         },
         "input[name=\"addressLine1\"]:visible": {
-          "attempts": 39,
+          "attempts": 46,
           "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 39,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 46,
           "success_rate": 1.0,
           "type": "ADDRESS_LINE1",
-          "updated_at": "2026-08-11T19:52:16Z"
+          "updated_at": "2026-08-13T08:45:06Z"
         },
         "input[name=\"addressLine2\"]:visible": {
           "attempts": 5,
@@ -1720,22 +1747,41 @@
           "updated_at": "2026-08-11T18:51:34Z"
         },
         "input[name=\"city\"]": {
-          "attempts": 39,
+          "attempts": 61,
           "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 39,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 61,
           "success_rate": 1.0,
           "type": "addressSection_city",
-          "updated_at": "2026-08-11T19:52:16Z"
+          "updated_at": "2026-08-13T13:34:51Z"
         },
         "input[name=\"city\"]:visible": {
-          "attempts": 39,
+          "attempts": 46,
           "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 39,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 46,
           "success_rate": 1.0,
           "type": "ADDRESS_CITY",
-          "updated_at": "2026-08-11T19:52:16Z"
+          "updated_at": "2026-08-13T08:45:06Z"
+        },
+        "input[name=\"companyName\"]:visible": {
+          "attempts": 8,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 8,
+          "success_rate": 1.0,
+          "type": "CURRENT_COMPANY",
+          "updated_at": "2026-08-13T13:34:51Z"
+        },
+        "input[name=\"currentlyWorkHere\"][value=\"on\"]": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-13T10:56:26Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
         },
         "input[name=\"emailAddress\"]": {
           "attempts": 9,
@@ -1764,59 +1810,77 @@
           "type": "",
           "updated_at": "2026-08-06T05:27:02Z"
         },
-        "input[name=\"legalName--firstName\"]": {
-          "attempts": 39,
+        "input[name=\"jobTitle\"]:visible": {
+          "attempts": 8,
           "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 39,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 8,
+          "success_rate": 1.0,
+          "type": "CURRENT_TITLE",
+          "updated_at": "2026-08-13T13:34:51Z"
+        },
+        "input[name=\"legalName--firstName\"]": {
+          "attempts": 55,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 55,
           "success_rate": 1.0,
           "type": "legalNameSection_firstName",
-          "updated_at": "2026-08-11T19:52:16Z"
+          "updated_at": "2026-08-13T13:34:51Z"
         },
         "input[name=\"legalName--firstName\"]:visible": {
-          "attempts": 56,
+          "attempts": 63,
           "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 56,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 63,
           "success_rate": 1.0,
           "type": "NAME_FIRST",
-          "updated_at": "2026-08-11T19:52:16Z"
+          "updated_at": "2026-08-13T08:45:06Z"
         },
         "input[name=\"legalName--lastName\"]": {
-          "attempts": 39,
+          "attempts": 56,
           "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 39,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 56,
           "success_rate": 1.0,
           "type": "legalNameSection_lastName",
-          "updated_at": "2026-08-11T19:52:16Z"
+          "updated_at": "2026-08-13T13:34:51Z"
         },
         "input[name=\"legalName--lastName\"]:visible": {
-          "attempts": 39,
+          "attempts": 46,
           "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 39,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 46,
           "success_rate": 1.0,
           "type": "NAME_LAST",
-          "updated_at": "2026-08-11T19:52:16Z"
+          "updated_at": "2026-08-13T08:45:06Z"
+        },
+        "input[name=\"linkedInAccount\"]:visible": {
+          "attempts": 8,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 8,
+          "success_rate": 1.0,
+          "type": "LINKEDIN",
+          "updated_at": "2026-08-13T13:34:51Z"
         },
         "input[name=\"phoneNumber\"]:visible": {
-          "attempts": 39,
+          "attempts": 46,
           "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 39,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 46,
           "success_rate": 1.0,
           "type": "PHONE",
-          "updated_at": "2026-08-11T19:52:16Z"
+          "updated_at": "2026-08-13T08:45:06Z"
         },
         "input[name=\"postalCode\"]": {
-          "attempts": 39,
+          "attempts": 61,
           "fail": 0,
-          "host": "moog.wd5.myworkdayjobs.com",
-          "success": 39,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 61,
           "success_rate": 1.0,
           "type": "addressSection_postalCode",
-          "updated_at": "2026-08-11T19:52:16Z"
+          "updated_at": "2026-08-13T13:34:51Z"
         },
         "input[name=\"postalCode\"]:visible": {
           "attempts": 17,
@@ -1844,9 +1908,37 @@
           "success_rate": 1.0,
           "type": "ADDRESS_COUNTY",
           "updated_at": "2026-08-11T19:52:16Z"
+        },
+        "input[name=\"schoolName\"]:visible": {
+          "attempts": 8,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 8,
+          "success_rate": 1.0,
+          "type": "SCHOOL",
+          "updated_at": "2026-08-13T13:34:51Z"
+        },
+        "label:has-text('Role Description') textarea:visible": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-13T10:56:26Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
+        },
+        "workday_upload_ui": {
+          "attempts": 8,
+          "fail": 0,
+          "host": "nxp.wd3.myworkdayjobs.com",
+          "success": 8,
+          "success_rate": 1.0,
+          "type": "RESUME_UPLOAD",
+          "updated_at": "2026-08-13T13:34:51Z"
         }
       },
-      "updated_at": "2026-08-12T06:00:32Z"
+      "updated_at": "2026-08-13T13:34:51Z"
     }
   },
   "version": 1

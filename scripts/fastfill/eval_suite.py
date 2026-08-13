@@ -10,6 +10,7 @@ Usage:
   skyvern_runtime/venv/bin/python scripts/fastfill/eval_suite.py --platform greenhouse
   skyvern_runtime/venv/bin/python scripts/fastfill/eval_suite.py --strict-safety
   skyvern_runtime/venv/bin/python scripts/fastfill/eval_suite.py --strict
+  skyvern_runtime/venv/bin/python scripts/fastfill/eval_suite.py --tier1-strict
 """
 
 from __future__ import annotations
@@ -321,12 +322,17 @@ def main() -> int:
         help="Exit 1 on safety fails; exit 2 on fill-quality SLO fails (reachable rows).",
     )
     ap.add_argument(
+        "--tier1-strict",
+        action="store_true",
+        help="Run GH + Lever + Ashby only with --strict-safety (Tier-1 ATS smoke).",
+    )
+    ap.add_argument(
         "--force-live",
         action="store_true",
         help="Bypass offline→canary live_gate (emergency only).",
     )
     args = ap.parse_args()
-    if args.strict:
+    if args.strict or args.tier1_strict:
         args.strict_safety = True
 
     # Offline-first: refuse live ATS until canary armed (unless --force-live)
@@ -343,7 +349,17 @@ def main() -> int:
 
     suite = _load_suite()
     urls = list(suite.get("urls") or [])
-    if args.platform:
+    if args.tier1_strict:
+        tier1_plats = frozenset({"greenhouse", "lever", "ashby"})
+        urls = [u for u in urls if str(u.get("platform") or "") in tier1_plats]
+        if not urls:
+            print("[eval_suite] tier1-strict: no GH/Lever/Ashby URLs in eval_urls.json", flush=True)
+            return 2
+        print(
+            f"[eval_suite] tier1-strict: platforms={sorted({u.get('platform') for u in urls})}",
+            flush=True,
+        )
+    elif args.platform:
         urls = [u for u in urls if u.get("platform") == args.platform]
     urls = _select_urls(urls, args.limit)
 
@@ -481,7 +497,7 @@ def main() -> int:
     code = gate_exit_code(
         results,
         rollup,
-        strict=bool(args.strict),
+        strict=bool(args.strict or args.tier1_strict),
         strict_safety=bool(args.strict_safety),
     )
     if code == 1:

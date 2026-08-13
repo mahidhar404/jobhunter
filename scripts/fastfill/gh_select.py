@@ -1305,6 +1305,32 @@ async def fill_gh_select(
     if not cands:
         return {"ok": False, "error": "no value/aliases"}
 
+    async def _contract(row: dict) -> dict:
+        if report is None:
+            return row
+        try:
+            from fill_contract import commit_fill
+
+            captured = dict(row)
+            captured.setdefault("type", field_type)
+            captured.setdefault("value", value)
+
+            async def _noop() -> dict:
+                return captured
+
+            fr = await commit_fill(
+                page,
+                {"type": field_type, "mode": "gh_select"},
+                value,
+                _noop,
+                via="gh_select",
+                report=report,
+                before=str(captured.get("shown") or captured.get("readback") or ""),
+            )
+            return {**captured, **fr.row}
+        except Exception:
+            return row
+
     lab, container, control, err = await _resolve_gh_select_container(
         page, label, timeout_ms=timeout_ms
     )
@@ -1332,14 +1358,17 @@ async def fill_gh_select(
                 )
             except Exception:
                 pass
-            return {
+            return await _contract({
                 "ok": True,
                 "picked": shown0,
                 "shown": shown0,
                 "skipped_already_correct": True,
                 "aliases_tried": cands,
                 "verified": True,
-            }
+                "type": field_type,
+                "value": value,
+                "readback": shown0,
+            })
     except Exception:
         pass
 
@@ -1570,7 +1599,7 @@ async def fill_gh_select(
     # Attempt 1: type filter then click option
     result = await _attempt(use_type=True)
     if result.get("ok") and result.get("verified"):
-        return result
+        return await _contract(result)
 
     # Attempt 2 (retry once): reopen, no type, click matching option from full list
     try:
@@ -1582,11 +1611,11 @@ async def fill_gh_select(
     retry["retried"] = True
     retry["first_error"] = result.get("error")
     if retry.get("ok") and retry.get("verified"):
-        return retry
+        return await _contract(retry)
 
     # Both failed — do not thrash further
     await _escape_menu()
-    return {
+    return await _contract({
         "ok": False,
         "error": retry.get("error") or result.get("error") or "select_verify_failed",
         "picked": retry.get("picked") or result.get("picked"),
@@ -1598,7 +1627,7 @@ async def fill_gh_select(
         "option_clicked": bool(
             retry.get("option_clicked") or result.get("option_clicked")
         ),
-    }
+    })
 
 
 async def fill_other_specify(page, text: str) -> bool:

@@ -1,0 +1,8 @@
+{
+  "id": "workday_multipage_to_review",
+  "platform": "workday",
+  "fail_class": "multipage_to_review",
+  "description": "Workday-style 4-step wizard: contact\u2192experience\u2192education\u2192review with FINAL Submit footer.",
+  "fidelity": "low",
+  "live_signoff": false
+}

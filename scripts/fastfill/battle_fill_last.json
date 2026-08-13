@@ -1,0 +1,40 @@
+{
+  "ok": true,
+  "dummy": true,
+  "never_submit": true,
+  "submit_clicked": false,
+  "case": "workday_battle_multipage",
+  "identity_email": "randommail6969@gmail.com",
+  "form_uri": "file:///Users/job/.openclaw/workspace/job-hunter/scripts/fastfill/gym/ats/cases/workday_battle_multipage/form.html",
+  "headed": true,
+  "hold_seconds": 25,
+  "empty_score_ok": false,
+  "workday": {
+    "verdict": "FAIL",
+    "advanced": true,
+    "blocker": "multipage_incomplete",
+    "advance_blocked_reason": null,
+    "workday_current_step": "experience",
+    "phase_b_advanced": true,
+    "phase_c_advanced": true,
+    "phase_c_edu_advanced": true,
+    "phase_c2_advanced": true,
+    "filled_count": 29,
+    "missed_count": 10
+  },
+  "flight_log": "/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/battle_fill_4x7ipa9w/flight.log",
+  "flight_jsonl": "/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/battle_fill_4x7ipa9w/flight.jsonl",
+  "required_empty": [],
+  "listbox_open": [],
+  "flight_log_persist": "/var/folders/7j/12jkfsnx59nc_y3bfcvp8_0m0000gp/T/job-hunter-battle-fill-flight.log",
+  "reached_review": true,
+  "score": {
+    "ok": true,
+    "footer_ok": true,
+    "spa_ok": true,
+    "listbox_ok": true,
+    "detail": "all checks passed",
+    "field_results": []
+  },
+  "detail": "battle fill vs gold OK"
+}
