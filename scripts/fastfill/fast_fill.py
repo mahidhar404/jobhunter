@@ -2822,6 +2822,12 @@ def _normalize_extracted(field: dict) -> dict:
 def _detect_blocker(page_text: str, title: str, url: str) -> str | None:
     blob = f"{title}\n{url}\n{page_text}".lower()
     checks = [
+        ("ashby_spam_flagged", (
+            "flagged as possible spam",
+            "couldn't submit your application",
+            "could not submit your application",
+            "we couldn't submit your application",
+        )),
         ("captcha", ("captcha", "recaptcha", "hcaptcha", "cf-challenge", "challenge-platform",
                      "i'm not a robot", "i am not a robot", "captcha-delivery",
                      "geo.captcha-delivery")),
@@ -8996,7 +9002,20 @@ HOLD_INDEFINITE = -1
 DEFAULT_HEADED_HOLD_SECONDS = 90
 HOLD_OPEN_SECONDS = HOLD_INDEFINITE  # --hold-open waits until interrupt
 VARIETY_MAX_HOLD_SECONDS = 120
-MAX_HEADED_CHROME_MAINS = 1  # hard cap — refuse new headed if ≥1 main running
+def _max_headed_chrome_mains() -> int:
+    """Headed Chrome-for-Testing slots (concurrent dashboard fills).
+
+    Default 3 — enough for parallel fills while one job is on Ready/hold.
+    Override with ``FASTFILL_MAX_HEADED_CHROME_MAINS`` (minimum 1).
+    """
+    raw = (os.environ.get("FASTFILL_MAX_HEADED_CHROME_MAINS") or "3").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 3
+
+
+MAX_HEADED_CHROME_MAINS = _max_headed_chrome_mains()
 HEADED_CHROME_LOCK_PATH = ROOT / "logs" / "chrome_headed.lock"
 
 
@@ -9320,7 +9339,40 @@ async def _hold_for_review(
     if report is not None and "fill_pause_enabled" in report:
         pause_on = bool(report.get("fill_pause_enabled"))
     hold_armed = False
-    if page is not None and pause_on:
+    ashby_hold = False
+    if page is not None:
+        try:
+            from browser_hygiene import is_ashby_url
+
+            ashby_hold = is_ashby_url(page.url or "")
+        except Exception:
+            ashby_hold = False
+    # Ashby bot checks can flag our overlay during manual submit — strip it for
+    # Ashby holds (any completeness) and for Ready review on other ATS.
+    if page is not None and (ashby_hold or hold_action == "hold_review"):
+        try:
+            from browser_hygiene import (
+                ASHBY_SPAM_USER_GUIDANCE,
+                note_ashby_spam_blocker,
+                prepare_browser_for_human_submit,
+            )
+
+            prep = await prepare_browser_for_human_submit(page)
+            if report is not None:
+                report["human_submit_prep"] = prep
+            if ashby_hold and await note_ashby_spam_blocker(page, report):
+                print(f"[ashby] {ASHBY_SPAM_USER_GUIDANCE}", flush=True)
+                out["via"] = "ashby_spam_flagged"
+                out["ashby_spam"] = True
+                return out
+        except Exception as e:
+            if report is not None:
+                report.setdefault("errors", []).append(
+                    {"human_submit_prep": str(e)[:120]}
+                )
+    if page is not None and pause_on and not (
+        ashby_hold or hold_action == "hold_review"
+    ):
         try:
             st0 = await read_fill_pause_state(page)
             if st0.get("captcha_gated"):
@@ -9411,6 +9463,24 @@ async def _hold_for_review(
                                 reason="overlay_continue",
                                 via="headed_hold",
                             )
+                        break
+                except Exception:
+                    pass
+
+            if page is not None and ashby_hold:
+                try:
+                    from browser_hygiene import (
+                        ASHBY_SPAM_USER_GUIDANCE,
+                        note_ashby_spam_blocker,
+                    )
+
+                    if await note_ashby_spam_blocker(page, report):
+                        print(
+                            f"[ashby] spam flag during hold — {ASHBY_SPAM_USER_GUIDANCE}",
+                            flush=True,
+                        )
+                        out["via"] = "ashby_spam_flagged"
+                        out["ashby_spam"] = True
                         break
                 except Exception:
                     pass
@@ -10828,6 +10898,12 @@ async def run_fast_fill_async(
             # Visible demos: slower actions so multipage Workday/GH flows are watchable
             "slow_mo": 200 if not use_headless else 0,
         }
+        try:
+            from browser_hygiene import chromium_launch_hygiene_kwargs
+
+            launch_kwargs.update(chromium_launch_hygiene_kwargs())
+        except Exception:
+            pass
         exe = resolve_playwright_chromium_executable()
         if exe:
             launch_kwargs["executable_path"] = exe

@@ -1303,6 +1303,23 @@ function fillOutcome(job, { full = false } = {}) {
   return null;
 }
 
+/** Ashby anti-spam flag guidance when fill status_detail mentions it. */
+function ashbySpamHintHtml(job) {
+  const d = (job.status_detail || "").toLowerCase();
+  if (
+    !d.includes("ashby spam")
+    && !d.includes("possible spam")
+    && !d.includes("ashby_spam")
+  ) {
+    return "";
+  }
+  return `<div class="fill-outcome" style="border-color:#e8913a;color:#fcd9b6">`
+    + `Ashby flagged this browser session as possible spam. `
+    + `Close the fill window → Start again (fresh session), or submit from `
+    + `Chrome incognito with the apply URL. Reloading the same tab usually `
+    + `does not clear the flag.</div>`;
+}
+
 function companyAppliedInfo(company) {
   const key = (company || "").trim().toLowerCase();
   if (!key) return null;
@@ -2736,6 +2753,7 @@ function renderDossier() {
     ${dossierSourceChipsHtml(job)}
     ${outcome && (bucket === "stuck" || bucket === "ready")
       ? `<div class="fill-outcome${bucket === "ready" ? " ok" : ""}">${escapeHtml(outcome)}</div>` : ""}
+    ${ashbySpamHintHtml(job)}
     ${bucket === "ready"
       ? `<div class="ready-exit-hint">Exit Ready: Mark as applied after you submit on the employer site, or close the fill browser when done reviewing (we never auto-submit). Cancel is unavailable on Ready.</div>`
       : ""}

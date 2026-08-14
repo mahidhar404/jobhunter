@@ -1165,3 +1165,43 @@ async def ensure_fill_pause_ready(page, report: dict | None = None) -> None:
         if isinstance(fp, dict):
             fp["overlay"] = info
             fp.setdefault("enabled", True)
+
+
+_DETACH_OVERLAY_JS = f"""
+() => {{
+  const OID = {OVERLAY_ID!r};
+  const GID = {CONTROL_GLOBAL!r};
+  const CGATE = {CAPTCHA_GATE_GLOBAL!r};
+  const AGID = {ACTIVITY_GLOBAL!r};
+  try {{
+    if (window.__jhFillPauseObserver) {{
+      window.__jhFillPauseObserver.disconnect();
+      delete window.__jhFillPauseObserver;
+    }}
+  }} catch (_) {{}}
+  const root = document.getElementById(OID);
+  if (root) root.remove();
+  try {{ delete window[GID]; }} catch (_) {{}}
+  try {{ delete window[CGATE]; }} catch (_) {{}}
+  try {{ delete window[AGID]; }} catch (_) {{}}
+  return {{ detached: true, had_root: !!root }};
+}}
+"""
+
+
+async def detach_fill_pause_overlay(page) -> dict[str, Any]:
+    """Remove the in-page Pause overlay before human manual submit.
+
+    Ashby and other ATS bot checks can flag injected overlays / globals.
+    Fill can still be resumed via dashboard Start or ``.fill_continue`` sentinel.
+    """
+    if page is None:
+        return {"detached": False, "via": "no_page"}
+    try:
+        out = await page.evaluate(_DETACH_OVERLAY_JS) or {}
+        key = _page_inject_key(page)
+        _last_inject_mono.pop(key, None)
+        _last_paused_known.pop(key, None)
+        return {"detached": True, **out}
+    except Exception as e:
+        return {"detached": False, "error": str(e)[:120]}

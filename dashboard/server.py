@@ -3403,6 +3403,7 @@ def _report_allows_ready(rep: dict) -> bool:
             "email_verify",
             "self_id_incomplete",
             "multipage_incomplete",
+            "ashby_spam_flagged",
         ):
             return False
         return bool(rep.get("ready_for_review"))
@@ -4366,6 +4367,16 @@ def _dummy_fill_result_detail(
     if use_playwright and report:
         unresolved = report.get("leftover_count", report.get("unresolved_count", "?"))
         mode_note = "Dummy" if report.get("dummy") else "Real"
+        spam_note = ""
+        if str(report.get("blocker") or "") == "ashby_spam_flagged" or report.get(
+            "ashby_spam_flagged"
+        ):
+            spam_note = (
+                " Ashby spam flag: close fill browser → Start again (fresh session), "
+                "or submit from Chrome incognito with the apply URL."
+            )
+        elif report.get("ashby_spam_guidance"):
+            spam_note = f" {report.get('ashby_spam_guidance')}"
         return (
             f"{prefix} Fast fill done via {engine}: "
             f"{report.get('filled_count', '?')} fields filled, "
@@ -4373,7 +4384,7 @@ def _dummy_fill_result_detail(
             f"{report.get('elapsed_seconds', '?')}s, "
             f"coverage={report.get('coverage', '?')}. "
             f"Never submitted. {mode_note} email={report.get('identity_email', '?')} "
-            f"(test_mode={report.get('test_mode', test_mode)})."
+            f"(test_mode={report.get('test_mode', test_mode)}).{spam_note}"
         )
     if report and not use_playwright:
         status = report.get("status") or ("ok" if exit_code == 0 else "error")
