@@ -4050,7 +4050,7 @@ def _playwright_fastfill_argv(
     When ``resume_path`` is set, attach that PDF (job upload / tailored).
 
     FILL3-004 honesty matrix (dashboard headed + flash):
-      --flash-leftovers + --hold-open + --refill-passes 2
+      --flash-leftovers + --hold-open + --refill-passes (Ashby 1, Workday 2)
       → inpage leftovers + same-session refill; Skyvern is deferred
         (``flash.skyvern_deferred``). ``flash.invoked`` means LLM ran, not
         that Skyvern ran. Do not treat invoked=false as Flash failure
@@ -4075,7 +4075,14 @@ def _playwright_fastfill_argv(
         cmd.append("--headless")
     if flash_leftovers:
         cmd.append("--flash-leftovers")
-        cmd.extend(["--refill-passes", "2"])
+        try:
+            sys.path.insert(0, str(ROOT / "scripts" / "fastfill"))
+            from stealth import default_refill_passes_for_url
+
+            refill_n = default_refill_passes_for_url(apply_url)
+        except Exception:
+            refill_n = 2
+        cmd.extend(["--refill-passes", str(refill_n)])
     return cmd
 
 
@@ -6121,6 +6128,15 @@ class Handler(BaseHTTPRequestHandler):
         if session_key:
             abort_gateway_session(session_key)
         try:
+            sys.path.insert(0, str(ROOT / "scripts" / "fastfill"))
+            from browser_launch import wipe_fill_profiles_for_job
+
+            wiped = wipe_fill_profiles_for_job(job_id)
+            if wiped.get("removed"):
+                print(f"[fill] wiped profiles on cancel for {job_id}: {wiped['removed']}")
+        except Exception as e:
+            print(f"warn: fill profile wipe on cancel for {job_id}: {e}")
+        try:
             clear_fill_activity(job_id)
         except Exception as e:
             print(f"warn: clear_fill_activity on cancel for {job_id}: {e}")
@@ -6353,6 +6369,17 @@ class Handler(BaseHTTPRequestHandler):
         _kill_process_tree(proc)
         if session_key:
             abort_gateway_session(session_key)
+        try:
+            sys.path.insert(0, str(ROOT / "scripts" / "fastfill"))
+            from browser_launch import wipe_fill_profiles_for_job
+
+            wiped = wipe_fill_profiles_for_job(job_id)
+            if wiped.get("removed"):
+                print(
+                    f"[fill] wiped profiles on mark-applied for {job_id}: {wiped['removed']}"
+                )
+        except Exception as e:
+            print(f"warn: fill profile wipe on mark-applied for {job_id}: {e}")
         if company:
             try:
                 cmd = [PYTHON_BIN, str(ROOT / "scripts" / "tracker.py"), "update-status",

@@ -109,12 +109,16 @@ _run() {
   case "${FLASH_ENV}" in
     0|false|no|off) FLASH_ARGS=() ;;
   esac
+  REFILL_PASSES=2
+  case "${URL,,}" in
+    *ashbyhq.com*|*.ashby.com/*) REFILL_PASSES=1 ;;
+  esac
   export FASTFILL_ACTION_SUPERVISOR="${FASTFILL_ACTION_SUPERVISOR:-1}"
   export FASTFILL_STRICT_COMPLETION="${FASTFILL_STRICT_COMPLETION:-1}"
   "${PYTHON}" "${FILL}" "$URL" \
     --headed \
     "${FLASH_ARGS[@]}" \
-    --refill-passes 2 \
+    --refill-passes "${REFILL_PASSES}" \
     --hold-seconds 45 \
     --captcha-wait \
     --out "${OUT_DIR}/report.json" 2>&1 | tee "${OUT_DIR}/run.log"

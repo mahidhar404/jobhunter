@@ -27,6 +27,8 @@ from field_map import (
 
 # Prefer attaching via Playwright set_input_files; file-chooser is fallback only.
 UPLOAD_ATTACH_PREFERENCE = "set_input_files_first"
+# Ashby / stealth: human click + file chooser first (short timeout).
+_ASHBY_HUMAN_CHOOSER_MS = 2500
 # File-chooser fallback timeout (ms). Keep short — long stalls invite bot scoring.
 _FILE_CHOOSER_FALLBACK_MS = 3500
 _FILE_INPUT_POLL_MS = 1200
@@ -393,6 +395,77 @@ def accept_resume_after_empty_filelist(
 def should_use_file_chooser_fallback(*, file_input_reachable: bool) -> bool:
     """True only when no ``<input type=file>`` is reachable for set_input_files."""
     return not bool(file_input_reachable)
+
+
+def resume_upload_preference(
+    *,
+    page_url: str = "",
+    platform: str = "",
+    report: dict | None = None,
+) -> str:
+    """``file_chooser_first`` for Ashby / stealth; else ``set_input_files_first``."""
+    stealth = bool(report and report.get("stealth_enabled"))
+    low = (page_url or "").lower()
+    plat = (platform or (report or {}).get("platform") or "").lower()
+    if plat == "ashby" or "ashbyhq.com" in low or ".ashby.com/" in low:
+        return "file_chooser_first"
+    if stealth and ("ashbyhq.com" in low or ".ashby.com/" in low):
+        return "file_chooser_first"
+    return UPLOAD_ATTACH_PREFERENCE
+
+
+async def _try_human_resume_file_chooser(
+    page,
+    pdf: Path,
+    *,
+    target=None,
+    used_sel: str = "",
+    timeout_ms: int = _ASHBY_HUMAN_CHOOSER_MS,
+) -> dict[str, Any] | None:
+    """Click resume affordance and attach via Playwright file chooser (Ashby/stealth)."""
+    click_selectors = (
+        'label[for="_systemfield_resume"]',
+        'label:has-text("Resume")',
+        'label:has-text("CV")',
+        'button:has-text("Upload resume")',
+        'button:has-text("Upload CV")',
+        'button:has-text("Attach")',
+        '[class*="resume" i] button',
+        '[class*="dropzone" i]',
+        'div[role="button"]:has-text("Resume")',
+    )
+    try:
+        async with page.expect_file_chooser(timeout=timeout_ms) as fc_info:
+            clicked = False
+            if target is not None:
+                try:
+                    await target.click(timeout=2500, force=True)
+                    clicked = True
+                    used_sel = used_sel or "_systemfield_resume"
+                except Exception:
+                    clicked = False
+            if not clicked:
+                for sel_txt in click_selectors:
+                    btn = page.locator(sel_txt).first
+                    try:
+                        if await btn.count() and await btn.is_visible(timeout=400):
+                            await btn.click(timeout=2500)
+                            clicked = True
+                            used_sel = sel_txt
+                            break
+                    except Exception:
+                        continue
+            if not clicked:
+                raise RuntimeError("no_resume_click_target")
+        chooser = await fc_info.value
+        await chooser.set_files(str(pdf))
+        return {
+            "mode": "file_chooser",
+            "selector": used_sel or "file_chooser",
+            "file_chooser_human": True,
+        }
+    except Exception:
+        return None
 
 
 def file_chooser_fallback_timeout_ms(*, workday: bool = False) -> int:
@@ -991,7 +1064,57 @@ async def upload_resume_to_page(
             target, used_sel = await _pick_resume_file_locator(page)
 
     is_workday = "myworkdayjobs.com" in (getattr(page, "url", "") or "").lower()
-    out["attach_preference"] = UPLOAD_ATTACH_PREFERENCE
+    attach_pref = resume_upload_preference(
+        page_url=getattr(page, "url", "") or "",
+        report=report,
+    )
+    out["attach_preference"] = attach_pref
+
+    if target is not None and attach_pref == "file_chooser_first":
+        human = await _try_human_resume_file_chooser(
+            page, pdf, target=target, used_sel=used_sel or ""
+        )
+        if human:
+            out.update(human)
+            try:
+                await page.wait_for_timeout(500)
+            except Exception:
+                pass
+            verify = await _verify_input_files(target, pdf.name)
+            if verify.get("verified"):
+                out.update(
+                    {
+                        "ok": True,
+                        "verified": True,
+                        "reason": verify.get("reason"),
+                        "readback": verify.get("readback"),
+                    }
+                )
+                note_step(
+                    report,
+                    action="upload_resume",
+                    field_type=RESUME_UPLOAD,
+                    label="Resume",
+                    after=str(out.get("readback") or ""),
+                    reason=str(out.get("reason") or ""),
+                    via=via,
+                    layer="0.5",
+                    extra={"ok": True, "mode": out.get("mode")},
+                )
+                return out
+            ashby_ui = await _verify_ashby_resume_ui(page, pdf.name)
+            if ashby_ui.get("verified"):
+                out.update(
+                    {
+                        "ok": True,
+                        "verified": True,
+                        "reason": ashby_ui.get("reason") or "ashby_upload_ui",
+                        "readback": ashby_ui.get("readback") or pdf.name,
+                        "selector": used_sel or "ashby_upload_ui",
+                        "mode": "ashby_upload_ui",
+                    }
+                )
+                return out
 
     if target is None and should_use_file_chooser_fallback(file_input_reachable=False):
         # Fallback only: no reachable <input type=file>

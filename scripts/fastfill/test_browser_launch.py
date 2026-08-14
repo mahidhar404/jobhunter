@@ -12,12 +12,19 @@ sys.path.insert(0, str(HERE))
 
 from browser_launch import (  # noqa: E402
     FILL_PROFILES_ROOT,
+    build_chrome_user_agent,
     build_persistent_context_kwargs,
+    detect_chrome_version,
     fill_chrome_exclude_markers,
     fill_profile_marker,
     resolve_fill_browser_channel,
     resolve_fill_profile_dir,
     resolve_playwright_chromium_executable,
+    resolve_viewport,
+    resolve_wipe_profile_on_teardown,
+    system_timezone_id,
+    wipe_fill_profile_dir,
+    wipe_fill_profiles_for_job,
 )
 
 
@@ -59,6 +66,68 @@ def test_persistent_context_kwargs_include_profile():
     kw = build_persistent_context_kwargs(profile_dir=d, headless=True)
     assert kw["user_data_dir"] == str(d)
     assert "ignore_default_args" in kw
+    assert "Chrome/120.0.0.0" not in kw["user_agent"]
+    assert "Chrome/" in kw["user_agent"]
+    assert kw["viewport"]["width"] >= 1024
+    assert kw["timezone_id"]
+    assert kw.get("chrome_version_detected")
+
+
+def test_chrome_user_agent_matches_detected_version():
+    ver = detect_chrome_version()
+    ua = build_chrome_user_agent(ver)
+    assert ver.split(".")[0] in ua
+    assert "Safari/537.36" in ua
+
+
+def test_system_timezone_nonempty():
+    assert "/" in system_timezone_id() or system_timezone_id()
+
+
+def test_resolve_viewport_default():
+    vp = resolve_viewport()
+    assert vp["width"] == 1440
+    assert vp["height"] == 900
+
+
+def test_wipe_fill_profile_dir_only_under_root(tmp_path, monkeypatch):
+    import browser_launch as bl
+
+    monkeypatch.setattr(bl, "FILL_PROFILES_ROOT", tmp_path)
+    prof = tmp_path / "job1_abc"
+    prof.mkdir()
+    (prof / "Default").mkdir()
+    res = wipe_fill_profile_dir(prof)
+    assert res["wiped"] is True
+    assert not prof.exists()
+    outside = tmp_path.parent / "outside_profile"
+    outside.mkdir(exist_ok=True)
+    bad = wipe_fill_profile_dir(outside)
+    assert bad.get("wiped") is False
+
+
+def test_wipe_profiles_for_job_prefix(tmp_path, monkeypatch):
+    import browser_launch as bl
+
+    monkeypatch.setattr(bl, "FILL_PROFILES_ROOT", tmp_path)
+    (tmp_path / "acme_aaa").mkdir()
+    (tmp_path / "acme_bbb").mkdir()
+    (tmp_path / "other_ccc").mkdir()
+    out = wipe_fill_profiles_for_job("acme")
+    assert set(out["removed"]) == {"acme_aaa", "acme_bbb"}
+
+
+def test_wipe_profile_default_on():
+    prev = os.environ.pop("FASTFILL_WIPE_PROFILE", None)
+    try:
+        assert resolve_wipe_profile_on_teardown() is True
+        os.environ["FASTFILL_WIPE_PROFILE"] = "0"
+        assert resolve_wipe_profile_on_teardown() is False
+    finally:
+        if prev is None:
+            os.environ.pop("FASTFILL_WIPE_PROFILE", None)
+        else:
+            os.environ["FASTFILL_WIPE_PROFILE"] = prev
 
 
 def test_fill_profile_marker():
@@ -91,6 +160,10 @@ if __name__ == "__main__":
     test_headed_channel_is_chrome_on_darwin()
     test_cft_executable_only_when_opt_in()
     test_persistent_context_kwargs_include_profile()
+    test_chrome_user_agent_matches_detected_version()
+    test_system_timezone_nonempty()
+    test_resolve_viewport_default()
+    test_wipe_profile_default_on()
     test_fill_profile_marker()
     test_exclude_markers_protect_dashboard_and_partyrock()
     test_fast_fill_source_uses_persistent_context()

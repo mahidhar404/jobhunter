@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import uuid
@@ -192,6 +193,162 @@ def chromium_launch_hygiene_kwargs() -> dict[str, Any]:
     }
 
 
+def _chrome_binary_for_version() -> Path | None:
+    if DEFAULT_CHROME_APP.is_file():
+        return DEFAULT_CHROME_APP
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        try:
+            out = subprocess.check_output(["which", name], text=True, stderr=subprocess.DEVNULL)
+            p = Path(out.strip())
+            if p.is_file():
+                return p
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            continue
+    return None
+
+
+def detect_chrome_version() -> str:
+    """Best-effort installed Chrome/Chromium version (major.minor.build.patch)."""
+    binary = _chrome_binary_for_version()
+    if binary is None:
+        return "131.0.0.0"
+    try:
+        out = subprocess.check_output(
+            [str(binary), "--version"],
+            text=True,
+            stderr=subprocess.STDOUT,
+            timeout=8,
+        )
+        m = re.search(r"([\d]+\.[\d]+\.[\d]+\.[\d]+)", out)
+        if m:
+            return m.group(1)
+        m = re.search(r"([\d]+\.[\d]+)", out)
+        if m:
+            return f"{m.group(1)}.0.0"
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        pass
+    return "131.0.0.0"
+
+
+def build_chrome_user_agent(version: str | None = None) -> str:
+    """User-Agent string matching installed Chrome on this host."""
+    ver = (version or detect_chrome_version()).strip() or "131.0.0.0"
+    if sys.platform == "darwin":
+        platform_token = "Macintosh; Intel Mac OS X 10_15_7"
+    elif sys.platform.startswith("linux"):
+        platform_token = "X11; Linux x86_64"
+    else:
+        platform_token = "Windows NT 10.0; Win64; x64"
+    return (
+        f"Mozilla/5.0 ({platform_token}) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{ver} Safari/537.36"
+    )
+
+
+def system_timezone_id() -> str:
+    """IANA timezone for Playwright ``timezone_id`` (minimal deps)."""
+    if sys.platform == "darwin":
+        try:
+            link = os.readlink("/etc/localtime")
+            if "zoneinfo/" in link:
+                return link.split("zoneinfo/", 1)[1]
+            if link.startswith("/var/db/timezone/zoneinfo/"):
+                return link.split("/var/db/timezone/zoneinfo/", 1)[1]
+        except OSError:
+            pass
+        try:
+            out = subprocess.check_output(
+                ["systemsetup", "-gettimezone"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            m = re.search(r":\s*([A-Za-z0-9_+/\-]+)\s*$", out.strip())
+            if m:
+                return m.group(1)
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        tz_file = Path("/etc/timezone")
+        if tz_file.is_file():
+            try:
+                tz = tz_file.read_text(encoding="utf-8").strip()
+                if tz:
+                    return tz
+            except OSError:
+                pass
+        try:
+            link = os.readlink("/etc/localtime")
+            if "zoneinfo/" in link:
+                return link.split("zoneinfo/", 1)[1]
+        except OSError:
+            pass
+    try:
+        from datetime import datetime
+
+        key = getattr(datetime.now().astimezone().tzinfo, "key", None)
+        if key:
+            return str(key)
+    except Exception:
+        pass
+    return "America/New_York"
+
+
+def resolve_viewport() -> dict[str, int]:
+    """Common headed viewport — override via FASTFILL_VIEWPORT=WxH."""
+    raw = (os.environ.get("FASTFILL_VIEWPORT") or "1440x900").strip().lower()
+    m = re.match(r"^(\d{3,5})x(\d{3,5})$", raw)
+    if m:
+        return {"width": int(m.group(1)), "height": int(m.group(2))}
+    return {"width": 1440, "height": 900}
+
+
+def resolve_wipe_profile_on_teardown() -> bool:
+    raw = (os.environ.get("FASTFILL_WIPE_PROFILE") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def wipe_fill_profile_dir(profile_dir: Path | str | None) -> dict[str, Any]:
+    """Delete a per-run fill profile directory (best-effort)."""
+    out: dict[str, Any] = {"path": str(profile_dir or ""), "wiped": False}
+    if not profile_dir:
+        return out
+    path = Path(profile_dir)
+    root = FILL_PROFILES_ROOT.resolve()
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return out
+    if not str(resolved).startswith(str(root)):
+        out["reason"] = "outside_fill_profiles_root"
+        return out
+    if not resolved.exists():
+        out["reason"] = "missing"
+        return out
+    try:
+        shutil.rmtree(resolved)
+        out["wiped"] = True
+    except OSError as e:
+        out["reason"] = str(e)[:120]
+    return out
+
+
+def wipe_fill_profiles_for_job(job_id: str | None) -> dict[str, Any]:
+    """Remove all fill profiles for a job id (dashboard cancel / mark-applied)."""
+    out: dict[str, Any] = {"job_id": job_id or "", "removed": []}
+    if not job_id:
+        return out
+    prefix = f"{_sanitize_profile_token(job_id)}_"
+    if not FILL_PROFILES_ROOT.is_dir():
+        return out
+    for child in FILL_PROFILES_ROOT.iterdir():
+        if child.is_dir() and child.name.startswith(prefix):
+            res = wipe_fill_profile_dir(child)
+            if res.get("wiped"):
+                out["removed"].append(child.name)
+    return out
+
+
 def build_persistent_context_kwargs(
     *,
     profile_dir: Path,
@@ -199,16 +356,16 @@ def build_persistent_context_kwargs(
 ) -> dict[str, Any]:
     """Kwargs for ``chromium.launch_persistent_context``."""
     profile_dir.mkdir(parents=True, exist_ok=True)
+    chrome_ver = detect_chrome_version()
     kwargs: dict[str, Any] = {
         "user_data_dir": str(profile_dir),
         "headless": headless,
         "slow_mo": 200 if not headless else 0,
         "locale": "en-US",
-        "user_agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
+        "user_agent": build_chrome_user_agent(chrome_ver),
+        "viewport": resolve_viewport(),
+        "timezone_id": system_timezone_id(),
+        "chrome_version_detected": chrome_ver,
     }
     kwargs.update(chromium_launch_hygiene_kwargs())
     channel = resolve_fill_browser_channel(headless=headless)

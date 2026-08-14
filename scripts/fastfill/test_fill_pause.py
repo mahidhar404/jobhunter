@@ -627,9 +627,43 @@ def test_push_activity_to_page():
     asyncio.run(_run())
 
 
+def test_stealth_resolve_defaults():
+    from stealth import (
+        default_refill_passes_for_url,
+        resolve_stealth_enabled,
+        stealth_action_jitter_ms,
+        stealth_typing_delay_ms,
+    )
+
+    prev = os.environ.pop("FASTFILL_STEALTH", None)
+    try:
+        assert resolve_stealth_enabled(headed=True, headless=False) is True
+        assert resolve_stealth_enabled(headed=False, headless=True) is False
+        assert resolve_stealth_enabled(
+            headed=False,
+            headless=True,
+            url="https://jobs.ashbyhq.com/acme/uuid/application",
+        )
+        assert default_refill_passes_for_url(
+            "https://jobs.ashbyhq.com/acme/uuid/application"
+        ) == 1
+        assert default_refill_passes_for_url(
+            "https://foo.myworkdayjobs.com/en-US/careers/job/123"
+        ) == 2
+        lo, hi = stealth_typing_delay_ms(), stealth_action_jitter_ms()
+        assert 30 <= lo <= 80
+        assert 100 <= hi <= 400
+    finally:
+        if prev is None:
+            os.environ.pop("FASTFILL_STEALTH", None)
+        else:
+            os.environ["FASTFILL_STEALTH"] = prev
+
+
 def main() -> int:
     test_resolve_fill_pause_defaults()
     test_resolve_fill_pause_env()
+    test_stealth_resolve_defaults()
     test_sentinel_paths_default()
     test_consume_continue_sentinel()
     test_force_pause_sentinel_present()

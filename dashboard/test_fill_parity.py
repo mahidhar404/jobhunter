@@ -297,6 +297,29 @@ def test_playwright_argv_headless_no_flash():
     assert "--refill-passes" not in argv
 
 
+def test_playwright_argv_ashby_refill_one_workday_two():
+    srv = _load_server()
+    common = dict(
+        py="py",
+        script="ff.py",
+        out_path="o.json",
+        test_mode=True,
+        job_id="job-x",
+        headed=True,
+        flash_leftovers=True,
+    )
+    ashby = srv._playwright_fastfill_argv(
+        **common,
+        apply_url="https://jobs.ashbyhq.com/acme/uuid/application",
+    )
+    workday = srv._playwright_fastfill_argv(
+        **common,
+        apply_url="https://acme.myworkdayjobs.com/en-US/careers/job/123",
+    )
+    assert ashby[ashby.index("--refill-passes") + 1] == "1"
+    assert workday[workday.index("--refill-passes") + 1] == "2"
+
+
 def test_start_skip_partyrock_uses_headed_flash_defaults():
     """Start (Test Mode + skip PartyRock) must call fill with headed+flash ON."""
     srv = _load_server()
@@ -324,5 +347,6 @@ if __name__ == "__main__":
     test_kill_jh_preserves_fill_cft_on_flag()
     test_count_fill_cft_excludes_openclaw_partyrock()
     test_playwright_argv_headless_no_flash()
+    test_playwright_argv_ashby_refill_one_workday_two()
     test_start_skip_partyrock_uses_headed_flash_defaults()
     print("OK test_fill_parity")

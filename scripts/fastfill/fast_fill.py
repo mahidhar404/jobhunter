@@ -5710,6 +5710,12 @@ async def _fill_selector(
     except Exception:
         pass
     try:
+        from stealth import stealth_field_pause
+
+        await stealth_field_pause(page, report)
+    except Exception:
+        pass
+    try:
         note_fill_activity(
             layer="0" if mode in ("pack", "deterministic", "file") else "1",
             action="upload" if (ftype == RESUME_UPLOAD or mode == "file") else (
@@ -6003,19 +6009,32 @@ async def _fill_selector(
             if itype == "password":
                 await loc.fill(str(value), timeout=4000)
             else:
-                from verified_select import (
-                    fill_text_fiber_then_read,
-                    is_stubborn_text_field,
-                )
+                use_stealth_type = bool(report and report.get("stealth_enabled"))
+                if use_stealth_type:
+                    from stealth import stealth_fill_visible_text
 
-                stubborn = is_stubborn_text_field(
-                    automation_id=aid,
-                    field_type=str(ftype or ""),
-                    selector=sel,
-                )
-                fiber_meta = await fill_text_fiber_then_read(
-                    loc, str(value), stubborn=stubborn, page=page
-                )
+                    fiber_meta = await stealth_fill_visible_text(
+                        loc,
+                        str(value),
+                        page=page,
+                        field_type=str(ftype or ""),
+                        automation_id=aid,
+                        selector=sel,
+                    )
+                else:
+                    from verified_select import (
+                        fill_text_fiber_then_read,
+                        is_stubborn_text_field,
+                    )
+
+                    stubborn = is_stubborn_text_field(
+                        automation_id=aid,
+                        field_type=str(ftype or ""),
+                        selector=sel,
+                    )
+                    fiber_meta = await fill_text_fiber_then_read(
+                        loc, str(value), stubborn=stubborn, page=page
+                    )
 
         readback = await _read_locator_value(loc)
         verified = _value_matches_readback(str(value), readback)
@@ -9259,6 +9278,16 @@ async def _hold_for_review(
                 print(f"[ashby] {ASHBY_SPAM_USER_GUIDANCE}", flush=True)
                 out["via"] = "ashby_spam_flagged"
                 out["ashby_spam"] = True
+                try:
+                    from browser_hygiene import clear_apply_site_storage
+
+                    recovery = await clear_apply_site_storage(
+                        page, url=getattr(page, "url", "") or "", context=page.context
+                    )
+                    if report is not None:
+                        report["ashby_spam_storage_recovery"] = recovery
+                except Exception:
+                    pass
                 return out
         except Exception as e:
             if report is not None:
@@ -10538,6 +10567,26 @@ def _merge_workday_into_report(report: dict, wd: dict, values: dict) -> None:
     }
 
 
+async def _close_fill_context(
+    context,
+    *,
+    profile_dir: Path,
+    report: dict | None = None,
+) -> None:
+    """Close Playwright context and optionally wipe ephemeral fill profile."""
+    await context.close()
+    try:
+        from browser_launch import resolve_wipe_profile_on_teardown, wipe_fill_profile_dir
+
+        if resolve_wipe_profile_on_teardown():
+            wipe_info = wipe_fill_profile_dir(profile_dir)
+            if report is not None:
+                report["fill_profile_wiped"] = wipe_info
+    except Exception as e:
+        if report is not None:
+            report.setdefault("errors", []).append({"fill_profile_wipe": str(e)[:120]})
+
+
 async def run_fast_fill_async(
     url: str,
     *,
@@ -10721,6 +10770,15 @@ async def run_fast_fill_async(
     )
     platform = detect_platform(url)
 
+    from stealth import resolve_stealth_enabled  # noqa: PLC0415
+
+    do_stealth = resolve_stealth_enabled(
+        headed=is_headed,
+        headless=use_headless,
+        platform=platform,
+        url=url,
+    )
+
     t0 = time.time()
     report: dict[str, Any] = {
         "url": url,
@@ -10742,6 +10800,7 @@ async def run_fast_fill_async(
         "captcha_wait": do_captcha_wait,
         "captcha_timeout_s": float(captcha_timeout_s),
         "fill_pause_enabled": do_fill_pause,
+        "stealth_enabled": do_stealth,
         "refill_passes": int(refill_passes),
         "refill_wait_enter": do_refill_wait,
         "identity_email": identity.email,
@@ -10802,6 +10861,10 @@ async def run_fast_fill_async(
             headless=use_headless,
         )
         report["fill_browser_channel"] = ctx_kwargs.get("channel") or "bundled"
+        report["chrome_version_detected"] = ctx_kwargs.pop("chrome_version_detected", None)
+        report["browser_viewport"] = ctx_kwargs.get("viewport")
+        report["browser_timezone_id"] = ctx_kwargs.get("timezone_id")
+        report["browser_user_agent"] = ctx_kwargs.get("user_agent")
         if ctx_kwargs.get("executable_path"):
             report["chromium_executable"] = ctx_kwargs["executable_path"]
 
@@ -10927,7 +10990,7 @@ async def run_fast_fill_async(
                 stop_native_hud()
             except Exception:
                 pass
-            await context.close()
+            await _close_fill_context(context, profile_dir=profile_dir, report=report)
             return _finalize(report, close_step_log=True)
 
         try:
@@ -11028,7 +11091,9 @@ async def run_fast_fill_async(
                             await _hold_for_review(
                                 seconds=cap_hold, report=report, browser=browser
                             )
-                        await context.close()
+                        await _close_fill_context(
+                            context, profile_dir=profile_dir, report=report
+                        )
                         return _finalize(report, close_step_log=True)
                 else:
                     report["blocker"] = blocker
@@ -11042,7 +11107,9 @@ async def run_fast_fill_async(
                     )
                     if screenshot:
                         await _maybe_shot(page, screenshot, report)
-                    await context.close()
+                    await _close_fill_context(
+                        context, profile_dir=profile_dir, report=report
+                    )
                     return _finalize(report, close_step_log=True)
         except Exception:
             pass
@@ -11170,7 +11237,9 @@ async def run_fast_fill_async(
                     if hold_sec > 0:
                         # Nothing to show — skip long hold
                         pass
-                    await context.close()
+                    await _close_fill_context(
+                        context, profile_dir=profile_dir, report=report
+                    )
                     report["elapsed_seconds"] = round(time.time() - t0, 2)
                     return _finalize(report, close_step_log=True)
                 raise
@@ -11211,6 +11280,19 @@ async def run_fast_fill_async(
                         report.setdefault("errors", []).append(
                             {"ashby_reprobe": str(e)[:120]}
                         )
+
+            try:
+                from browser_hygiene import clear_apply_site_storage, is_ashby_url
+
+                if platform == "ashby" or is_ashby_url(page.url or url):
+                    cleared = await clear_apply_site_storage(
+                        page, url=page.url or url, context=context
+                    )
+                    report["ashby_storage_cleared"] = cleared
+            except Exception as e:
+                report.setdefault("errors", []).append(
+                    {"ashby_storage_clear": str(e)[:120]}
+                )
 
             try:
                 title = await page.title()
@@ -12624,7 +12706,9 @@ async def run_fast_fill_async(
             except Exception:
                 pass
             # Only reach here after pause drain + hold (or no hold requested).
-            await context.close()
+            await _close_fill_context(
+                context, profile_dir=profile_dir, report=report
+            )
 
     report["elapsed_seconds"] = round(time.time() - t0, 2)
     if report.get("fill_elapsed_seconds") is None:
