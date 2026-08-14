@@ -214,23 +214,19 @@ def test_find_in_progress_job_excludes_self():
     assert srv._find_in_progress_job(data)["id"] == "a"
 
 
-def test_find_blocking_start_job_ready_hold(monkeypatch=None):
-    """CHR2-002: Ready + live hold blocks Start of another job."""
+def test_find_blocking_start_job_allows_concurrent():
+    """Concurrent fills: other in-progress or Ready/hold jobs do not block Start."""
     srv = _load_server()
     data = {
         "jobs": [
+            {"id": "a", "status": "filling"},
             {"id": "ready", "status": "ready_for_review"},
             {"id": "next", "status": "discovered"},
         ]
     }
-    # Without hold: Ready alone must not block (browser already closed).
-    srv._fill_hold_browser_active = lambda: False  # type: ignore
     assert srv._find_blocking_start_job(data, exclude_id="next") is None
-    # With hold: Ready blocks.
     srv._fill_hold_browser_active = lambda: True  # type: ignore
-    blocked = srv._find_blocking_start_job(data, exclude_id="next")
-    assert blocked is not None and blocked["id"] == "ready"
-    # Self excluded.
+    assert srv._find_blocking_start_job(data, exclude_id="next") is None
     assert srv._find_blocking_start_job(data, exclude_id="ready") is None
 
 
@@ -324,7 +320,7 @@ if __name__ == "__main__":
     test_playwright_argv_passes_resume_path_for_real()
     test_playwright_argv_test_mode_can_omit_resume_path()
     test_find_in_progress_job_excludes_self()
-    test_find_blocking_start_job_ready_hold()
+    test_find_blocking_start_job_allows_concurrent()
     test_kill_jh_preserves_fill_cft_on_flag()
     test_count_fill_cft_excludes_openclaw_partyrock()
     test_playwright_argv_headless_no_flash()

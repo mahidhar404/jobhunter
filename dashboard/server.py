@@ -222,12 +222,9 @@ PARTYROCK_CHROME_PROFILE = ROOT / "partyrock_chrome_profile"
 # OpenClaw managed browser (PartyRock tailor via tailor_resume.py CDP).
 OPENCLAW_BROWSER_USER_DATA = Path.home() / ".openclaw" / "browser" / "openclaw" / "user-data"
 OPENCLAW_BROWSER_CDP_PORT = 18800
-# PartyRock generation serializes briefly (one tailor_resume.py at a time)
-# to avoid CDP contention. Each job still gets its **own** CDP tab via
-# /json/new; tabs stay open after tailor until Mark as applied / Cancel
-# closes that job's target only. Fill runs fully in parallel across jobs.
-_partyrock_lock = threading.Lock()
-PARTYROCK_LOCK_TIMEOUT_S = 900.0  # PR-005: never block forever on a stuck holder
+# Each job gets its **own** PartyRock CDP tab via /json/new (see partyrock_tabs.py).
+# Tabs stay open after tailor until Mark as applied / Cancel closes that job's
+# target only. Parallel tailor + fill across jobs is allowed.
 
 # Discovery progress for the dashboard status bar. Separate from
 # _running_procs so the UI still shows a phase during the brief gap
@@ -2935,73 +2932,6 @@ def _try_extract_manual_job_details(job_id: str, url: str) -> None:
         write_jobs(data)
 
 
-class PartyRockLockAborted(Exception):
-    """Job was cancelled/deleted/applied/skipped while waiting for PartyRock lock."""
-
-
-def _acquire_partyrock_lock(job_id: str, session_key: str) -> None:
-    """Acquire PartyRock lock with timeout (PR-005).
-
-    If another job holds it, marks status_detail so the dashboard shows why
-    it's waiting. Polls ``_job_fill_aborted`` while waiting (DASH2-001) so
-    Cancel during the wait exits without starting tailor. Raises
-    ``PartyRockLockAborted`` if cancelled; ``TimeoutError`` if not acquired
-    within ``PARTYROCK_LOCK_TIMEOUT_S`` (default 900s). Caller must
-    ``release()`` only after a successful acquire.
-    """
-    timeout_s = float(os.environ.get("PARTYROCK_LOCK_TIMEOUT_S") or PARTYROCK_LOCK_TIMEOUT_S)
-    poll_s = float(os.environ.get("PARTYROCK_LOCK_POLL_S") or 0.5)
-    if _job_fill_aborted(job_id):
-        raise PartyRockLockAborted(
-            f"PartyRock lock aborted before wait (job={job_id}, session={session_key})"
-        )
-    if _partyrock_lock.acquire(blocking=False):
-        if _job_fill_aborted(job_id):
-            _partyrock_lock.release()
-            raise PartyRockLockAborted(
-                f"PartyRock lock aborted after acquire (job={job_id}, session={session_key})"
-            )
-        return
-    with _lock:
-        data = read_jobs()
-        job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-        if job is not None and job.get("status") not in FILL_ABORT_STATUSES:
-            job["status_detail"] = (
-                "Waiting for another job to finish using PartyRock..."
-            )
-            job["updated_at"] = now_iso()
-            write_jobs(data)
-    deadline = time.monotonic() + timeout_s
-    while True:
-        if _job_fill_aborted(job_id):
-            raise PartyRockLockAborted(
-                f"PartyRock lock aborted while waiting "
-                f"(job={job_id}, session={session_key})"
-            )
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError(
-                f"PartyRock lock not acquired within {timeout_s:.0f}s "
-                f"(job={job_id}, session={session_key})"
-            )
-        # Keep updated_at fresh so reconcile orphan-stale does not force-stuck
-        # a job legitimately waiting on another PartyRock holder.
-        with _lock:
-            data = read_jobs()
-            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-            if job is not None and job.get("status") not in FILL_ABORT_STATUSES:
-                job["updated_at"] = now_iso()
-                write_jobs(data)
-        if _partyrock_lock.acquire(timeout=min(poll_s, remaining)):
-            if _job_fill_aborted(job_id):
-                _partyrock_lock.release()
-                raise PartyRockLockAborted(
-                    f"PartyRock lock aborted after acquire "
-                    f"(job={job_id}, session={session_key})"
-                )
-            return
-
-
 _TIMELINE_MAX = 200
 
 
@@ -3875,25 +3805,14 @@ _HOLD_BLOCK_STATUSES = frozenset({"ready_for_review", "blocked_captcha"})
 def _find_blocking_start_job(
     data: dict, *, exclude_id: str | None = None
 ) -> dict | None:
-    """Job that must finish before another Start/Fast-fill (CHR2-002).
+    """Return a job that must finish before *exclude_id* may Start.
 
-    Always blocks on ``IN_PROGRESS_STATUSES``. Also blocks on Ready /
-    blocked_captcha when a fill CfT / CAPTCHA hold is still up — otherwise
-    Start succeeds, PartyRock may run, then fill hits ``headed_cap``.
+    Concurrent dashboard fills are allowed — each job tracks its own
+    session/process. Resource limits (headed Chrome cap) are enforced inside
+    fast_fill / tailor, not here. Per-job guards in ``_handle_start`` still
+    block double-Start on the same id.
     """
-    other = _find_in_progress_job(data, exclude_id=exclude_id)
-    if other is not None:
-        return other
-    if not _fill_hold_browser_active():
-        return None
-    for job in data.get("jobs") or []:
-        if not isinstance(job, dict):
-            continue
-        jid = job.get("id")
-        if exclude_id and jid == exclude_id:
-            continue
-        if job.get("status") in _HOLD_BLOCK_STATUSES:
-            return job
+    _ = (data, exclude_id)  # kept for API stability + tests
     return None
 
 
@@ -4684,10 +4603,7 @@ def _run_tailor_then_fill_body(
         # Manually-added jobs start with no description fetched yet - the
         # agent has to get that (and everything else) from the real apply
         # page first, so automated tailoring can't run yet this turn.
-        # PR-005: do NOT hold _partyrock_lock through this unsupervised
-        # agent turn (fetch JD + tailor + fill). Automated tailor below
-        # still serializes via the lock; here we only pre-warm the CDP
-        # browser so login/cookies are ready when the agent opens PartyRock.
+        # No JD yet — agent must fetch posting first; automated tailor cannot run.
         if _job_fill_aborted(job_id):
             return
         pipeline_milestone(
@@ -4752,10 +4668,8 @@ def _run_tailor_then_fill_body(
                 job["updated_at"] = now_iso()
                 write_jobs(data)
     else:
-        # One job may actively drive PartyRock generation at a time (see
-        # _partyrock_lock), but each run opens its own CDP tab and keeps it
-        # open after success until Mark as applied. Released before compile
-        # so job B can open a separate PartyRock tab while A compiles/fills.
+        # Each run opens its own PartyRock CDP tab (partyrock_tabs.py); parallel
+        # tailor across jobs is allowed. Tab stays open until Mark as applied.
         pipeline_milestone(
             job_id,
             event="partyrock",
@@ -4763,181 +4677,142 @@ def _run_tailor_then_fill_body(
             status="tailoring",
             status_detail=f"Opening PartyRock ({pr_mode}): {pr_url}",
         )
-        try:
-            _acquire_partyrock_lock(job_id, session_key)
-        except PartyRockLockAborted:
-            # Cancel / Delete / Applied / Skip during lock wait — do not tailor.
-            # PR2-003: drop stale Opening/Waiting PartyRock detail if still showing.
-            with _lock:
-                data = read_jobs()
-                job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-                if job is not None:
-                    detail = job.get("status_detail") or ""
-                    if (
-                        detail.startswith("Opening PartyRock")
-                        or detail.startswith(
-                            "Waiting for another job to finish using PartyRock"
-                        )
-                    ) and job.get("status") not in FILL_ABORT_STATUSES:
-                        job["status_detail"] = (
-                            "PartyRock wait aborted before tailor started."
-                        )
-                        job["updated_at"] = now_iso()
-                        write_jobs(data)
+        if _job_fill_aborted(job_id):
             return
-        except TimeoutError as e:
-            # PR2-003: clear stale Opening PartyRock detail on lock timeout.
+        try:
+            # PR2-002: fail loud when CDP cannot start (not warn-only).
+            _ensure_openclaw_managed_browser(required=True)
+        except RuntimeError as e:
+            # PR2-003: replace stale "Opening PartyRock…" with actionable stuck.
             if not _job_fill_aborted(job_id):
                 _patch_job(
                     job_id,
                     status="stuck",
                     status_detail=(
-                        f"PartyRock lock timeout — {e}. Retry Start, or run "
-                        "`./open_partyrock.sh` if login is needed."
+                        f"PartyRock browser failed to start: {e}. "
+                        "Fix: `./open_partyrock.sh` (Chrome for Testing + "
+                        "OpenClaw CDP :18800), then Retry."
                     ),
                     question=(
-                        "PartyRock was busy too long. Retry when no other job is "
-                        "tailoring, or Skip."
+                        "PartyRock CDP did not come up. Run `./open_partyrock.sh` "
+                        "to re-auth/start CfT, then Retry. "
+                        "Install CfT if needed: "
+                        "python3 -m playwright install chromium"
                     ),
                 )
             return
+        # Re-tailor: drop any prior held tab for this job before opening a new one.
         try:
-            try:
-                # PR2-002: fail loud when CDP cannot start (not warn-only).
-                _ensure_openclaw_managed_browser(required=True)
-            except RuntimeError as e:
-                # PR2-003: replace stale "Opening PartyRock…" with actionable stuck.
+            close_job_partyrock_tab(job_id, job_dir)
+        except Exception as e:
+            print(f"warn: close prior PartyRock tab for {job_id}: {e}")
+        if _job_fill_aborted(job_id):
+            return
+        tailor_flag = "--test-mode" if test_mode else "--real"
+        pipeline_milestone(
+            job_id,
+            event="partyrock",
+            detail="Waiting on resume from PartyRock…",
+            status_detail="Waiting on resume from PartyRock…",
+        )
+        tailor_exit, tailor_log = _run_subprocess_step(
+            [
+                PYTHON_BIN, "-u", str(TAILOR_SCRIPT),
+                "--jd-file", str(jd_file),
+                "--location", job_location,
+                "--out", str(resume_tex),
+                "--timeout", str(TAILOR_TIMEOUT_S - 100),
+                "--job-id", job_id,
+                "--keep-open",
+                tailor_flag,
+            ],
+            f"tailor_{job_id}.log", TAILOR_TIMEOUT_S, track_key=session_key,
+            activity_job_id=job_id,
+        )
+
+        if tailor_exit != 0 or not resume_tex.exists():
+            # Used to also tell the agent to "continue the pipeline: fill the
+            # application" in this same message - that handed the ENTIRE rest
+            # of the job (compile, page-fit, address-pick, fill) to the agent
+            # unsupervised, at full agent-token cost, with no server
+            # checkpoint in between. Observed live on a real run: the agent
+            # ended up re-deriving pick_address.py's whole job itself (cat-ing
+            # all of addresses.json and writing an ad-hoc picker) because nothing
+            # here ever got a chance to inject the pre-computed address for it.
+            # Now the agent's job is narrowly just "produce resume.tex" - the
+            # server checks for that file below and, if it's there, falls
+            # through into the exact same compile/fit/address/fill pipeline the
+            # happy path already uses, instead of leaving the agent to
+            # improvise all of it.
+            if _job_fill_aborted(job_id):
+                return
+            pipeline_milestone(
+                job_id,
+                event="partyrock",
+                detail=(
+                    f"Automated PartyRock tailor failed (exit {tailor_exit}). "
+                    "Falling back to agent for resume.tex only."
+                ),
+                status_detail=(
+                    f"PartyRock script failed (exit {tailor_exit}); "
+                    "agent producing resume.tex manually."
+                ),
+            )
+            if _job_fill_aborted(job_id):
+                return
+            run_agent_message(
+                session_key,
+                playbook_preamble() +
+                f"Automated resume tailoring failed (scripts/tailor_resume.py "
+                f"exited {tailor_exit}, see {tailor_log}). Follow PLAYBOOK.md's "
+                "manual PartyRock steps instead: run `./open_partyrock.sh` "
+                f"(OpenClaw Chrome-for-Testing, CDP :18800, shared login — "
+                f"NOT a generic IDE/browser tool) for mode {pr_mode}, open "
+                f"{pr_url}, paste the job description with a leading "
+                f"`Location: {job_location or 'Unknown'}` line, wait for it "
+                "to finish, and "
+                f"save the resulting LaTeX to {resume_tex}. Do NOT compile it "
+                "yourself, do NOT pick a mailing address, do NOT proceed to "
+                "filling the application, and do NOT log to the Excel tracker - "
+                "just save that one file, then call update_job.py with "
+                "--status-detail 'Manual tailoring done, handing back to "
+                "pipeline.' and end your turn. The rest of the pipeline "
+                "(compile, page-fit, address-pick, fill) resumes automatically "
+                "once you do.",
+                timeout_s=1800,
+            )
+            playbook_already_sent = True
+            if not resume_tex.exists():
+                # DASH2-004: agent fallback left no tex — force stuck so the
+                # job does not sit in tailoring forever with no question.
+                append_fill_activity(
+                    job_id,
+                    event="error",
+                    detail="Manual PartyRock fallback did not produce resume.tex — stopping.",
+                )
                 if not _job_fill_aborted(job_id):
                     _patch_job(
                         job_id,
                         status="stuck",
                         status_detail=(
-                            f"PartyRock browser failed to start: {e}. "
-                            "Fix: `./open_partyrock.sh` (Chrome for Testing + "
-                            "OpenClaw CDP :18800), then Retry."
+                            "Manual PartyRock fallback did not produce resume.tex."
                         ),
                         question=(
-                            "PartyRock CDP did not come up. Run `./open_partyrock.sh` "
-                            "to re-auth/start CfT, then Retry. "
-                            "Install CfT if needed: "
-                            "python3 -m playwright install chromium"
+                            f"Agent PartyRock fallback finished without writing "
+                            f"{resume_tex}. Check Live Activity / PartyRock, then "
+                            "Retry or Skip."
                         ),
                     )
                 return
-            # Re-tailor: drop any prior held tab for this job before opening a new one.
-            try:
-                close_job_partyrock_tab(job_id, job_dir)
-            except Exception as e:
-                print(f"warn: close prior PartyRock tab for {job_id}: {e}")
-            if _job_fill_aborted(job_id):
-                return
-            tailor_flag = "--test-mode" if test_mode else "--real"
+            # else: fall through into the same compile/fit/address/fill steps
+            # below, exactly as if scripts/tailor_resume.py had succeeded.
+        else:
             pipeline_milestone(
                 job_id,
                 event="partyrock",
-                detail="Waiting on resume from PartyRock…",
-                status_detail="Waiting on resume from PartyRock…",
+                detail="Collected resume from PartyRock",
+                status_detail="Collected resume from PartyRock. Converting to PDF…",
             )
-            tailor_exit, tailor_log = _run_subprocess_step(
-                [
-                    PYTHON_BIN, "-u", str(TAILOR_SCRIPT),
-                    "--jd-file", str(jd_file),
-                    "--location", job_location,
-                    "--out", str(resume_tex),
-                    "--timeout", str(TAILOR_TIMEOUT_S - 100),
-                    "--job-id", job_id,
-                    "--keep-open",
-                    tailor_flag,
-                ],
-                f"tailor_{job_id}.log", TAILOR_TIMEOUT_S, track_key=session_key,
-                activity_job_id=job_id,
-            )
-
-            if tailor_exit != 0 or not resume_tex.exists():
-                # Used to also tell the agent to "continue the pipeline: fill the
-                # application" in this same message - that handed the ENTIRE rest
-                # of the job (compile, page-fit, address-pick, fill) to the agent
-                # unsupervised, at full agent-token cost, with no server
-                # checkpoint in between. Observed live on a real run: the agent
-                # ended up re-deriving pick_address.py's whole job itself (cat-ing
-                # all of addresses.json and writing an ad-hoc picker) because nothing
-                # here ever got a chance to inject the pre-computed address for it.
-                # Now the agent's job is narrowly just "produce resume.tex" - the
-                # server checks for that file below and, if it's there, falls
-                # through into the exact same compile/fit/address/fill pipeline the
-                # happy path already uses, instead of leaving the agent to
-                # improvise all of it.
-                if _job_fill_aborted(job_id):
-                    return
-                pipeline_milestone(
-                    job_id,
-                    event="partyrock",
-                    detail=(
-                        f"Automated PartyRock tailor failed (exit {tailor_exit}). "
-                        "Falling back to agent for resume.tex only."
-                    ),
-                    status_detail=(
-                        f"PartyRock script failed (exit {tailor_exit}); "
-                        "agent producing resume.tex manually."
-                    ),
-                )
-                if _job_fill_aborted(job_id):
-                    return
-                run_agent_message(
-                    session_key,
-                    playbook_preamble() +
-                    f"Automated resume tailoring failed (scripts/tailor_resume.py "
-                    f"exited {tailor_exit}, see {tailor_log}). Follow PLAYBOOK.md's "
-                    "manual PartyRock steps instead: run `./open_partyrock.sh` "
-                    f"(OpenClaw Chrome-for-Testing, CDP :18800, shared login — "
-                    f"NOT a generic IDE/browser tool) for mode {pr_mode}, open "
-                    f"{pr_url}, paste the job description with a leading "
-                    f"`Location: {job_location or 'Unknown'}` line, wait for it "
-                    "to finish, and "
-                    f"save the resulting LaTeX to {resume_tex}. Do NOT compile it "
-                    "yourself, do NOT pick a mailing address, do NOT proceed to "
-                    "filling the application, and do NOT log to the Excel tracker - "
-                    "just save that one file, then call update_job.py with "
-                    "--status-detail 'Manual tailoring done, handing back to "
-                    "pipeline.' and end your turn. The rest of the pipeline "
-                    "(compile, page-fit, address-pick, fill) resumes automatically "
-                    "once you do.",
-                    timeout_s=1800,
-                )
-                playbook_already_sent = True
-                if not resume_tex.exists():
-                    # DASH2-004: agent fallback left no tex — force stuck so the
-                    # job does not sit in tailoring forever with no question.
-                    append_fill_activity(
-                        job_id,
-                        event="error",
-                        detail="Manual PartyRock fallback did not produce resume.tex — stopping.",
-                    )
-                    if not _job_fill_aborted(job_id):
-                        _patch_job(
-                            job_id,
-                            status="stuck",
-                            status_detail=(
-                                "Manual PartyRock fallback did not produce resume.tex."
-                            ),
-                            question=(
-                                f"Agent PartyRock fallback finished without writing "
-                                f"{resume_tex}. Check Live Activity / PartyRock, then "
-                                "Retry or Skip."
-                            ),
-                        )
-                    return
-                # else: fall through into the same compile/fit/address/fill steps
-                # below, exactly as if scripts/tailor_resume.py had succeeded.
-            else:
-                pipeline_milestone(
-                    job_id,
-                    event="partyrock",
-                    detail="Collected resume from PartyRock",
-                    status_detail="Collected resume from PartyRock. Converting to PDF…",
-                )
-        finally:
-            _partyrock_lock.release()
 
         # DASH2-018: Cancel during PartyRock must not start compile/fit.
         if _job_fill_aborted(job_id):
@@ -6916,32 +6791,6 @@ class Handler(BaseHTTPRequestHandler):
         with self._locked_job(job_id) as (data, job):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
-                return
-            # One fill/tailor at a time — reject other jobs so PartyRock
-            # waiters cannot cascade after the first finishes. Also block
-            # when another job is Ready/CAPTCHA with a live hold window
-            # (CHR2-002) — fill layer would refuse with headed_cap anyway.
-            other = _find_blocking_start_job(data, exclude_id=job_id)
-            if other is not None:
-                oid = other.get("id") or "?"
-                ostatus = other.get("status") or "?"
-                hold_bit = (
-                    " (review/CAPTCHA browser still held)"
-                    if ostatus in _HOLD_BLOCK_STATUSES
-                    else ""
-                )
-                self._send_json(
-                    {
-                        "error": (
-                            f"another job is already running (id={oid}, "
-                            f"status={ostatus}){hold_bit}. "
-                            "Cancel it first — only one fill at a time."
-                        ),
-                        "other_job_id": oid,
-                        "other_status": ostatus,
-                    },
-                    409,
-                )
                 return
             # Status claim closes the race vs Fast fill (dummy): both paths
             # register _running_procs only after Popen, so a double-click

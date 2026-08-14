@@ -191,10 +191,26 @@ def test_app_js_cancel_not_for_ready():
     assert "STUCK_STATUSES.has(job.status)" in src
 
 
-def test_app_js_hybrid_fill_409_mentions_another_job():
-    """DASH-018: ops 409 fallback matches classic wording."""
-    src = APP_JS.read_text(encoding="utf-8")
-    assert "another job is already running" in src
+def test_max_headed_chrome_mains_default_three():
+    """Concurrent dashboard fills default to 3 headed Chrome slots."""
+    import importlib.util
+    from pathlib import Path
+
+    ff_path = Path(__file__).resolve().parent.parent / "scripts" / "fastfill" / "fast_fill.py"
+    spec = importlib.util.spec_from_file_location("ff_headed_cap", ff_path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod._max_headed_chrome_mains() >= 3
+    assert callable(mod.refuse_headed_if_chrome_busy)
+
+
+def test_app_js_concurrent_fill_no_global_busy_gate():
+    """Fill must not be globally disabled while another job is in progress."""
+    app_js = (Path(__file__).resolve().parent / "static" / "app.js").read_text(encoding="utf-8")
+    assert "anyOtherJobInProgress" not in app_js
+    assert "one fill at a time" not in app_js
+    assert "_fillFaceBusyJobs" in app_js
 
 
 def test_app_js_start_fill_mode_no_false_skip_without_pdf():
@@ -248,59 +264,27 @@ def test_handle_cancel_allows_stuck_in_source():
     assert "IN_PROGRESS_STATUSES | NOTIFY_STATUSES" in chunk
 
 
-def test_partyrock_lock_aborts_when_cancelled():
-    """DASH2-001: lock wait polls abort and raises without holding the lock."""
-    srv = _load_server()
-    # Ensure lock is free, then hold it so acquire must wait.
-    if srv._partyrock_lock.locked():
-        try:
-            srv._partyrock_lock.release()
-        except RuntimeError:
-            pass
-    assert srv._partyrock_lock.acquire(blocking=False)
-    jobs = {
-        "jobs": [
-            {
-                "id": "lock-abort",
-                "status": "tailoring",
-                "status_detail": "Waiting for another job…",
-                "session_key": "agent:job-hunter:job-lock-abort",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-        ]
-    }
-    calls = {"n": 0}
-
-    def aborted(_job_id):
-        calls["n"] += 1
-        # First checks while waiting see running; then Cancel flips it.
-        return calls["n"] >= 3
-
-    with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-        srv, "write_jobs"
-    ), mock.patch.object(srv, "_job_fill_aborted", side_effect=aborted), mock.patch.dict(
-        "os.environ", {"PARTYROCK_LOCK_POLL_S": "0.05"}, clear=False
-    ):
-        try:
-            raised = None
-            try:
-                srv._acquire_partyrock_lock("lock-abort", "agent:job-hunter:job-lock-abort")
-            except Exception as e:
-                raised = e
-            assert isinstance(raised, srv.PartyRockLockAborted), raised
-            assert calls["n"] >= 3
-            # Must not leave the waiter holding the lock.
-            assert srv._partyrock_lock.locked()
-        finally:
-            srv._partyrock_lock.release()
-
-
-def test_partyrock_lock_acquire_source_polls_abort():
-    """DASH2-001: acquire implementation must poll _job_fill_aborted."""
+def test_partyrock_parallel_no_global_lock():
+    """Parallel PartyRock: no global tailor lock serializes jobs."""
     src = SERVER_PATH.read_text(encoding="utf-8")
-    chunk = src.split("def _acquire_partyrock_lock", 1)[1].split("def _activity_clock", 1)[0]
-    assert "_job_fill_aborted" in chunk
-    assert "PartyRockLockAborted" in chunk
+    assert "_partyrock_lock" not in src
+    assert "_acquire_partyrock_lock" not in src
+    assert "PartyRockLockAborted" not in src
+    assert "Waiting for another job to finish using PartyRock" not in src
+    chunk = src.split("def _run_tailor_then_fill_body", 1)[1].split(
+        "def run_agent_message", 1
+    )[0]
+    assert "--job-id" in chunk
+    assert "close_job_partyrock_tab" in chunk
+
+
+def test_app_js_mark_applied_while_in_progress():
+    """Mark as applied visible during fill/tailor/stuck — not gated on !runInProgress."""
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "canMarkApplied" in src
+    assert "bucket !== \"applied\" && !runInProgress" not in src
+    assert "PROGRESS_STATUSES.has(status) || STUCK_STATUSES.has(status)" in src
+    assert "cancels any running fill/tailor" in src
 
 
 def test_force_stuck_orphaned_in_progress_ignores_age_on_startup():
@@ -476,15 +460,16 @@ if __name__ == "__main__":
     test_pipeline_milestone_aborts_when_cancelled()
     test_fill_abort_statuses_cover_hunt_set()
     test_app_js_cancel_not_for_ready()
-    test_app_js_hybrid_fill_409_mentions_another_job()
+    test_max_headed_chrome_mains_default_three()
+    test_app_js_concurrent_fill_no_global_busy_gate()
     test_app_js_start_fill_mode_no_false_skip_without_pdf()
     test_app_js_escapes_question_and_cancel_gate()
     test_app_js_uses_js_string_escape_on_detail_actions()
     test_restore_handler_accepts_deleted_in_source()
     test_delete_kills_running_proc_in_source()
     test_handle_cancel_allows_stuck_in_source()
-    test_partyrock_lock_aborts_when_cancelled()
-    test_partyrock_lock_acquire_source_polls_abort()
+    test_partyrock_parallel_no_global_lock()
+    test_app_js_mark_applied_while_in_progress()
     test_force_stuck_orphaned_in_progress_ignores_age_on_startup()
     test_force_stuck_orphaned_respects_stale_age()
     test_force_stuck_orphaned_when_past_stale()

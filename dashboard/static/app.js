@@ -2472,16 +2472,6 @@ function invalidateFillModeDefaults() {
   selectedFillModeByJob.clear();
 }
 
-function anyOtherJobInProgress(exceptId) {
-  return jobs.some((j) => {
-    if (!j || j.id === exceptId) return false;
-    if (PROGRESS_STATUSES.has(j.status)) return true;
-    // UI-008: Ready/CAPTCHA blocks other fills only while hold is live.
-    if (fillHoldActive && HOLD_BUSY_STATUSES.has(j.status)) return true;
-    return false;
-  });
-}
-
 function getSelectedFillMode(job) {
   if (!job) return "tailor";
   const saved = selectedFillModeByJob.get(job.id);
@@ -2707,20 +2697,23 @@ function renderDossier() {
   const runInProgress = PROGRESS_STATUSES.has(job.status);
   const canCancel = runInProgress || STUCK_STATUSES.has(job.status);
   const holdBusySame = HOLD_BUSY_STATUSES.has(job.status);
-  const otherBusy = anyOtherJobInProgress(job.id);
   const jid = jsStringEscape(job.id);
   // UI-002: never Fill while Ready/CAPTCHA (hold or not — use Mark applied).
-  const canFill = !runInProgress && !holdBusySame && !otherBusy
+  const canFill = !runInProgress && !holdBusySame
     && bucket !== "applied" && bucket !== "deleted";
   const needsRestore = bucket === "deleted";
   const canSkip = !runInProgress && bucket !== "applied" && bucket !== "deleted";
-  const fillBlockedTitle = otherBusy
-    ? "Another job is already filling or held for review — cancel/finish it first (one fill at a time)"
-    : holdBusySame
-      ? "Ready/CAPTCHA hold — Mark as applied or close the fill browser first"
-      : runInProgress
-        ? "This job is already running"
-        : "Run selected fill option · hover for alternatives · click menu title to pin";
+  const canMarkApplied = bucket !== "applied" && bucket !== "deleted";
+  const markAppliedTitle = bucket === "ready"
+    ? "Mark applied after you submit on the employer site"
+    : runInProgress || STUCK_STATUSES.has(job.status)
+      ? "Mark applied — cancels any running fill/tailor for this job"
+      : "Shortcut: mark applied even before Ready — confirms first";
+  const fillBlockedTitle = holdBusySame
+    ? "Ready/CAPTCHA hold — Mark as applied or close the fill browser first"
+    : runInProgress
+      ? "This job is already running"
+      : "Run selected fill option · hover for alternatives · click menu title to pin";
 
   let html = showAppliedTable ? renderAppliedTableHtml() + '<div id="job-detail-anchor">' : "";
 
@@ -2793,11 +2786,9 @@ function renderDossier() {
           onclick="${escapeAttr(`event.stopPropagation(); executeResumeFace('${jid}')`)}">Resume</button>
         ${renderResumePopover(job)}
       </div>
-      ${bucket !== "applied" && !runInProgress
+      ${canMarkApplied
         ? `<button class="act" type="button" onclick="${escapeAttr(`markSubmitted('${jid}')`)}"
-            title="${bucket === "ready"
-              ? "Mark applied after you submit on the employer site"
-              : "Shortcut: mark applied even before Ready — confirms first"}">Mark as applied</button>`
+            title="${escapeAttr(markAppliedTitle)}">Mark as applied</button>`
         : ""}
       ${canSkip
         ? `<button class="act quiet" type="button" onclick="${escapeAttr(`skipJob('${jid}')`)}"
@@ -2914,24 +2905,20 @@ function bindDossierPopoverHandlers(job) {
   }
 }
 
-let _fillFaceBusy = false;
+const _fillFaceBusyJobs = new Set();
 
 function executeFillFace(jobId) {
-  if (_fillFaceBusy) return;
+  if (_fillFaceBusyJobs.has(jobId)) return;
   const job = jobs.find(j => j.id === jobId);
   if (!job) return;
-  if (
-    anyOtherJobInProgress(jobId)
-    || PROGRESS_STATUSES.has(job.status)
-    || HOLD_BUSY_STATUSES.has(job.status)
-  ) {
-    alert("Fill blocked — another fill/hold is active, or this job is Ready/CAPTCHA. One job at a time.");
+  if (PROGRESS_STATUSES.has(job.status) || HOLD_BUSY_STATUSES.has(job.status)) {
+    alert("Fill blocked — this job is already running or held Ready/CAPTCHA.");
     return;
   }
   const mode = getSelectedFillMode(job);
-  _fillFaceBusy = true;
+  _fillFaceBusyJobs.add(jobId);
   Promise.resolve(startJobFillMode(jobId, mode)).finally(() => {
-    _fillFaceBusy = false;
+    _fillFaceBusyJobs.delete(jobId);
   });
 }
 
@@ -3412,7 +3399,7 @@ async function startJob(jobId, opts = {}) {
   });
   if (res.status === 409) {
     const d = await res.json().catch(() => ({}));
-    alert(d.error || "Can't start — another job is already running (one fill at a time).");
+    alert(d.error || "Can't start — this job is already running.");
   } else if (!res.ok) {
     const d = await res.json().catch(() => ({}));
     alert(d.error || `Fill failed (${res.status})`);
@@ -3565,12 +3552,19 @@ async function restoreJob(jobId) {
 async function markSubmitted(jobId) {
   const job = jobs.find(j => j.id === jobId);
   const status = job?.status || "";
-  // UI-037: stronger confirm when marking applied before Ready.
-  const msg = status === "ready_for_review"
-    ? "Mark this job as applied? (You submit on the employer site — we never auto-submit.)"
-    : `This job is not Ready yet (status: ${statusLabel(status) || status || "unknown"}).\n\n`
+  // UI-037: stronger confirm when marking applied before Ready or while running.
+  let msg;
+  if (status === "ready_for_review") {
+    msg = "Mark this job as applied? (You submit on the employer site — we never auto-submit.)";
+  } else if (PROGRESS_STATUSES.has(status) || STUCK_STATUSES.has(status)) {
+    msg = `This job is ${statusLabel(status) || status}.\n\n`
+      + "Mark as applied? This cancels any running fill/tailor for this job. "
+      + "Only do this if you already submitted on the employer site. We never auto-submit.";
+  } else {
+    msg = `This job is not Ready yet (status: ${statusLabel(status) || status || "unknown"}).\n\n`
       + "Mark as applied anyway? Only do this if you already submitted on the employer site. "
       + "We never auto-submit.";
+  }
   if (!confirm(msg)) return;
   await apiPost(`/api/jobs/${encodeURIComponent(jobId)}/submitted`, {}, { failLabel: "Mark applied" });
   await poll();
