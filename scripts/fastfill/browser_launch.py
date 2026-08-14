@@ -349,6 +349,21 @@ def wipe_fill_profiles_for_job(job_id: str | None) -> dict[str, Any]:
     return out
 
 
+def resolve_browser_user_agent(
+    *,
+    channel: str | None,
+    executable_path: str | None = None,
+) -> str | None:
+    """User-Agent matching the browser Playwright will launch.
+
+    System Chrome (``channel=\"chrome\"`` or CfT executable) → detected Chrome UA.
+    Bundled Playwright Chromium → ``None`` (let Playwright default match binary).
+    """
+    if channel == "chrome" or executable_path:
+        return build_chrome_user_agent(detect_chrome_version())
+    return None
+
+
 def build_persistent_context_kwargs(
     *,
     profile_dir: Path,
@@ -357,24 +372,30 @@ def build_persistent_context_kwargs(
     """Kwargs for ``chromium.launch_persistent_context``."""
     profile_dir.mkdir(parents=True, exist_ok=True)
     chrome_ver = detect_chrome_version()
+    channel = resolve_fill_browser_channel(headless=headless)
+    executable_path: str | None = None
     kwargs: dict[str, Any] = {
         "user_data_dir": str(profile_dir),
         "headless": headless,
         "slow_mo": 200 if not headless else 0,
         "locale": "en-US",
-        "user_agent": build_chrome_user_agent(chrome_ver),
         "viewport": resolve_viewport(),
         "timezone_id": system_timezone_id(),
         "chrome_version_detected": chrome_ver,
     }
+    ua = resolve_browser_user_agent(channel=channel, executable_path=None)
+    if ua:
+        kwargs["user_agent"] = ua
     kwargs.update(chromium_launch_hygiene_kwargs())
-    channel = resolve_fill_browser_channel(headless=headless)
     if channel:
         kwargs["channel"] = channel
     else:
         exe = resolve_playwright_chromium_executable()
         if exe:
             kwargs["executable_path"] = exe
+            ua_exe = resolve_browser_user_agent(channel=None, executable_path=exe)
+            if ua_exe:
+                kwargs["user_agent"] = ua_exe
     return kwargs
 
 

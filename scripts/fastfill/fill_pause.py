@@ -753,7 +753,9 @@ def _persist_native_state() -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {k: v for k, v in _NATIVE_STATE.items() if not str(k).startswith("_")}
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(path)
     except Exception:
         pass
 

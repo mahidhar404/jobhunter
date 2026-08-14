@@ -17,6 +17,7 @@ from browser_launch import (  # noqa: E402
     detect_chrome_version,
     fill_chrome_exclude_markers,
     fill_profile_marker,
+    resolve_browser_user_agent,
     resolve_fill_browser_channel,
     resolve_fill_profile_dir,
     resolve_playwright_chromium_executable,
@@ -66,11 +67,24 @@ def test_persistent_context_kwargs_include_profile():
     kw = build_persistent_context_kwargs(profile_dir=d, headless=True)
     assert kw["user_data_dir"] == str(d)
     assert "ignore_default_args" in kw
-    assert "Chrome/120.0.0.0" not in kw["user_agent"]
-    assert "Chrome/" in kw["user_agent"]
+    assert "user_agent" not in kw  # bundled Chromium — Playwright default UA
     assert kw["viewport"]["width"] >= 1024
     assert kw["timezone_id"]
     assert kw.get("chrome_version_detected")
+
+
+def test_persistent_context_headed_has_chrome_user_agent():
+    d = resolve_fill_profile_dir(job_id="x", run_token="t2")
+    kw = build_persistent_context_kwargs(profile_dir=d, headless=False)
+    if sys.platform == "darwin":
+        assert "Chrome/" in kw.get("user_agent", "")
+        assert "Chrome/120.0.0.0" not in kw.get("user_agent", "")
+
+
+def test_resolve_browser_user_agent_bundled_vs_chrome():
+    assert resolve_browser_user_agent(channel=None, executable_path=None) is None
+    ua = resolve_browser_user_agent(channel="chrome")
+    assert ua and "Chrome/" in ua
 
 
 def test_chrome_user_agent_matches_detected_version():
@@ -141,11 +155,65 @@ def test_exclude_markers_protect_dashboard_and_partyrock():
     assert "openclaw/user-data" in blob
 
 
+def test_fast_fill_source_wipes_profile_on_early_abort():
+    src = (HERE / "fast_fill.py").read_text(encoding="utf-8")
+    assert "def _wipe_fill_profile_dir" in src
+    assert "_wipe_fill_profile_dir(profile_dir, report)" in src
+    assert "headed_cap REFUSED" in src
+    assert "launch FAILED (fail-fast" in src
+
+
 def test_fast_fill_source_uses_persistent_context():
     src = (HERE / "fast_fill.py").read_text(encoding="utf-8")
     assert "launch_persistent_context" in src
     assert "build_persistent_context_kwargs" in src
     assert 'channel="chrome"' not in src  # channel set via browser_launch kwargs
+
+
+def test_close_fill_context_idempotent():
+    import asyncio
+    import tempfile
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import fast_fill as ff
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        prof = root / "job1_test"
+        prof.mkdir()
+        (prof / "Default").mkdir()
+        ctx = MagicMock()
+        ctx._jh_fill_teardown = False
+        close_calls = 0
+
+        async def _close():
+            nonlocal close_calls
+            close_calls += 1
+
+        ctx.close = AsyncMock(side_effect=_close)
+        report: dict = {}
+
+        async def _run():
+            with patch("browser_launch.FILL_PROFILES_ROOT", root):
+                await ff._close_fill_context(ctx, profile_dir=prof, report=report)
+                await ff._close_fill_context(ctx, profile_dir=prof, report=report)
+
+        asyncio.run(_run())
+        assert close_calls == 1
+        assert report.get("fill_profile_wiped", {}).get("wiped") is True
+
+
+def test_ashby_storage_clear_before_entry_prepass_in_source():
+    src = (HERE / "fast_fill.py").read_text(encoding="utf-8")
+    early = src.find('report["ashby_storage_cleared"] = cleared')
+    entry = src.find("prepass = await entry_prepass(page")
+    assert early > 0 and entry > 0
+    assert early < entry
+
+
+def test_stealth_readback_retry_in_source():
+    src = (HERE / "fast_fill.py").read_text(encoding="utf-8")
+    assert "stealth_readback_retry" in src
 
 
 def test_fill_pause_default_no_dom_overlay():
@@ -160,6 +228,8 @@ if __name__ == "__main__":
     test_headed_channel_is_chrome_on_darwin()
     test_cft_executable_only_when_opt_in()
     test_persistent_context_kwargs_include_profile()
+    test_persistent_context_headed_has_chrome_user_agent()
+    test_resolve_browser_user_agent_bundled_vs_chrome()
     test_chrome_user_agent_matches_detected_version()
     test_system_timezone_nonempty()
     test_resolve_viewport_default()
@@ -167,5 +237,9 @@ if __name__ == "__main__":
     test_fill_profile_marker()
     test_exclude_markers_protect_dashboard_and_partyrock()
     test_fast_fill_source_uses_persistent_context()
+    test_fast_fill_source_wipes_profile_on_early_abort()
+    test_close_fill_context_idempotent()
+    test_ashby_storage_clear_before_entry_prepass_in_source()
+    test_stealth_readback_retry_in_source()
     test_fill_pause_default_no_dom_overlay()
     print("test_browser_launch: OK")

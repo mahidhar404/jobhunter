@@ -6006,6 +6006,8 @@ async def _fill_selector(
                         "skipped_already_correct": True,
                     }
                 )
+            fiber_meta: dict[str, Any] = {}
+            use_stealth_type = False
             if itype == "password":
                 await loc.fill(str(value), timeout=4000)
             else:
@@ -6045,6 +6047,22 @@ async def _fill_selector(
             extra["fiber_onChange"] = True
         if fiber_meta.get("empty_readback_fiber_retry"):
             extra["empty_readback_fiber_retry"] = True
+        # Stealth type() can miss React controlled inputs — fiber retry before fail.
+        if use_stealth_type and not verified:
+            from verified_select import fill_text_fiber_then_read
+
+            retry_meta = await fill_text_fiber_then_read(
+                loc, str(value), stubborn=True, page=page
+            )
+            readback = await _read_locator_value(loc)
+            verified = _value_matches_readback(str(value), readback)
+            extra["stealth_readback_retry"] = True
+            if retry_meta.get("algorithm"):
+                extra["algorithm"] = retry_meta.get("algorithm")
+            if retry_meta.get("fiber_onChange"):
+                extra["fiber_onChange"] = True
+            if retry_meta.get("empty_readback_fiber_retry"):
+                extra["empty_readback_fiber_retry"] = True
         return await _done(
             {
                 "ok": verified,
@@ -10567,24 +10585,42 @@ def _merge_workday_into_report(report: dict, wd: dict, values: dict) -> None:
     }
 
 
-async def _close_fill_context(
-    context,
-    *,
-    profile_dir: Path,
-    report: dict | None = None,
-) -> None:
-    """Close Playwright context and optionally wipe ephemeral fill profile."""
-    await context.close()
+def _wipe_fill_profile_dir(profile_dir: Path, report: dict | None = None) -> None:
+    """Best-effort delete ephemeral fill profile (no browser context required)."""
     try:
         from browser_launch import resolve_wipe_profile_on_teardown, wipe_fill_profile_dir
 
         if resolve_wipe_profile_on_teardown():
+            if report is not None and report.get("fill_profile_wiped"):
+                return
             wipe_info = wipe_fill_profile_dir(profile_dir)
             if report is not None:
                 report["fill_profile_wiped"] = wipe_info
     except Exception as e:
         if report is not None:
             report.setdefault("errors", []).append({"fill_profile_wipe": str(e)[:120]})
+
+
+async def _close_fill_context(
+    context,
+    *,
+    profile_dir: Path,
+    report: dict | None = None,
+) -> None:
+    """Close Playwright context and optionally wipe ephemeral fill profile.
+
+    Idempotent: early-return paths and the outer ``finally`` both call this;
+    never double-close or double-wipe the same profile dir.
+    """
+    if getattr(context, "_jh_fill_teardown", False):
+        return
+    setattr(context, "_jh_fill_teardown", True)
+    try:
+        await context.close()
+    except Exception as e:
+        if report is not None:
+            report.setdefault("errors", []).append({"context_close": str(e)[:120]})
+    _wipe_fill_profile_dir(profile_dir, report)
 
 
 async def run_fast_fill_async(
@@ -10909,6 +10945,7 @@ async def run_fast_fill_async(
                             f"[chromium] headed_cap REFUSED: {cap_msg}",
                             flush=True,
                         )
+                        _wipe_fill_profile_dir(profile_dir, report)
                         return _finalize(report, close_step_log=True)
                     context = await p.chromium.launch_persistent_context(**ctx_kwargs)
             else:
@@ -10920,6 +10957,7 @@ async def run_fast_fill_async(
             report["chromium_fail_fast"] = True
             report["elapsed_seconds"] = round(time.time() - t0, 2)
             print(f"[chromium] launch FAILED (fail-fast, do not retry×3): {msg[:200]}", flush=True)
+            _wipe_fill_profile_dir(profile_dir, report)
             return _finalize(report, close_step_log=True)
         browser = context.browser
         if is_headed:
@@ -11014,6 +11052,20 @@ async def run_fast_fill_async(
                 action="cookie_dismiss",
                 reason=f"error: {str(e)[:80]}",
                 via="dismiss_cookie_banners",
+            )
+
+        # Ashby: clear apply-host storage before entry clicks (spam flags persist in-session).
+        try:
+            from browser_hygiene import clear_apply_site_storage, is_ashby_url
+
+            if platform == "ashby" or is_ashby_url(page.url or url):
+                cleared = await clear_apply_site_storage(
+                    page, url=page.url or url, context=context
+                )
+                report["ashby_storage_cleared"] = cleared
+        except Exception as e:
+            report.setdefault("errors", []).append(
+                {"ashby_storage_clear": str(e)[:120]}
             )
 
         # Baseline step fingerprint (stuck detection compares against ADVANCE after)
@@ -11281,17 +11333,21 @@ async def run_fast_fill_async(
                             {"ashby_reprobe": str(e)[:120]}
                         )
 
+            # Re-clear after Ashby /application nav — new document may inherit flagged cookies.
             try:
                 from browser_hygiene import clear_apply_site_storage, is_ashby_url
 
-                if platform == "ashby" or is_ashby_url(page.url or url):
+                ashby_nav = report.get("ashby_application_nav") or {}
+                if ashby_nav.get("navigated") and (
+                    platform == "ashby" or is_ashby_url(page.url or url)
+                ):
                     cleared = await clear_apply_site_storage(
                         page, url=page.url or url, context=context
                     )
-                    report["ashby_storage_cleared"] = cleared
+                    report["ashby_storage_cleared_after_nav"] = cleared
             except Exception as e:
                 report.setdefault("errors", []).append(
-                    {"ashby_storage_clear": str(e)[:120]}
+                    {"ashby_storage_clear_nav": str(e)[:120]}
                 )
 
             try:

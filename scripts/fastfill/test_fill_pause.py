@@ -627,6 +627,13 @@ def test_push_activity_to_page():
     asyncio.run(_run())
 
 
+def test_native_state_atomic_write_in_source():
+    src = (HERE / "fill_pause.py").read_text(encoding="utf-8")
+    assert ".with_suffix(\".tmp\")" in src
+    hud = (HERE / "fill_pause_hud.py").read_text(encoding="utf-8")
+    assert ".with_suffix(\".tmp\")" in hud
+
+
 def test_stealth_resolve_defaults():
     from stealth import (
         default_refill_passes_for_url,
@@ -664,6 +671,7 @@ def main() -> int:
     test_resolve_fill_pause_defaults()
     test_resolve_fill_pause_env()
     test_stealth_resolve_defaults()
+    test_native_state_atomic_write_in_source()
     test_sentinel_paths_default()
     test_consume_continue_sentinel()
     test_force_pause_sentinel_present()
