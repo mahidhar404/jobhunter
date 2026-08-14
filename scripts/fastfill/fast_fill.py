@@ -51,6 +51,7 @@ import os
 import re
 import sys
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -203,79 +204,13 @@ from fill_verify import is_verified_fill_row  # noqa: E402
 
 
 def resolve_playwright_chromium_executable() -> str | None:
-    """Prefer an existing Chromium binary (arm64 on Apple Silicon).
-
-    Playwright sometimes reports chrome-mac-x64 on arm64 hosts when the
-    interpreter is under Rosetta / mis-detected; fall back to chrome-mac-arm64.
-    Searches PLAYWRIGHT_BROWSERS_PATH **and** the host default cache so a
-    sandbox-scoped path cannot hide a working arm64 install.
-    """
-    import platform as _platform
-
-    env = (os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or "").strip()
-    if env and Path(env).exists():
-        return env
-
-    machine = _platform.machine().lower()
-    prefer = ["arm64", "x64"] if machine in ("arm64", "aarch64") else ["x64", "arm64"]
-
-    search_roots: list[Path] = []
-    env_browsers = (os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip()
-    if env_browsers:
-        search_roots.append(Path(env_browsers).expanduser())
-    default_browsers = Path.home() / "Library/Caches/ms-playwright"
-    if default_browsers not in search_roots:
-        search_roots.append(default_browsers)
-    # Linux / CI common path
-    linux_default = Path.home() / ".cache/ms-playwright"
-    if linux_default not in search_roots:
-        search_roots.append(linux_default)
-
-    candidates: list[tuple[str, Path]] = []
-    for browsers in search_roots:
-        if not browsers.is_dir():
-            continue
-        roots = sorted(browsers.glob("chromium-*"), reverse=True)
-        for arch in prefer:
-            for root in roots:
-                cand = (
-                    root
-                    / f"chrome-mac-{arch}"
-                    / "Google Chrome for Testing.app"
-                    / "Contents"
-                    / "MacOS"
-                    / "Google Chrome for Testing"
-                )
-                if cand.is_file():
-                    candidates.append((arch, cand))
-                # Headless shell / chrome-linux layout
-                for linux_name in (
-                    f"chrome-linux-{arch}",
-                    "chrome-linux",
-                ):
-                    linux_cand = root / linux_name / "chrome"
-                    if linux_cand.is_file():
-                        candidates.append((arch if "arm" in linux_name else "x64", linux_cand))
-
-    for arch in prefer:
-        for a, cand in candidates:
-            if a == arch:
-                return str(cand)
-
-    # Last resort: whatever Playwright thinks (may be missing)
+    """CfT executable — only when ``FASTFILL_USE_CFT=1`` (default: system Chrome)."""
     try:
-        from playwright.sync_api import sync_playwright
+        from browser_launch import resolve_playwright_chromium_executable as _resolve
 
-        with sync_playwright() as p:
-            exe = p.chromium.executable_path
-            if exe and Path(exe).exists():
-                # On arm64, refuse x64 path if we somehow missed arm64 above
-                if machine in ("arm64", "aarch64") and "chrome-mac-x64" in str(exe):
-                    return None
-                return exe
-    except Exception:
-        pass
-    return None
+        return _resolve()
+    except ImportError:
+        return None
 
 
 def _attempt_log_from_report(report: dict | None) -> FieldAttemptLog | None:
@@ -9029,53 +8964,13 @@ def hold_is_active(seconds: int | None) -> bool:
 
 
 def count_chrome_for_testing_mains(*, headed_only: bool = False) -> list[int]:
-    """PIDs of Chrome-for-Testing *main* processes (exclude Helper/renderer).
-
-    Used to enforce MAX_HEADED_CHROME_MAINS before launching another headed fill.
-    Excludes dashboard UI (``dashboard_ui_profile`` / ``--app=:8787``) and
-    OpenClaw PartyRock CDP (``~/.openclaw/browser/openclaw/user-data`` /
-    ``:18800``) — same binary, not a fill window (CHR3-003).
-    """
-    import subprocess
-    from pathlib import Path as _Path
-
-    exclude_markers = (
-        f"--user-data-dir={ROOT / 'dashboard_ui_profile'}",
-        "--app=http://127.0.0.1:8787",
-        f"--user-data-dir={_Path.home() / '.openclaw' / 'browser' / 'openclaw' / 'user-data'}",
-        "--remote-debugging-port=18800",
-        "openclaw/user-data",
-    )
-
+    """PIDs of headed fill Chrome mains (regular Chrome + job_hunter_fill_profiles)."""
     try:
-        out = subprocess.check_output(
-            ["pgrep", "-lf", "Google Chrome for Testing"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        from browser_launch import count_fill_chrome_mains
+
+        return count_fill_chrome_mains(headed_only=headed_only)
+    except ImportError:
         return []
-    pids: list[int] = []
-    for line in out.splitlines():
-        if "Helper" in line or "crashpad" in line:
-            continue
-        # Main binary path (macOS Playwright layout)
-        if "MacOS/Google Chrome for Testing" not in line and "/chrome " not in line:
-            # Linux chrome-linux binary often ends with /chrome
-            if not re.search(r"/chrome(?:\s|$)", line):
-                continue
-        if headed_only and ("--headless" in line or "headless=new" in line):
-            continue
-        if any(marker in line for marker in exclude_markers):
-            continue
-        parts = line.strip().split(None, 1)
-        if not parts:
-            continue
-        try:
-            pids.append(int(parts[0]))
-        except ValueError:
-            continue
-    return pids
 
 
 @contextmanager
@@ -10678,7 +10573,8 @@ async def run_fast_fill_async(
     captcha_wait: headed default ON — pause for human CAPTCHA solve (Enter),
     then continue same session. Headless always BLOCKED (cannot solve).
 
-    fill_pause: headed default ON — in-page Pause/Continue overlay. Disable with
+    fill_pause: headed default ON — native floating HUD (outside browser). DOM
+    overlay opt-in ``FASTFILL_DOM_OVERLAY=1``. Disable pause entirely with
     False / ``--no-fill-pause`` / ``FASTFILL_FILL_PAUSE=0``.
 
     refill_passes: after first fill+screenshot, re-run leftover/Flash fill on
@@ -10893,21 +10789,21 @@ async def run_fast_fill_async(
     # Hard cap (CHR-007/008): flock around busy-check + launch. Kill orphans
     # only — never kill-all of hold/CAPTCHA review windows; refuse instead.
     async with async_playwright() as p:
-        launch_kwargs: dict[str, Any] = {
-            "headless": use_headless,
-            # Visible demos: slower actions so multipage Workday/GH flows are watchable
-            "slow_mo": 200 if not use_headless else 0,
-        }
-        try:
-            from browser_hygiene import chromium_launch_hygiene_kwargs
+        from browser_launch import (  # noqa: PLC0415
+            build_persistent_context_kwargs,
+            resolve_fill_profile_dir,
+        )
 
-            launch_kwargs.update(chromium_launch_hygiene_kwargs())
-        except Exception:
-            pass
-        exe = resolve_playwright_chromium_executable()
-        if exe:
-            launch_kwargs["executable_path"] = exe
-            report["chromium_executable"] = exe
+        run_token = str(uuid.uuid4())[:12]
+        profile_dir = resolve_fill_profile_dir(job_id=job_id, run_token=run_token)
+        report["fill_profile_dir"] = str(profile_dir)
+        ctx_kwargs = build_persistent_context_kwargs(
+            profile_dir=profile_dir,
+            headless=use_headless,
+        )
+        report["fill_browser_channel"] = ctx_kwargs.get("channel") or "bundled"
+        if ctx_kwargs.get("executable_path"):
+            report["chromium_executable"] = ctx_kwargs["executable_path"]
 
         def _headed_prelaunch_gate() -> dict[str, Any] | None:
             if (os.environ.get("FASTFILL_NO_KILL_CHROME") or "").strip() not in (
@@ -10943,7 +10839,7 @@ async def run_fast_fill_async(
                         print(
                             "\n"
                             "╔══════════════════════════════════════════════════════════════════╗\n"
-                            "║  HEADED CAP — refused to launch another Chrome-for-Testing       ║\n"
+                            "║  HEADED CAP — refused to launch another fill Chrome              ║\n"
                             "║  Existing fill/hold window kept (no kill-all). Wait for slot, OR:║\n"
                             "║    export FASTFILL_FORCE_HEADED=1     (bypass cap — sparingly)  ║\n"
                             "╚══════════════════════════════════════════════════════════════════╝\n"
@@ -10951,9 +10847,9 @@ async def run_fast_fill_async(
                             flush=True,
                         )
                         return _finalize(report, close_step_log=True)
-                    browser = await p.chromium.launch(**launch_kwargs)
+                    context = await p.chromium.launch_persistent_context(**ctx_kwargs)
             else:
-                browser = await p.chromium.launch(**launch_kwargs)
+                context = await p.chromium.launch_persistent_context(**ctx_kwargs)
         except Exception as e:
             msg = str(e)
             report["errors"].append({"chromium_launch": msg[:400]})
@@ -10962,34 +10858,27 @@ async def run_fast_fill_async(
             report["elapsed_seconds"] = round(time.time() - t0, 2)
             print(f"[chromium] launch FAILED (fail-fast, do not retry×3): {msg[:200]}", flush=True)
             return _finalize(report, close_step_log=True)
+        browser = context.browser
         if is_headed:
             try:
-                from captcha_pause import bring_chrome_testing_to_front
+                from captcha_pause import bring_fill_chrome_to_front
 
-                bring_chrome_testing_to_front(loud=True)
+                bring_fill_chrome_to_front(loud=True)
             except Exception:
                 pass
             print(
-                "[browser] Headed Chromium launched — look for "
-                "'Google Chrome for Testing' window (may be behind other apps).\n"
-                "[browser] CHR3-005: fill CfT shares Dock icon with UI/PartyRock — "
-                "focus fill via: dashboard/launch_dashboard.sh --focus-fill "
-                "(never tell application … activate).",
+                "[browser] Headed Google Chrome launched (job_hunter_fill_profiles) — "
+                "look for the job URL window (may be behind other apps).\n"
+                "[browser] Pause control: floating native HUD outside the browser "
+                "(not on the ATS page). Focus fill: "
+                "dashboard/launch_dashboard.sh --focus-fill",
                 flush=True,
             )
         note_step(
             report,
             action="browser_launch",
             reason="headed" if is_headed else "headless",
-            via="playwright",
-        )
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            locale="en-US",
+            via="playwright_persistent",
         )
         if do_fill_pause:
             try:
@@ -10998,7 +10887,7 @@ async def run_fast_fill_async(
                 report.setdefault("errors", []).append(
                     {"fill_pause_init": str(e)[:120]}
                 )
-        page = await context.new_page()
+        page = context.pages[0] if context.pages else await context.new_page()
         report["_page"] = page
         if do_fill_pause:
             try:
@@ -11032,7 +10921,13 @@ async def run_fast_fill_async(
             )
             report["elapsed_seconds"] = round(time.time() - t0, 2)
             report.pop("_page", None)
-            await browser.close()
+            try:
+                from fill_pause import stop_native_hud
+
+                stop_native_hud()
+            except Exception:
+                pass
+            await context.close()
             return _finalize(report, close_step_log=True)
 
         try:
@@ -11133,7 +11028,7 @@ async def run_fast_fill_async(
                             await _hold_for_review(
                                 seconds=cap_hold, report=report, browser=browser
                             )
-                        await browser.close()
+                        await context.close()
                         return _finalize(report, close_step_log=True)
                 else:
                     report["blocker"] = blocker
@@ -11147,7 +11042,7 @@ async def run_fast_fill_async(
                     )
                     if screenshot:
                         await _maybe_shot(page, screenshot, report)
-                    await browser.close()
+                    await context.close()
                     return _finalize(report, close_step_log=True)
         except Exception:
             pass
@@ -11275,7 +11170,7 @@ async def run_fast_fill_async(
                     if hold_sec > 0:
                         # Nothing to show — skip long hold
                         pass
-                    await browser.close()
+                    await context.close()
                     report["elapsed_seconds"] = round(time.time() - t0, 2)
                     return _finalize(report, close_step_log=True)
                 raise
@@ -12653,9 +12548,9 @@ async def run_fast_fill_async(
                     )
                 if sys.platform == "darwin":
                     try:
-                        from captcha_pause import bring_chrome_testing_to_front
+                        from captcha_pause import bring_fill_chrome_to_front
 
-                        bring_chrome_testing_to_front()
+                        bring_fill_chrome_to_front()
                     except Exception:
                         pass
                 # Hold loop: Continue → resume fill / Next → re-hold (cap rounds).
@@ -12722,9 +12617,14 @@ async def run_fast_fill_async(
                     # Keep holding (indefinite / timed) so human can Continue again.
         finally:
             report.pop("_page", None)
+            try:
+                from fill_pause import stop_native_hud
+
+                stop_native_hud()
+            except Exception:
+                pass
             # Only reach here after pause drain + hold (or no hold requested).
-            # Indefinite hold exits when human already closed the window.
-            await browser.close()
+            await context.close()
 
     report["elapsed_seconds"] = round(time.time() - t0, 2)
     if report.get("fill_elapsed_seconds") is None:

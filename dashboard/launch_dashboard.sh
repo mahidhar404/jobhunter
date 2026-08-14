@@ -209,39 +209,43 @@ focus_dashboard_ui() {
   return 0
 }
 
-# CHR3-005 / CHR3-006: raise Playwright fill CfT by PID (never UI / PartyRock).
-# Prefer --remote-debugging-pipe. Same selection as captcha_pause / run_fill_visible.
+# CHR3-005 / CHR3-006: raise fill Chrome by PID (never UI / PartyRock / daily profile).
+# Prefer job_hunter_fill_profiles under repo; fallback legacy CfT --remote-debugging-pipe.
 focus_fill_cft() {
   local line pid preferred="" fallback=""
   if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "focus-fill: non-Darwin — no-op" >&2
     return 1
   fi
+  local fill_root="${ROOT}/job_hunter_fill_profiles"
   while IFS= read -r line; do
     [[ -z "${line}" ]] && continue
     case "${line}" in
       *Helper*|*crashpad*) continue ;;
     esac
-    [[ "${line}" != *"MacOS/Google Chrome for Testing"* ]] && continue
+    [[ "${line}" != *"Google Chrome"* ]] && continue
     [[ "${line}" == *dashboard_ui_profile* || "${line}" == *"--app=${URL}"* ]] && continue
     [[ "${line}" == *openclaw/user-data* || "${line}" == *"--remote-debugging-port=${OPENCLAW_CDP_PORT}"* ]] && continue
+    [[ "${line}" == *"/Applications/Google Chrome.app"* && "${line}" != *job_hunter_fill_profile* && "${line}" != *"${fill_root}"* ]] && continue
     pid="${line%% *}"
     [[ "${pid}" =~ ^[0-9]+$ ]] || continue
-    if [[ "${line}" == *--remote-debugging-pipe* ]]; then
+    if [[ "${line}" == *"${fill_root}"* ]]; then
       preferred="${pid}"
       break
     fi
-    [[ -z "${fallback}" ]] && fallback="${pid}"
-  done < <(/usr/bin/pgrep -lf "Google Chrome for Testing" 2>/dev/null || true)
+    if [[ "${line}" == *--remote-debugging-pipe* ]]; then
+      [[ -z "${fallback}" ]] && fallback="${pid}"
+    fi
+  done < <(/usr/bin/pgrep -lf "Google Chrome" 2>/dev/null || true)
   pid="${preferred:-${fallback}}"
   if [[ -z "${pid}" ]]; then
-    echo "focus-fill: no fill CfT main found (UI/PartyRock excluded)" >&2
+    echo "focus-fill: no fill Chrome main found (UI/PartyRock/daily profile excluded)" >&2
     return 1
   fi
   /usr/bin/osascript -e \
     "tell application \"System Events\" to set frontmost of first process whose unix id is ${pid} to true" \
     >/dev/null 2>&1 || true
-  echo "focused fill CfT pid=${pid} (CHR3-005: same Dock icon as UI/PartyRock — PID focus)"
+  echo "focused fill Chrome pid=${pid} (job_hunter_fill_profiles; never daily Chrome)"
   return 0
 }
 

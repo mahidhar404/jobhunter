@@ -1,7 +1,7 @@
-"""In-page Pause / Continue overlay for headed fast_fill.
+"""Pause / Continue control for headed fast_fill (native HUD by default).
 
 Hard rules:
-  - Never submit; never CAPTCHA solve; overlay is review/control only
+  - Never submit; never CAPTCHA solve; control UI is review-only
   - Pause is cooperative: takes effect between fill actions (not mid-widget /
     mid-select / mid-upload). FILL3-009 — UX must not promise near-immediate stop.
   - Continue resumes; callers should rely on already_correct skips so
@@ -17,10 +17,11 @@ Hard rules:
   - While actively filling (not held / not CAPTCHA): pause symbol (❚❚) /
     aria **Pause fill**. Mid-fill pause (not hold/CAPTCHA) uses ▶ /
     aria **Continue fill**.
-  - Visible status strip on the control shows compact activity
-    (``L1 · filling Email``, ``hold · incomplete``, ``CAPTCHA``) without hover;
-    hover tip remains secondary detail.
-  - FILL3-017: throttle overlay re-inject (skip CDP when already mounted recently)
+  - Default (headed macOS): floating native HUD **outside** the browser via
+    ``fill_pause_hud.py`` (no ``#jh-fill-pause-overlay`` on ATS pages — avoids
+    Ashby bot detection). Status: ``L1 · filling Email``, hold, CAPTCHA, etc.
+  - Legacy in-page overlay: opt-in ``FASTFILL_DOM_OVERLAY=1`` only.
+  - FILL3-017: throttle DOM overlay re-inject when DOM mode is on
   - Never auto-close the fill browser while Pause is engaged, or after a
     terminal fill when headed ``--hold-open`` (indefinite) is active — only the
     human closes Chrome / ends hold.
@@ -32,7 +33,10 @@ Headed default ON. Disable with ``--no-fill-pause`` or
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -136,6 +140,9 @@ def note_fill_activity(
     if detail is not None:
         _CURRENT_ACTIVITY["detail"] = str(detail).strip()[:160]
     _CURRENT_ACTIVITY["updated_at"] = time.time()
+    if use_native_hud() or not use_dom_overlay():
+        _merge_native_activity()
+        _persist_native_state()
     return dict(_CURRENT_ACTIVITY)
 
 
@@ -687,6 +694,180 @@ _RESULTS_DIR = (
 )
 _DEFAULT_PAUSE_SENTINEL = _RESULTS_DIR / ".fill_paused"
 _DEFAULT_CONTINUE_SENTINEL = _RESULTS_DIR / ".fill_continue"
+_NATIVE_STATE_PATH = _RESULTS_DIR / ".fill_pause_state.json"
+
+# Python-side pause state (native HUD + sentinel path). DOM overlay uses page globals.
+_NATIVE_STATE: dict[str, Any] = {
+    "paused": False,
+    "hold_mode": False,
+    "captcha_gated": False,
+    "pause_count": 0,
+    "continue_count": 0,
+    "hud_action": None,
+    "hud_stop": 0,
+}
+_hud_proc: subprocess.Popen | None = None
+_last_hud_action_seen: str | None = None
+
+
+def fill_pause_state_path() -> Path:
+    env = (os.environ.get("FASTFILL_FILL_PAUSE_STATE") or "").strip()
+    return Path(env).expanduser() if env else _NATIVE_STATE_PATH
+
+
+def use_dom_overlay() -> bool:
+    """In-page ``#jh-fill-pause-overlay`` — OFF by default (Ashby bot checks)."""
+    return (os.environ.get("FASTFILL_DOM_OVERLAY") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def use_native_hud() -> bool:
+    if use_dom_overlay():
+        return False
+    if (os.environ.get("FASTFILL_NATIVE_HUD") or "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    return sys.platform == "darwin"
+
+
+def _merge_native_activity() -> None:
+    act = dict(_CURRENT_ACTIVITY)
+    act["text"] = format_fill_activity_text(act)
+    act["compact"] = format_fill_activity_compact(act)
+    _NATIVE_STATE["activity"] = act
+    _NATIVE_STATE["text"] = act["text"]
+    _NATIVE_STATE["compact"] = act["compact"]
+    _NATIVE_STATE["updated_at"] = time.time()
+
+
+def _persist_native_state() -> None:
+    path = fill_pause_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {k: v for k, v in _NATIVE_STATE.items() if not str(k).startswith("_")}
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _load_native_state_from_disk() -> None:
+    path = fill_pause_state_path()
+    try:
+        if not path.is_file():
+            return
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return
+        for key in (
+            "paused",
+            "hold_mode",
+            "captcha_gated",
+            "pause_count",
+            "continue_count",
+            "hud_action",
+        ):
+            if key in data:
+                _NATIVE_STATE[key] = data[key]
+        act = data.get("activity")
+        if isinstance(act, dict):
+            _CURRENT_ACTIVITY.update(act)
+    except Exception:
+        pass
+
+
+def _native_pause_snapshot() -> dict[str, Any]:
+    return {
+        "paused": bool(_NATIVE_STATE.get("paused")),
+        "installed": True,
+        "holdMode": bool(_NATIVE_STATE.get("hold_mode")),
+        "pauseCount": int(_NATIVE_STATE.get("pause_count") or 0),
+        "continueCount": int(_NATIVE_STATE.get("continue_count") or 0),
+        "captcha_gated": bool(_NATIVE_STATE.get("captcha_gated")),
+        "via": "native_hud",
+    }
+
+
+def _consume_hud_action() -> str | None:
+    global _last_hud_action_seen
+    action = _NATIVE_STATE.get("hud_action")
+    if not action or action == _last_hud_action_seen:
+        return None
+    _last_hud_action_seen = str(action)
+    _NATIVE_STATE["hud_action"] = None
+    _persist_native_state()
+    return str(action)
+
+
+def start_native_hud() -> dict[str, Any]:
+    """Launch floating tkinter HUD subprocess (macOS)."""
+    global _hud_proc
+    if not use_native_hud():
+        return {"started": False, "via": "disabled"}
+    if _hud_proc is not None and _hud_proc.poll() is None:
+        return {"started": True, "via": "already_running", "pid": _hud_proc.pid}
+    _NATIVE_STATE["hud_stop"] = 0
+    _merge_native_activity()
+    _persist_native_state()
+    script = Path(__file__).resolve().parent / "fill_pause_hud.py"
+    try:
+        _hud_proc = subprocess.Popen(
+            [sys.executable, str(script), str(fill_pause_state_path())],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return {"started": True, "pid": _hud_proc.pid, "state": str(fill_pause_state_path())}
+    except Exception as e:
+        return {"started": False, "error": str(e)[:120]}
+
+
+def stop_native_hud() -> dict[str, Any]:
+    """Signal HUD subprocess to exit."""
+    global _hud_proc
+    _NATIVE_STATE["hud_stop"] = 1
+    _persist_native_state()
+    out: dict[str, Any] = {"stopped": False}
+    proc = _hud_proc
+    _hud_proc = None
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.wait(timeout=2.0)
+        except Exception:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        out["stopped"] = True
+        out["pid"] = proc.pid
+    return out
+
+
+def reset_native_pause_state() -> None:
+    """Clear pause flags at fill start."""
+    global _last_hud_action_seen
+    _NATIVE_STATE.update(
+        {
+            "paused": False,
+            "hold_mode": False,
+            "captcha_gated": False,
+            "pause_count": 0,
+            "continue_count": 0,
+            "hud_action": None,
+            "hud_stop": 0,
+        }
+    )
+    _last_hud_action_seen = None
+    note_fill_activity(layer=None, action="idle", label="", detail="")
+    _merge_native_activity()
+    _persist_native_state()
 
 
 def resolve_fill_pause(*, headed: bool, fill_pause: bool | None = None) -> bool:
@@ -740,11 +921,9 @@ def _page_inject_key(page) -> int:
 async def inject_fill_pause_overlay(
     page, *, force: bool = False, throttle_s: float = _INJECT_THROTTLE_S
 ) -> dict[str, Any]:
-    """Install / refresh the top-right Pause button.
-
-    FILL3-017: throttle repeated CDP evaluates when overlay was just injected
-    (safe no-op for callers that poll often). Pass ``force=True`` to bypass.
-    """
+    """Install / refresh the top-right Pause button (DOM mode only)."""
+    if not use_dom_overlay():
+        return {"ok": True, "skipped": True, "via": "native_hud"}
     key = _page_inject_key(page)
     now = time.monotonic()
     if not force and key in _last_inject_mono:
@@ -759,12 +938,29 @@ async def inject_fill_pause_overlay(
 
 
 async def set_fill_pause_captcha_gate(page, active: bool) -> dict[str, Any]:
-    """Mark CAPTCHA wait ownership and show play/Continue on the overlay.
-
-    When *active*, the overlay stays **visible** with ▶ / aria **Continue**
-    (human solved → click). ``wait_while_paused`` yields while gated so CAPTCHA
-    wait owns resume. Never solves CAPTCHA; FILL-008 still applies at the wait.
-    """
+    """Mark CAPTCHA wait ownership; native HUD shows play/Continue."""
+    if use_native_hud() or not use_dom_overlay():
+        _NATIVE_STATE["captcha_gated"] = bool(active)
+        if active:
+            if not _NATIVE_STATE.get("paused"):
+                _NATIVE_STATE["paused"] = True
+                _NATIVE_STATE["pause_count"] = int(_NATIVE_STATE.get("pause_count") or 0) + 1
+            _NATIVE_STATE["hold_mode"] = True
+            note_fill_activity(
+                layer="captcha",
+                action="waiting human solve",
+                detail="Continue when solved",
+            )
+        else:
+            _NATIVE_STATE["hold_mode"] = False
+        _merge_native_activity()
+        _persist_native_state()
+        return {
+            "captcha_gated": bool(active),
+            "paused": bool(_NATIVE_STATE.get("paused")),
+            "holdMode": bool(_NATIVE_STATE.get("hold_mode")),
+            "via": "native_hud",
+        }
     try:
         # Ensure overlay exists so Continue can attach; force bypass throttle.
         await inject_fill_pause_overlay(page, force=True)
@@ -816,7 +1012,9 @@ async def enter_hold_continue_mode(
 
 
 async def install_fill_pause_on_context(context) -> None:
-    """Survive navigations: inject on every new document."""
+    """Survive navigations: inject on every new document (DOM mode only)."""
+    if not use_dom_overlay():
+        return
     try:
         await context.add_init_script(
             f"(() => {{ try {{ ({_INSTALL_OVERLAY_JS})(); }} catch (_) {{}} }})();"
@@ -826,10 +1024,20 @@ async def install_fill_pause_on_context(context) -> None:
 
 
 async def push_fill_activity(page, act: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Push activity into ``window.__jhFillActivity`` (status strip + hover tip)."""
+    """Push activity to native HUD state file and/or DOM overlay."""
     payload = dict(act or _CURRENT_ACTIVITY)
     payload["text"] = format_fill_activity_text(payload)
     payload["compact"] = format_fill_activity_compact(payload)
+    if use_native_hud() or not use_dom_overlay():
+        _CURRENT_ACTIVITY.update(payload)
+        _merge_native_activity()
+        _persist_native_state()
+        if use_dom_overlay() and page is not None:
+            try:
+                await page.evaluate(_PUSH_ACTIVITY_JS, payload)
+            except Exception:
+                pass
+        return {"ok": True, "via": "native_hud", **payload}
     if page is None:
         return {"ok": False, "via": "no_page", **payload}
     try:
@@ -841,13 +1049,13 @@ async def push_fill_activity(page, act: dict[str, Any] | None = None) -> dict[st
 async def read_fill_pause_state(
     page, *, assume_paused_on_error: bool | None = None
 ) -> dict[str, Any]:
-    """Read overlay pause state.
-
-    When ``assume_paused_on_error`` is True (used inside an active pause wait),
-    or when the last successful read was paused, evaluate/CDP failures must NOT
-    look like Continue — that would finish the fill loop and auto-close Chrome
-    behind the human.
-    """
+    """Read pause state from native HUD / file or in-page overlay."""
+    if use_native_hud() or not use_dom_overlay():
+        _load_native_state_from_disk()
+        key = _page_inject_key(page) if page is not None else 0
+        st = _native_pause_snapshot()
+        _last_paused_known[key] = bool(st.get("paused"))
+        return st
     key = _page_inject_key(page)
     try:
         st = await page.evaluate(_READ_STATE_JS)
@@ -880,11 +1088,31 @@ async def read_fill_pause_state(
 async def set_fill_paused(
     page, paused: bool, *, hold_mode: bool = False
 ) -> dict[str, Any]:
-    """Programmatic pause/resume (tests / sentinel / hold). Updates overlay UI.
-
-    ``hold_mode=True`` uses play (▶) / aria **Continue** (hold/CAPTCHA resume UX)
-    instead of mid-fill ▶ / aria **Continue fill**.
-    """
+    """Programmatic pause/resume (tests / sentinel / hold)."""
+    if use_native_hud() or not use_dom_overlay():
+        was = bool(_NATIVE_STATE.get("paused"))
+        _NATIVE_STATE["paused"] = bool(paused)
+        if paused:
+            _NATIVE_STATE["hold_mode"] = hold_mode or bool(_NATIVE_STATE.get("hold_mode"))
+        else:
+            _NATIVE_STATE["hold_mode"] = False
+        if _NATIVE_STATE["paused"] and not was:
+            _NATIVE_STATE["pause_count"] = int(_NATIVE_STATE.get("pause_count") or 0) + 1
+        if (not _NATIVE_STATE["paused"]) and was:
+            _NATIVE_STATE["continue_count"] = int(_NATIVE_STATE.get("continue_count") or 0) + 1
+        _merge_native_activity()
+        _persist_native_state()
+        if page is not None:
+            key = _page_inject_key(page)
+            _last_paused_known[key] = bool(paused)
+        return {
+            "paused": bool(_NATIVE_STATE["paused"]),
+            "holdMode": bool(_NATIVE_STATE.get("hold_mode")),
+            "pauseCount": _NATIVE_STATE.get("pause_count"),
+            "continueCount": _NATIVE_STATE.get("continue_count"),
+            "captcha_gated": bool(_NATIVE_STATE.get("captcha_gated")),
+            "via": "native_hud",
+        }
     js = f"""
     (payload) => {{
       const want = !!(payload && payload.paused);
@@ -992,7 +1220,10 @@ async def wait_while_paused(
         return out
 
     try:
-        await inject_fill_pause_overlay(page)
+        if use_native_hud():
+            start_native_hud()
+        elif use_dom_overlay():
+            await inject_fill_pause_overlay(page)
     except Exception:
         pass
     try:
@@ -1003,6 +1234,41 @@ async def wait_while_paused(
     was_paused = False
     t0 = time.monotonic()
     while True:
+        # HUD button / disk state (native mode)
+        if use_native_hud() or not use_dom_overlay():
+            _load_native_state_from_disk()
+            hud_act = _consume_hud_action()
+            if hud_act == "continue":
+                await set_fill_paused(page, False)
+                if was_paused:
+                    out.update(
+                        waited=True,
+                        resumed=True,
+                        via="native_hud",
+                        waited_s=round(time.monotonic() - t0, 2),
+                    )
+                    _note_pause(
+                        report,
+                        event="resumed",
+                        via="native_hud",
+                        resume_rescan=True,
+                        waited_s=out["waited_s"],
+                    )
+                    if report is not None:
+                        report.setdefault("fill_pause", {})["resume_rescan"] = True
+                    note_fill_activity(layer="1", action="resumed", detail="native HUD continue")
+                    print(
+                        "[fill-pause] Continue — resuming fill "
+                        "(will skip fields already filled)…",
+                        flush=True,
+                    )
+                else:
+                    out["via"] = "native_hud_idle"
+                return out
+            if hud_act == "pause" and not was_paused:
+                was_paused = True
+                out["waited"] = True
+
         # CAPTCHA wait owns human resume — yield (Continue handled in captcha_pause)
         st_gate = await read_fill_pause_state(
             page, assume_paused_on_error=was_paused
@@ -1046,10 +1312,15 @@ async def wait_while_paused(
         paused = bool(st.get("paused"))
         if not paused:
             if was_paused:
+                resume_via = (
+                    "native_hud"
+                    if (use_native_hud() or not use_dom_overlay())
+                    else "overlay_continue"
+                )
                 out.update(
                     waited=True,
                     resumed=True,
-                    via="overlay_continue",
+                    via=resume_via,
                     waited_s=round(time.monotonic() - t0, 2),
                     pauseCount=st.get("pauseCount"),
                     continueCount=st.get("continueCount"),
@@ -1057,7 +1328,7 @@ async def wait_while_paused(
                 _note_pause(
                     report,
                     event="resumed",
-                    via="overlay_continue",
+                    via=resume_via,
                     resume_rescan=True,
                     waited_s=out["waited_s"],
                 )
@@ -1095,17 +1366,19 @@ async def wait_while_paused(
             )
             print(
                 "\n*** FILL PAUSED (between actions) — edit the form in Chrome, "
-                "then click ▶ / Continue fill (top-right). "
-                "Browser stays open until you Continue or close the window "
-                "(never auto-closes while paused). "
-                "Pause is not mid-widget. During CAPTCHA the overlay shows "
+                "then click ▶ / Continue on the floating Job Hunter HUD "
+                "(outside the browser — never auto-closes while paused). "
+                "Pause is not mid-widget. During CAPTCHA the HUD shows "
                 "▶ / Continue (same as Enter / .captcha_continue). ***\n",
                 flush=True,
             )
             try:
-                from captcha_pause import bring_chrome_testing_to_front
+                if use_native_hud():
+                    start_native_hud()
+                else:
+                    from captcha_pause import bring_fill_chrome_to_front
 
-                bring_chrome_testing_to_front()
+                    bring_fill_chrome_to_front()
             except Exception:
                 pass
         else:
@@ -1156,15 +1429,26 @@ async def drain_pause_before_close(
 
 
 async def ensure_fill_pause_ready(page, report: dict | None = None) -> None:
-    """Inject overlay once when headed fill starts; record enabled flag."""
+    """Start native HUD or inject DOM overlay when headed fill starts."""
     if report is not None and not report.get("fill_pause_enabled", True):
         return
-    info = await inject_fill_pause_overlay(page, force=True)
+    reset_native_pause_state()
+    info: dict[str, Any]
+    if use_native_hud():
+        info = start_native_hud()
+        info["mode"] = "native_hud"
+    elif use_dom_overlay():
+        info = await inject_fill_pause_overlay(page, force=True)
+        info["mode"] = "dom_overlay"
+    else:
+        info = {"enabled": True, "mode": "sentinel_only"}
     if report is not None:
         fp = report.setdefault("fill_pause", {})
         if isinstance(fp, dict):
-            fp["overlay"] = info
+            fp["control"] = info
             fp.setdefault("enabled", True)
+            fp["dom_overlay"] = use_dom_overlay()
+            fp["native_hud"] = use_native_hud()
 
 
 _DETACH_OVERLAY_JS = f"""
@@ -1190,11 +1474,10 @@ _DETACH_OVERLAY_JS = f"""
 
 
 async def detach_fill_pause_overlay(page) -> dict[str, Any]:
-    """Remove the in-page Pause overlay before human manual submit.
-
-    Ashby and other ATS bot checks can flag injected overlays / globals.
-    Fill can still be resumed via dashboard Start or ``.fill_continue`` sentinel.
-    """
+    """Remove in-page overlay (DOM mode) and stop native HUD."""
+    stop_native_hud()
+    if not use_dom_overlay():
+        return {"detached": True, "via": "native_hud_only"}
     if page is None:
         return {"detached": False, "via": "no_page"}
     try:

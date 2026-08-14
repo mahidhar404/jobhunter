@@ -30,6 +30,7 @@ scripts/fastfill/learning_store/metrics_timeline.jsonl
 partyrock_chrome_profile/
 dashboard_chrome_profile/
 dashboard_ui_profile/
+job_hunter_fill_profiles/
 resumes/
 
 # Python / local envs

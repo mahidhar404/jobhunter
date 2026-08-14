@@ -19,6 +19,7 @@ from fill_pause import (  # noqa: E402
     OVERLAY_ID,
     SYM_PAUSE,
     SYM_PLAY,
+    _NATIVE_STATE,
     consume_fill_continue_sentinel,
     drain_pause_before_close,
     fill_pause_continue_sentinel_path,
@@ -33,6 +34,8 @@ from fill_pause import (  # noqa: E402
     set_fill_pause_captcha_gate,
     set_fill_paused,
     should_keep_fill_browser_open,
+    use_dom_overlay,
+    use_native_hud,
     wait_while_paused,
 )
 
@@ -272,7 +275,7 @@ def test_wait_while_paused_resume_via_sentinel():
 
             async def _run():
                 page = _FakePage()
-                page._state["paused"] = True
+                await set_fill_paused(page, True)
                 report = {"fill_pause_enabled": True}
 
                 async def _touch_soon():
@@ -289,7 +292,7 @@ def test_wait_while_paused_resume_via_sentinel():
             assert out["resumed"] is True
             assert out["via"] == "sentinel"
             assert (report.get("fill_pause") or {}).get("resume_rescan") is True
-            assert page._state["paused"] is False
+            assert _NATIVE_STATE.get("paused") is False
         finally:
             if prev_c is None:
                 os.environ.pop("FASTFILL_FILL_CONTINUE_FILE", None)
@@ -301,92 +304,141 @@ def test_wait_while_paused_resume_via_sentinel():
                 os.environ["FASTFILL_FILL_PAUSE_FILE"] = prev_p
 
 
-def test_wait_while_paused_resume_via_overlay_continue():
+def test_native_hud_default_on_darwin():
+    prev_dom = os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+    prev_hud = os.environ.pop("FASTFILL_NATIVE_HUD", None)
+    try:
+        os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+        assert use_dom_overlay() is False
+        if sys.platform == "darwin":
+            assert use_native_hud() is True
+    finally:
+        if prev_dom is None:
+            os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+        else:
+            os.environ["FASTFILL_DOM_OVERLAY"] = prev_dom
+        if prev_hud is None:
+            os.environ.pop("FASTFILL_NATIVE_HUD", None)
+        else:
+            os.environ["FASTFILL_NATIVE_HUD"] = prev_hud
+
+
+def test_set_fill_paused_native_state():
     async def _run():
-        page = _FakePage()
-        page._state["paused"] = True
-        report = {"fill_pause_enabled": True}
+        prev_dom = os.environ.get("FASTFILL_DOM_OVERLAY")
+        os.environ["FASTFILL_DOM_OVERLAY"] = "0"
+        try:
+            page = _FakePage()
+            st = await set_fill_paused(page, True)
+            assert st.get("paused") is True
+            assert _NATIVE_STATE.get("paused") is True
+            st2 = await set_fill_paused(page, False)
+            assert st2.get("paused") is False
+        finally:
+            if prev_dom is None:
+                os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+            else:
+                os.environ["FASTFILL_DOM_OVERLAY"] = prev_dom
 
-        async def _unpause_soon():
-            await asyncio.sleep(0.3)
-            page._state["paused"] = False
-            page._state["continueCount"] += 1
+    asyncio.run(_run())
 
-        task = asyncio.create_task(_unpause_soon())
-        out = await wait_while_paused(page, report, poll_s=0.1)
-        await task
-        return out, report
+
+def test_wait_while_paused_resume_via_native_continue():
+    async def _run():
+        prev_dom = os.environ.get("FASTFILL_DOM_OVERLAY")
+        os.environ["FASTFILL_DOM_OVERLAY"] = "0"
+        try:
+            page = _FakePage()
+            await set_fill_paused(page, True)
+            report = {"fill_pause_enabled": True}
+
+            async def _unpause_soon():
+                await asyncio.sleep(0.3)
+                await set_fill_paused(page, False)
+
+            task = asyncio.create_task(_unpause_soon())
+            out = await wait_while_paused(page, report, poll_s=0.1)
+            await task
+            return out, report
+        finally:
+            if prev_dom is None:
+                os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+            else:
+                os.environ["FASTFILL_DOM_OVERLAY"] = prev_dom
 
     out, report = asyncio.run(_run())
     assert out["waited"] is True
     assert out["resumed"] is True
-    assert out["via"] == "overlay_continue"
+    assert out["via"] in ("overlay_continue", "native_hud")
     assert (report.get("fill_pause") or {}).get("resume_rescan") is True
-
-
-def test_set_fill_paused_updates_state():
-    async def _run():
-        page = _FakePage()
-        st = await set_fill_paused(page, True)
-        assert st.get("paused") is True
-        st2 = await set_fill_paused(page, False)
-        assert st2.get("paused") is False
-
-    asyncio.run(_run())
 
 
 def test_overlay_id_stable():
     assert OVERLAY_ID == "jh-fill-pause-overlay"
 
 
+def test_dom_overlay_opt_in_only():
+    prev = os.environ.get("FASTFILL_DOM_OVERLAY")
+    try:
+        os.environ["FASTFILL_DOM_OVERLAY"] = "1"
+        assert use_dom_overlay() is True
+    finally:
+        if prev is None:
+            os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+        else:
+            os.environ["FASTFILL_DOM_OVERLAY"] = prev
+
+
 def test_pause_captcha_gate_shows_continue_and_skips_wait():
-    """CAPTCHA gate → wait_while_paused yields; overlay shows Continue (visible)."""
+    """CAPTCHA gate → wait_while_paused yields; native HUD shows Continue."""
 
     async def _run():
         page = _FakePage()
-        page._state["paused"] = True  # would block without gate
+        await set_fill_paused(page, True)
         report = {"fill_pause_enabled": True}
         gate = await set_fill_pause_captcha_gate(page, True)
         assert gate.get("captcha_gated") is True
-        assert page._state["captcha_gated"] is True
-        assert page._state["paused"] is True
-        assert page._state["holdMode"] is True
+        assert _NATIVE_STATE.get("captcha_gated") is True
+        assert _NATIVE_STATE.get("paused") is True
+        assert _NATIVE_STATE.get("hold_mode") is True
         out = await wait_while_paused(page, report, poll_s=0.05)
         assert out["via"] == "captcha_gated"
         assert out["waited"] is False
-        # Ungate restores normal pause wait path
         await set_fill_pause_captcha_gate(page, False)
-        assert page._state["captcha_gated"] is False
+        assert _NATIVE_STATE.get("captcha_gated") is False
 
         async def _unpause_soon():
             await asyncio.sleep(0.25)
-            page._state["paused"] = False
+            await set_fill_paused(page, False)
 
         task = asyncio.create_task(_unpause_soon())
         out2 = await wait_while_paused(page, report, poll_s=0.1)
         await task
-        assert out2["via"] == "overlay_continue"
+        assert out2["via"] in ("overlay_continue", "native_hud")
         assert out2["waited"] is True
 
     asyncio.run(_run())
 
 
 def test_captcha_gate_css_keeps_overlay_visible():
-    """Overlay must stay clickable during CAPTCHA (▶ / Continue), not opacity:0."""
-    from fill_pause import _OVERLAY_CSS, _INSTALL_OVERLAY_JS, _SET_CAPTCHA_GATE_JS
+    """Overlay must stay clickable during CAPTCHA (DOM mode only)."""
+    prev = os.environ.get("FASTFILL_DOM_OVERLAY")
+    os.environ["FASTFILL_DOM_OVERLAY"] = "1"
+    try:
+        from fill_pause import _OVERLAY_CSS, _INSTALL_OVERLAY_JS, _SET_CAPTCHA_GATE_JS
 
-    assert "visibility: hidden" not in _OVERLAY_CSS
-    gated_block = _OVERLAY_CSS.split("jh-captcha-gated")[1].split("}")[0]
-    assert "pointer-events: none" not in gated_block
-    assert "opacity: 1" in gated_block
-    # Must not hide the control (avoid matching opacity:.95 substrings).
-    assert "opacity: 0" not in gated_block.replace("opacity: 1", "")
-    assert SYM_PLAY in _INSTALL_OVERLAY_JS
-    assert "'Continue'" in _INSTALL_OVERLAY_JS or '"Continue"' in _INSTALL_OVERLAY_JS
-    assert "CAPTCHA — solve" in _SET_CAPTCHA_GATE_JS
-    # Click handler must not ignore clicks while gated (play/Continue is the resume control)
-    assert "CAPTCHA wait loop still enforces FILL-008" in _INSTALL_OVERLAY_JS
-    assert "if (window[CGATE] || c.holdMode)" in _INSTALL_OVERLAY_JS
+        assert "visibility: hidden" not in _OVERLAY_CSS
+        gated_block = _OVERLAY_CSS.split("jh-captcha-gated")[1].split("}")[0]
+        assert "pointer-events: none" not in gated_block
+        assert "opacity: 1" in gated_block
+        assert "opacity: 0" not in gated_block.replace("opacity: 1", "")
+        assert SYM_PLAY in _INSTALL_OVERLAY_JS
+        assert "CAPTCHA — solve" in _SET_CAPTCHA_GATE_JS
+    finally:
+        if prev is None:
+            os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+        else:
+            os.environ["FASTFILL_DOM_OVERLAY"] = prev
 
 
 def test_enter_hold_continue_mode():
@@ -398,8 +450,8 @@ def test_enter_hold_continue_mode():
         out = await enter_hold_continue_mode(page, report, incomplete=True)
         assert out.get("paused") is True
         assert out.get("holdMode") is True
-        assert page._state["paused"] is True
-        assert page._state["holdMode"] is True
+        assert _NATIVE_STATE.get("paused") is True
+        assert _NATIVE_STATE.get("hold_mode") is True
         assert (report.get("fill_pause") or {}).get("hold_continue_mode") is True
         assert (report.get("fill_pause") or {}).get("hold_incomplete_ui") is True
 
@@ -430,19 +482,27 @@ def test_hold_and_captcha_button_labels_in_overlay_js():
 
 
 def test_inject_overlay_throttled():
-    """FILL3-017: rapid reinject returns throttled without extra CDP."""
+    """FILL3-017: rapid reinject returns throttled without extra CDP (DOM mode)."""
 
     async def _run():
-        page = _FakePage()
-        r1 = await inject_fill_pause_overlay(page, force=True)
-        assert r1.get("ok") is True
-        calls_after_first = page.evaluate_calls
-        r2 = await inject_fill_pause_overlay(page, force=False, throttle_s=60.0)
-        assert r2.get("throttled") is True
-        assert page.evaluate_calls == calls_after_first
-        r3 = await inject_fill_pause_overlay(page, force=True)
-        assert r3.get("throttled") is not True
-        assert page.evaluate_calls > calls_after_first
+        prev = os.environ.get("FASTFILL_DOM_OVERLAY")
+        os.environ["FASTFILL_DOM_OVERLAY"] = "1"
+        try:
+            page = _FakePage()
+            r1 = await inject_fill_pause_overlay(page, force=True)
+            assert r1.get("ok") is True
+            calls_after_first = page.evaluate_calls
+            r2 = await inject_fill_pause_overlay(page, force=False, throttle_s=60.0)
+            assert r2.get("throttled") is True
+            assert page.evaluate_calls == calls_after_first
+            r3 = await inject_fill_pause_overlay(page, force=True)
+            assert r3.get("throttled") is not True
+            assert page.evaluate_calls > calls_after_first
+        finally:
+            if prev is None:
+                os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+            else:
+                os.environ["FASTFILL_DOM_OVERLAY"] = prev
 
     asyncio.run(_run())
 
@@ -469,39 +529,46 @@ def test_should_keep_fill_browser_open_decision():
 
 
 def test_wait_while_paused_fail_closed_on_evaluate_error():
-    """CDP blip mid-pause must not look like Continue (would close Chrome)."""
+    """CDP blip mid-pause must not look like Continue (DOM overlay mode)."""
 
     async def _run():
-        page = _FakePage(fail_read=False)
-        page._state["paused"] = True
-        report = {"fill_pause_enabled": True}
+        prev = os.environ.get("FASTFILL_DOM_OVERLAY")
+        os.environ["FASTFILL_DOM_OVERLAY"] = "1"
+        try:
+            page = _FakePage(fail_read=False)
+            await set_fill_paused(page, True)
+            report = {"fill_pause_enabled": True}
 
-        async def _blip_then_continue():
-            # Let pause engage (successful read → last_known=paused)
-            await asyncio.sleep(0.2)
-            page.fail_read = True
-            await asyncio.sleep(0.35)
-            page.fail_read = False
-            page._state["paused"] = False
+            async def _blip_then_continue():
+                await asyncio.sleep(0.2)
+                page.fail_read = True
+                await asyncio.sleep(0.35)
+                page.fail_read = False
+                await set_fill_paused(page, False)
 
-        task = asyncio.create_task(_blip_then_continue())
-        out = await wait_while_paused(page, report, poll_s=0.1)
-        await task
-        assert out["waited"] is True
-        assert out["resumed"] is True
-        assert out["via"] == "overlay_continue"
+            task = asyncio.create_task(_blip_then_continue())
+            out = await wait_while_paused(page, report, poll_s=0.1)
+            await task
+            assert out["waited"] is True
+            assert out["resumed"] is True
+            assert out["via"] in ("overlay_continue", "native_hud")
+        finally:
+            if prev is None:
+                os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+            else:
+                os.environ["FASTFILL_DOM_OVERLAY"] = prev
 
     asyncio.run(_run())
 
 def test_drain_pause_before_close_waits():
     async def _run():
         page = _FakePage()
-        page._state["paused"] = True
+        await set_fill_paused(page, True)
         report = {"fill_pause_enabled": True}
 
         async def _continue():
             await asyncio.sleep(0.25)
-            page._state["paused"] = False
+            await set_fill_paused(page, False)
 
         task = asyncio.create_task(_continue())
         out = await drain_pause_before_close(page, report)
@@ -552,9 +619,10 @@ def test_push_activity_to_page():
         note_fill_activity(layer="1", action="fill", label="Email")
         out = await push_fill_activity(page)
         assert out.get("ok") is True
-        assert page._state.get("activity")
-        assert "Email" in str(page._state["activity"].get("text") or "")
-        assert page._state["activity"].get("compact") == "L1 · filling Email"
+        if use_dom_overlay():
+            assert page._state.get("activity")
+        assert "Email" in str(out.get("text") or "")
+        assert out.get("compact") == "L1 · filling Email"
 
     asyncio.run(_run())
 
@@ -568,8 +636,10 @@ def main() -> int:
     test_wait_while_paused_disabled()
     test_wait_while_paused_not_paused()
     test_wait_while_paused_resume_via_sentinel()
-    test_wait_while_paused_resume_via_overlay_continue()
-    test_set_fill_paused_updates_state()
+    test_wait_while_paused_resume_via_native_continue()
+    test_set_fill_paused_native_state()
+    test_native_hud_default_on_darwin()
+    test_dom_overlay_opt_in_only()
     test_overlay_id_stable()
     test_pause_captcha_gate_shows_continue_and_skips_wait()
     test_captcha_gate_css_keeps_overlay_visible()

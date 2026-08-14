@@ -201,10 +201,13 @@ async def note_ashby_spam_blocker(page, report: dict | None) -> bool:
 
 
 def chromium_launch_hygiene_kwargs() -> dict[str, Any]:
-    """Extra Playwright ``chromium.launch`` kwargs to reduce automation fingerprint."""
-    return {
-        "args": [
-            "--disable-blink-features=AutomationControlled",
-        ],
-        "ignore_default_args": ["--enable-automation"],
-    }
+    """Extra Playwright launch kwargs to reduce automation fingerprint."""
+    try:
+        from browser_launch import chromium_launch_hygiene_kwargs as _hygiene
+
+        return _hygiene()
+    except ImportError:
+        return {
+            "args": ["--disable-blink-features=AutomationControlled"],
+            "ignore_default_args": ["--enable-automation"],
+        }

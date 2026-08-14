@@ -32,7 +32,7 @@ from typing import Any
 
 CAPTCHA_WAIT_MESSAGE = (
     "CAPTCHA detected — solve it in the browser, then click Continue "
-    "(top-right overlay) or press Enter here to continue "
+    "(floating Job Hunter HUD outside the browser) or press Enter here to continue "
     "(or: touch .captcha_continue / .fill_continue)"
 )
 DEFAULT_CAPTCHA_TIMEOUT_S = 600  # standalone CLI default; attended cycle uses budget ≤120s
@@ -214,16 +214,25 @@ def captcha_waiting_marker_active(*, clear_stale: bool = True) -> bool:
     return True
 
 
-def bring_chrome_testing_to_front(*, loud: bool = False) -> bool:
-    """Best-effort macOS focus so the human sees Playwright's headed browser.
+def bring_fill_chrome_to_front(*, loud: bool = False) -> bool:
+    """Raise headed fill Chrome (regular Chrome + job_hunter_fill_profiles)."""
+    try:
+        from browser_launch import bring_fill_chrome_to_front as _bring
 
-    Prefer System Events ``unix id`` of an existing Chrome-for-Testing *fill*
-    main (excludes dashboard ``dashboard_ui_profile`` / ``--app=:8787`` and
-    OpenClaw PartyRock ``openclaw/user-data`` / ``:18800`` — CHR3-003/006).
-    Prefer ``--remote-debugging-pipe`` (Playwright) over other fill mains.
-    Never ``tell application "Google Chrome for Testing" to activate`` and
-    never name-based frontmost (raises UI/PartyRock — CHR2-004).
-    """
+        return _bring(loud=loud)
+    except ImportError:
+        return _legacy_bring_cft_to_front(loud=loud)
+
+
+def bring_chrome_testing_to_front(*, loud: bool = False) -> bool:
+    """Best-effort macOS focus for headed fill browser."""
+    if bring_fill_chrome_to_front(loud=loud):
+        return True
+    return _legacy_bring_cft_to_front(loud=loud)
+
+
+def _legacy_bring_cft_to_front(*, loud: bool = False) -> bool:
+    """Legacy CfT PID focus when fill Chrome is not running."""
     if sys.platform != "darwin":
         return False
     if (os.environ.get("FASTFILL_CAPTCHA_NO_FOCUS") or "").strip() in (
