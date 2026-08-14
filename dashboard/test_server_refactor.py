@@ -41,6 +41,7 @@ def _base_patches(jobs, *, existing_resume, aborted=False):
         "run_hybrid_fill_dummy": mock.MagicMock(),
         "_publish_resume_by_company": mock.MagicMock(return_value=None),
         "_job_fill_aborted": mock.MagicMock(return_value=aborted),
+        "_pipeline_stop_if_aborted": mock.MagicMock(return_value=aborted),
     }
     patches = [mock.patch.object(srv, name, m) for name, m in rec.items()]
     return rec, patches
@@ -49,7 +50,7 @@ def _base_patches(jobs, *, existing_resume, aborted=False):
 def _run(rec_patches, **kwargs):
     _, patches = rec_patches
     with patches[0], patches[1], patches[2], patches[3], patches[4], \
-         patches[5], patches[6], patches[7], patches[8]:
+         patches[5], patches[6], patches[7], patches[8], patches[9]:
         srv._run_tailor_then_fill_body(**kwargs)
 
 

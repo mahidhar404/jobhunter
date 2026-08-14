@@ -2157,7 +2157,7 @@ def _run_subprocess_step(cmd: list[str], log_name: str, timeout_s: int,
                 _kill_discovery_process_tree(proc)
                 exit_code = DISCOVERY_ABORT_EXIT
                 break
-            if activity_job_id and _job_fill_aborted(activity_job_id):
+            if activity_job_id and _job_fill_hard_aborted(activity_job_id):
                 _kill_discovery_process_tree(proc)
                 exit_code = FILL_ABORT_EXIT
                 break
@@ -3229,16 +3229,59 @@ def _job_fill_browser_must_stay_open(
     )
 
 
-def _job_fill_aborted(job_id: str) -> bool:
-    """True if the job was cancelled/skipped/deleted/applied (or missing)."""
-    if _fill_run_stale(job_id):
-        return True
+def _job_fill_hard_aborted(job_id: str) -> bool:
+    """True on terminal abort statuses (cancel/delete/applied). Ignores stale fill_gen.
+
+    Subprocess cooperative-abort uses this so a stale-gen race cannot kill
+    PartyRock mid-gather after LaTeX is visible but before resume.tex is
+    written. Cancel/Delete/Mark-applied still kill via explicit proc teardown
+    and/or terminal status; handoff checkpoints use full ``_job_fill_aborted``.
+    """
     with _lock:
         data = read_jobs()
         job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
         if job is None:
             return True
         return job.get("status") in FILL_ABORT_STATUSES
+
+
+def _job_fill_aborted(job_id: str) -> bool:
+    """True if the job was cancelled/skipped/deleted/applied (or missing)."""
+    if _fill_run_stale(job_id):
+        return True
+    return _job_fill_hard_aborted(job_id)
+
+
+def _fill_abort_reason(job_id: str) -> str | None:
+    """Human-readable abort cause for Live Activity / logs (None if still active)."""
+    if _fill_run_stale(job_id):
+        ctx = _fill_run_ctx.get()
+        run_gen = ctx[1] if ctx and ctx[0] == job_id else "?"
+        live_gen = _job_fill_gen(job_id)
+        return f"fill_gen stale (run={run_gen}, live={live_gen})"
+    with _lock:
+        data = read_jobs()
+        job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
+        if job is None:
+            return "job missing from jobs.json"
+        st = job.get("status")
+        if st in FILL_ABORT_STATUSES:
+            return f"status={st}"
+    return None
+
+
+def _pipeline_stop_if_aborted(job_id: str, stage: str) -> bool:
+    """Log and return True when the pipeline must stop before the next handoff."""
+    reason = _fill_abort_reason(job_id)
+    if not reason:
+        return False
+    detail = (
+        f"Pipeline stopped after {stage}: {reason}. "
+        "Cancel and Retry if this was unexpected."
+    )
+    append_fill_activity(job_id, event="abort", detail=detail, persist=True)
+    print(f"[fill] {job_id} handoff abort at {stage}: {reason}")
+    return True
 
 
 def _patch_job(job_id: str, **fields) -> None:
@@ -4530,7 +4573,19 @@ def run_tailor_then_fill(
     """
     run_gen = fill_run_gen if fill_run_gen is not None else _job_fill_gen(job_id)
     if not _claim_fill_job(job_id):
+        detail = (
+            "Fill pipeline could not start: another tailor/fill thread is already "
+            "registered for this job. Cancel and Retry if nothing is running."
+        )
         print(f"warn: tailor/fill already active for {job_id} — skipping duplicate thread")
+        append_fill_activity(job_id, event="error", detail=detail, persist=True)
+        if not _job_fill_aborted(job_id):
+            _patch_job(
+                job_id,
+                status="stuck",
+                status_detail=detail,
+                question=detail,
+            )
         return
     ctx_token = _bind_fill_run_ctx(job_id, run_gen)
     try:
@@ -4624,7 +4679,7 @@ def _fill_skipping_partyrock(
             f"Opening apply URL for fast_fill: {apply_url0[:120]}"
         ),
     )
-    if _job_fill_aborted(job_id):
+    if _pipeline_stop_if_aborted(job_id, "fast_fill launch"):
         return
     run_hybrid_fill_dummy(
         job_id,
@@ -4670,7 +4725,7 @@ def _run_tailor_then_fill_body(
 
     pr_url = partyrock_url(test_mode=test_mode)
     pr_mode = partyrock_mode_label(test_mode=test_mode)
-    if _job_fill_aborted(job_id):
+    if _pipeline_stop_if_aborted(job_id, "PartyRock start"):
         return
     clear_fill_activity(job_id)
     pipeline_milestone(
@@ -4704,7 +4759,7 @@ def _run_tailor_then_fill_body(
         # agent has to get that (and everything else) from the real apply
         # page first, so automated tailoring can't run yet this turn.
         # No JD yet — agent must fetch posting first; automated tailor cannot run.
-        if _job_fill_aborted(job_id):
+        if _pipeline_stop_if_aborted(job_id, "JD fetch (no description yet)"):
             return
         pipeline_milestone(
             job_id,
@@ -4777,7 +4832,7 @@ def _run_tailor_then_fill_body(
             status="tailoring",
             status_detail=f"Opening PartyRock ({pr_mode}): {pr_url}",
         )
-        if _job_fill_aborted(job_id):
+        if _pipeline_stop_if_aborted(job_id, "PartyRock browser open"):
             return
         try:
             # PR2-002: fail loud when CDP cannot start (not warn-only).
@@ -4806,7 +4861,7 @@ def _run_tailor_then_fill_body(
             close_job_partyrock_tab(job_id, job_dir)
         except Exception as e:
             print(f"warn: close prior PartyRock tab for {job_id}: {e}")
-        if _job_fill_aborted(job_id):
+        if _pipeline_stop_if_aborted(job_id, "PartyRock tab prep"):
             return
         tailor_flag = "--test-mode" if test_mode else "--real"
         pipeline_milestone(
@@ -4831,6 +4886,9 @@ def _run_tailor_then_fill_body(
         )
 
         if tailor_exit != 0 or not resume_tex.exists():
+            if tailor_exit == FILL_ABORT_EXIT:
+                _pipeline_stop_if_aborted(job_id, "PartyRock tailor (user abort)")
+                return
             # Used to also tell the agent to "continue the pipeline: fill the
             # application" in this same message - that handed the ENTIRE rest
             # of the job (compile, page-fit, address-pick, fill) to the agent
@@ -4844,7 +4902,7 @@ def _run_tailor_then_fill_body(
             # through into the exact same compile/fit/address/fill pipeline the
             # happy path already uses, instead of leaving the agent to
             # improvise all of it.
-            if _job_fill_aborted(job_id):
+            if _pipeline_stop_if_aborted(job_id, "PartyRock tailor failure"):
                 return
             pipeline_milestone(
                 job_id,
@@ -4858,7 +4916,7 @@ def _run_tailor_then_fill_body(
                     "agent producing resume.tex manually."
                 ),
             )
-            if _job_fill_aborted(job_id):
+            if _pipeline_stop_if_aborted(job_id, "PartyRock agent fallback"):
                 return
             run_agent_message(
                 session_key,
@@ -4907,6 +4965,12 @@ def _run_tailor_then_fill_body(
             # else: fall through into the same compile/fit/address/fill steps
             # below, exactly as if scripts/tailor_resume.py had succeeded.
         else:
+            append_fill_activity(
+                job_id,
+                event="partyrock",
+                detail=f"resume.tex ready ({resume_tex.name}) — starting PDF compile.",
+                persist=True,
+            )
             pipeline_milestone(
                 job_id,
                 event="partyrock",
@@ -4914,8 +4978,8 @@ def _run_tailor_then_fill_body(
                 status_detail="Collected resume from PartyRock. Converting to PDF…",
             )
 
-        # DASH2-018: Cancel during PartyRock must not start compile/fit.
-        if _job_fill_aborted(job_id):
+        # DASH2-018: Cancel / stale gen after PartyRock must not start compile/fit.
+        if _pipeline_stop_if_aborted(job_id, "PartyRock gather (before PDF compile)"):
             return
 
         pipeline_milestone(
@@ -4953,7 +5017,7 @@ def _run_tailor_then_fill_body(
                 write_jobs(data)
 
         if compile_exit != 0 or not resume_pdf.exists():
-            if _job_fill_aborted(job_id):
+            if _pipeline_stop_if_aborted(job_id, "PDF compile failure"):
                 return
             append_fill_activity(
                 job_id,
@@ -4977,7 +5041,7 @@ def _run_tailor_then_fill_body(
         # tested layout - not worth stalling the pipeline over, so this is
         # logged, not treated as a hard failure.
         # DASH2-018: re-check abort after compile before page-fit / publish.
-        if _job_fill_aborted(job_id):
+        if _pipeline_stop_if_aborted(job_id, "PDF compile (before page-fit)"):
             return
         pipeline_milestone(
             job_id,
@@ -5112,7 +5176,7 @@ def _run_tailor_then_fill_body(
     # headed=True so the form is visible for review. PartyRock tab for this
     # job stays open until Mark as applied (separate CDP target).
     # Flash / captcha-wait / hold-open / refill identical for dummy and real.
-    if _job_fill_aborted(job_id):
+    if _pipeline_stop_if_aborted(job_id, "fast_fill launch"):
         return
     run_hybrid_fill_dummy(
         job_id,

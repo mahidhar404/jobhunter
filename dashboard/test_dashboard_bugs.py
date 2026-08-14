@@ -581,6 +581,111 @@ def test_session_running_local_includes_agent_turn():
         assert srv._session_running_local(key) is False
 
 
+def test_subprocess_cooperative_abort_ignores_stale_gen():
+    """PartyRock tailor must not be killed mid-gather solely for stale fill_gen."""
+    srv = _load_server()
+    jobs = {
+        "jobs": [
+            {
+                "id": "pr-job",
+                "status": "tailoring",
+                "fill_gen": 9,
+                "session_key": "agent:job-hunter:job-pr-job",
+            }
+        ]
+    }
+    tok = srv._fill_run_ctx.set(("pr-job", 8))
+    try:
+        with mock.patch.object(srv, "read_jobs", return_value=jobs):
+            assert srv._job_fill_aborted("pr-job") is True
+            assert srv._job_fill_hard_aborted("pr-job") is False
+    finally:
+        srv._fill_run_ctx.reset(tok)
+
+
+def test_pipeline_stop_if_aborted_logs_stale_gen():
+    srv = _load_server()
+    jobs = {
+        "jobs": [
+            {
+                "id": "stale-handoff",
+                "status": "tailoring",
+                "fill_gen": 3,
+                "session_key": "agent:job-hunter:job-stale-handoff",
+            }
+        ]
+    }
+    tok = srv._fill_run_ctx.set(("stale-handoff", 2))
+    try:
+        with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
+            srv, "append_fill_activity"
+        ) as af:
+            stopped = srv._pipeline_stop_if_aborted("stale-handoff", "PartyRock gather")
+            assert stopped is True
+            af.assert_called_once()
+            detail = af.call_args.kwargs.get("detail") or af.call_args[1].get("detail")
+            assert "fill_gen stale" in detail
+            assert "PartyRock gather" in detail
+    finally:
+        srv._fill_run_ctx.reset(tok)
+
+
+def test_subprocess_step_uses_hard_abort_in_source():
+    """Regression: stale fill_gen must not kill PartyRock mid-gather (ac3ab89)."""
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    chunk = src.split("def _run_subprocess_step", 1)[1].split("\ndef ", 1)[0]
+    assert "_job_fill_hard_aborted(activity_job_id)" in chunk
+    assert "_job_fill_aborted(activity_job_id)" not in chunk
+
+
+def test_partyrock_handoff_has_abort_checkpoints_in_source():
+    """Compile/fill handoffs must log when aborted (no silent stall)."""
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    chunk = src.split("def _run_tailor_then_fill_body", 1)[1].split(
+        "def run_agent_message", 1
+    )[0]
+    assert "_pipeline_stop_if_aborted" in chunk
+    assert "PartyRock gather (before PDF compile)" in chunk
+    assert "fast_fill launch" in chunk
+    assert "resume.tex ready" in chunk
+
+
+def test_run_tailor_then_fill_claim_failure_in_source():
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    chunk = src.split("def run_tailor_then_fill", 1)[1].split(
+        "def _fill_skipping_partyrock", 1
+    )[0]
+    assert "_claim_fill_job" in chunk
+    assert "status=\"stuck\"" in chunk or "status='stuck'" in chunk
+
+
+def test_claim_fill_job_failure_marks_stuck():
+    srv = _load_server()
+    srv._active_fill_jobs.add("dup-claim")
+    jobs = {
+        "jobs": [
+            {
+                "id": "dup-claim",
+                "status": "tailoring",
+                "fill_gen": 1,
+                "session_key": "agent:job-hunter:job-dup-claim",
+            }
+        ]
+    }
+    try:
+        with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
+            srv, "write_jobs"
+        ), mock.patch.object(srv, "_patch_job") as pj, mock.patch.object(
+            srv, "append_fill_activity"
+        ), mock.patch.object(srv, "_run_tailor_then_fill_body") as body:
+            srv.run_tailor_then_fill("dup-claim", fill_run_gen=1)
+            body.assert_not_called()
+            pj.assert_called_once()
+            assert pj.call_args.kwargs.get("status") == "stuck"
+    finally:
+        srv._active_fill_jobs.discard("dup-claim")
+
+
 if __name__ == "__main__":
     test_hold_active_suspends_without_ready_status()
     test_hold_active_via_activity_event()
@@ -620,5 +725,11 @@ if __name__ == "__main__":
     test_app_js_surfaces_applied_after_mark_submitted()
     test_cancel_bumps_fill_gen()
     test_stale_fill_gen_blocks_pipeline_patch()
+    test_subprocess_cooperative_abort_ignores_stale_gen()
+    test_pipeline_stop_if_aborted_logs_stale_gen()
+    test_subprocess_step_uses_hard_abort_in_source()
+    test_partyrock_handoff_has_abort_checkpoints_in_source()
+    test_run_tailor_then_fill_claim_failure_in_source()
+    test_claim_fill_job_failure_marks_stuck()
     test_session_running_local_includes_agent_turn()
     print("OK test_dashboard_bugs")
