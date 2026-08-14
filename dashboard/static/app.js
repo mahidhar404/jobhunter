@@ -3525,6 +3525,23 @@ function surfaceOpenJob(jobId) {
   else render();
 }
 
+function surfaceAppliedJob(jobId) {
+  selectedId = jobId;
+  if (queue !== "applied") setQueue("applied");
+  else render();
+}
+
+function applyMarkedAppliedLocally(jobId) {
+  const job = jobs.find(j => j.id === jobId);
+  if (!job) return;
+  const now = new Date().toISOString();
+  job.status = "applied";
+  job.status_detail = "Marked as applied by user from dashboard.";
+  job.applied_at = job.applied_at || now;
+  job.updated_at = now;
+  lastJobsJSON = JSON.stringify(jobs);
+}
+
 async function cancelJob(jobId) {
   await apiPost(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {}, { failLabel: "Cancel" });
   await poll();
@@ -3584,7 +3601,17 @@ async function markSubmitted(jobId) {
       + "We never auto-submit.";
   }
   if (!confirm(msg)) return;
-  await apiPost(`/api/jobs/${encodeURIComponent(jobId)}/submitted`, {}, { failLabel: "Mark applied" });
+  const { ok } = await apiPost(
+    `/api/jobs/${encodeURIComponent(jobId)}/submitted`,
+    {},
+    { failLabel: "Mark applied" },
+  );
+  if (!ok) {
+    await poll();
+    return;
+  }
+  applyMarkedAppliedLocally(jobId);
+  surfaceAppliedJob(jobId);
   await poll();
 }
 
@@ -4120,6 +4147,7 @@ async function loadActivity() {
 }
 
 let lastJobsJSON = null;
+let _pollSeq = 0;
 
 
 function appliedDateKey(job) {
@@ -4418,10 +4446,13 @@ function checkReadyForReviewAnnouncements(jobList) {
 }
 
 async function poll() {
+  const seq = ++_pollSeq;
   try {
     const res = await fetch("/api/jobs");
+    if (seq !== _pollSeq) return;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    if (seq !== _pollSeq) return;
     lastPollAt = Date.now();
     const hold = !!data.fill_hold_active;
     const newJobsJSON = JSON.stringify(data.jobs || []);

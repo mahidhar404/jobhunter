@@ -448,6 +448,24 @@ def test_app_js_surfaces_deleted_and_skip_without_classic():
     assert 'data-queue="skipped"' not in (HERE / "static" / "index.html").read_text(encoding="utf-8")
 
 
+def test_app_js_surfaces_applied_after_mark_submitted():
+    """DASH2-006 UI: mark applied optimistically moves job to Applied queue."""
+    app = APP_JS.read_text(encoding="utf-8")
+    assert "surfaceAppliedJob" in app
+    assert "applyMarkedAppliedLocally" in app
+    chunk = app.split("async function markSubmitted", 1)[1].split(
+        "async function uploadJobResume", 1
+    )[0]
+    assert "if (!ok)" in chunk
+    assert "applyMarkedAppliedLocally(jobId)" in chunk
+    assert "surfaceAppliedJob(jobId)" in chunk
+    poll_chunk = app.split("async function poll()", 1)[1].split(
+        "// ------------------------------------------------------------ Utility pane", 1
+    )[0]
+    assert "_pollSeq" in poll_chunk
+    assert "seq !== _pollSeq" in poll_chunk
+
+
 if __name__ == "__main__":
     test_hold_active_suspends_without_ready_status()
     test_hold_active_via_activity_event()
@@ -481,4 +499,5 @@ if __name__ == "__main__":
     test_app_js_date_older_excludes_unknown()
     test_agent_fallback_missing_tex_forces_stuck_in_source()
     test_app_js_surfaces_deleted_and_skip_without_classic()
+    test_app_js_surfaces_applied_after_mark_submitted()
     print("OK test_dashboard_bugs")
