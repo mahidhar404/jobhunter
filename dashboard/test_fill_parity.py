@@ -324,7 +324,8 @@ def test_start_skip_partyrock_uses_headed_flash_defaults():
     """Start (Test Mode + skip PartyRock) must call fill with headed+flash ON."""
     srv = _load_server()
     # Mirror run_tailor_then_fill skip_partyrock branch kwargs.
-    assert srv._dummy_fill_flash_requested() is True
+    assert srv._dummy_fill_flash_requested({}) is True
+    assert srv._dummy_fill_flash_requested({"flash_leftovers": False}) is False
     # Headed is hardcoded True on that path; Fast fill defaults headless unless asked.
     assert srv._dummy_fill_headed_requested({}) is False
 

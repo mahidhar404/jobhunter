@@ -8,6 +8,7 @@ session via `openclaw agent --agent job-hunter --session-key <key> --message <an
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import fcntl
 import html
 import json
@@ -137,6 +138,35 @@ FILL_ABORT_STATUSES = frozenset({
     "deleted",
     "applied",
 })
+# Per-job fill generation: bumped on Start and on Cancel/Delete/Skip/Mark-applied
+# so a pipeline thread that captured an older gen cannot clobber discovered
+# after Cancel→Open (discovered is not in FILL_ABORT_STATUSES).
+_fill_run_ctx: contextvars.ContextVar[tuple[str, int] | None] = contextvars.ContextVar(
+    "_fill_run_ctx", default=None
+)
+
+
+def _job_fill_gen(job_id: str) -> int:
+    with _lock:
+        data = read_jobs()
+        job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
+        if job is None:
+            return 0
+        return int(job.get("fill_gen") or 0)
+
+
+def _bump_job_fill_gen_locked(job: dict) -> int:
+    """Invalidate in-flight fill/tailor threads for this job (caller holds _lock)."""
+    job["fill_gen"] = int(job.get("fill_gen") or 0) + 1
+    return job["fill_gen"]
+
+
+def _fill_run_stale(job_id: str) -> bool:
+    """True when the current thread's captured fill_gen no longer matches the job."""
+    ctx = _fill_run_ctx.get()
+    if ctx is None or ctx[0] != job_id:
+        return False
+    return _job_fill_gen(job_id) != ctx[1]
 # Pre-redesign holding-pen statuses (no longer a visible Skipped queue).
 LEGACY_SKIP_STATUSES = frozenset({
     "skipped_manual",
@@ -515,10 +545,12 @@ def _session_running_local(session_key: str) -> bool:
         with _discovery_lock:
             if _discovery_state["running"]:
                 return True
-    return any(
-        k == session_key and p.poll() is None
-        for k, p in _running_procs.items()
-    )
+    if any(k == session_key and p.poll() is None for k, p in _running_procs.items()):
+        return True
+    try:
+        return agent_runner.is_turn_active(session_key)
+    except Exception:
+        return False
 
 
 def _prewarm_openclaw_browser_async() -> None:
@@ -3171,6 +3203,8 @@ def _job_fill_browser_must_stay_open(
 
 def _job_fill_aborted(job_id: str) -> bool:
     """True if the job was cancelled/skipped/deleted/applied (or missing)."""
+    if _fill_run_stale(job_id):
+        return True
     with _lock:
         data = read_jobs()
         job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
@@ -3185,6 +3219,8 @@ def _patch_job(job_id: str, **fields) -> None:
     Refuses to overwrite FILL_ABORT_STATUSES via status=… so Cancel / Delete /
     Mark-as-applied / Skip win over a still-running Start/fill daemon.
     """
+    if _fill_run_stale(job_id):
+        return
     with _lock:
         data = read_jobs()
         job = next((j for j in data["jobs"] if j["id"] == job_id), None)
@@ -4111,6 +4147,8 @@ def run_hybrid_fill_dummy(
     status=filling — otherwise the thread would only see filling and wrongly
     fall back to discovered (dropping stuck / blocked_captcha / cancelled).
     """
+    run_gen = _job_fill_gen(job_id)
+    ctx_token = _fill_run_ctx.set((job_id, run_gen))
     try:
         _run_hybrid_fill_dummy_body(
             job_id,
@@ -4123,6 +4161,8 @@ def run_hybrid_fill_dummy(
         )
     except Exception as e:
         _mark_fill_thread_stuck(job_id, e, where="run_hybrid_fill_dummy")
+    finally:
+        _fill_run_ctx.reset(ctx_token)
 
 
 def _run_hybrid_fill_dummy_body(
@@ -4427,6 +4467,7 @@ def run_tailor_then_fill(
     skip_partyrock: bool = False,
     force_partyrock: bool = False,
     restore_status: str | None = None,
+    fill_options: dict | None = None,
 ) -> None:
     """Resume tailoring is "paste text, wait for a web app, copy the
     result" - no judgment calls, so it runs as a plain script
@@ -4458,6 +4499,8 @@ def run_tailor_then_fill(
     claims navigating/tailoring — otherwise Test Mode fill would always
     restore to discovered and drop stuck / blocked_captcha.
     """
+    run_gen = _job_fill_gen(job_id)
+    ctx_token = _fill_run_ctx.set((job_id, run_gen))
     try:
         _run_tailor_then_fill_body(
             job_id,
@@ -4465,9 +4508,12 @@ def run_tailor_then_fill(
             skip_partyrock=skip_partyrock,
             force_partyrock=force_partyrock,
             restore_status=restore_status,
+            fill_options=fill_options,
         )
     except Exception as e:
         _mark_fill_thread_stuck(job_id, e, where="run_tailor_then_fill")
+    finally:
+        _fill_run_ctx.reset(ctx_token)
 
 
 def _fill_skipping_partyrock(
@@ -4477,6 +4523,7 @@ def _fill_skipping_partyrock(
     existing_resume: Path | None,
     apply_url0: str,
     fill_restore: str,
+    fill_options: dict | None = None,
 ) -> None:
     """PartyRock-bypass fast path shared by "resume already on disk" and the
     Test-Mode "skip PartyRock" toggle: publish any on-disk resume, then hand
@@ -4550,7 +4597,7 @@ def _fill_skipping_partyrock(
         job_id,
         test_mode=test_mode,
         headed=True,
-        flash_leftovers=_dummy_fill_flash_requested(),
+        flash_leftovers=_dummy_fill_flash_requested(fill_options),
         restore_status=fill_restore,
         preserve_activity=True,
     )
@@ -4562,6 +4609,7 @@ def _run_tailor_then_fill_body(
     skip_partyrock: bool = False,
     force_partyrock: bool = False,
     restore_status: str | None = None,
+    fill_options: dict | None = None,
 ) -> None:
     fill_restore = _dummy_restore_status(restore_status or "discovered")
     # Skip PartyRock when a resume is already on disk (upload or prior tailor),
@@ -4583,6 +4631,7 @@ def _run_tailor_then_fill_body(
             existing_resume=existing_resume,
             apply_url0=apply_url0,
             fill_restore=fill_restore,
+            fill_options=fill_options,
         )
         return
 
@@ -4851,7 +4900,11 @@ def _run_tailor_then_fill_body(
         with _lock:
             data = read_jobs()
             job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-            if job is not None and job.get("status") not in FILL_ABORT_STATUSES:
+            if (
+                job is not None
+                and job.get("status") not in FILL_ABORT_STATUSES
+                and not _fill_run_stale(job_id)
+            ):
                 if compile_exit == 0 and resume_pdf.exists():
                     job["resume_path"] = str(resume_pdf.relative_to(ROOT))
                     job["status"] = "navigating"
@@ -5010,7 +5063,7 @@ def _run_tailor_then_fill_body(
 
     mode_bit = "dummy" if test_mode else "real profile"
     # Same Flash default as Fast fill button (ON unless env/payload disables).
-    start_flash = _dummy_fill_flash_requested()
+    start_flash = _dummy_fill_flash_requested(fill_options)
     pipeline_milestone(
         job_id,
         event="fill",
@@ -6013,6 +6066,7 @@ class Handler(BaseHTTPRequestHandler):
                 session_key = removed.get("session_key")
                 # Soft-delete: keep row for Deleted trash view; block URLs now.
                 if removed.get("status") != "deleted":
+                    _bump_job_fill_gen_locked(removed)
                     _mark_job_soft_deleted(
                         removed,
                         deleted_reason="user",
@@ -6120,6 +6174,7 @@ class Handler(BaseHTTPRequestHandler):
             # Brief abort signal so fill daemons stop patching before reset.
             job["status"] = "cancelled"
             job["status_detail"] = "Cancelling — returning to Open…"
+            _bump_job_fill_gen_locked(job)
             job["updated_at"] = now_iso()
             write_jobs(data)
             resume_kept = bool(job.get("resume_path"))
@@ -6202,6 +6257,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             session_key = job.get("session_key")
             jobs_list = data.get("jobs") or []
+            _bump_job_fill_gen_locked(job)
 
             if reason == "duplicate":
                 try:
@@ -6218,6 +6274,7 @@ class Handler(BaseHTTPRequestHandler):
                         f"Duplicate of {winner.get('id')}: URLs merged onto winner; "
                         f"loser soft-deleted."
                     )
+                    _bump_job_fill_gen_locked(loser)
                     _mark_job_soft_deleted(
                         loser,
                         deleted_reason="duplicate",
@@ -6351,6 +6408,7 @@ class Handler(BaseHTTPRequestHandler):
             applied_at = now_iso()
             job["status"] = "applied"
             job["status_detail"] = "Marked as applied by user from dashboard."
+            _bump_job_fill_gen_locked(job)
             job["applied_at"] = applied_at
             job["updated_at"] = applied_at
             _append_timeline_locked(
@@ -6880,6 +6938,7 @@ class Handler(BaseHTTPRequestHandler):
                     f"Started by user from dashboard. Tailoring resume via PartyRock "
                     f"({pr_mode}): {pr_url}"
                 )
+            _bump_job_fill_gen_locked(job)
             job["updated_at"] = now_iso()
             _append_timeline_locked(
                 job,
@@ -6919,6 +6978,7 @@ class Handler(BaseHTTPRequestHandler):
                 "skip_partyrock": skip_partyrock,
                 "force_partyrock": force_partyrock,
                 "restore_status": prior_restore,
+                "fill_options": payload,
             },
             daemon=True,
         ).start()
