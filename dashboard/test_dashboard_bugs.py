@@ -466,6 +466,78 @@ def test_app_js_surfaces_applied_after_mark_submitted():
     assert "seq !== _pollSeq" in poll_chunk
 
 
+def test_cancel_bumps_fill_gen():
+    """Cancel must invalidate in-flight fill/tailor threads (fill_gen bump)."""
+    srv = _load_server()
+    jobs = {
+        "jobs": [
+            {
+                "id": "run-cancel",
+                "status": "filling",
+                "session_key": "agent:job-hunter:job-run-cancel",
+                "fill_gen": 3,
+                "status_detail": "Filling…",
+                "timeline": [],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+    }
+    handler = srv.Handler.__new__(srv.Handler)
+    with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
+        srv, "write_jobs"
+    ), mock.patch.object(srv, "_kill_process_tree"), mock.patch.object(
+        srv, "abort_gateway_session"
+    ), mock.patch.object(srv, "clear_fill_activity"), mock.patch.object(
+        srv, "close_job_partyrock_tab", return_value={}
+    ), mock.patch.object(handler, "_send_json"):
+        handler._handle_cancel("run-cancel")
+    assert jobs["jobs"][0]["fill_gen"] == 4
+    assert jobs["jobs"][0]["status"] == "discovered"
+
+
+def test_stale_fill_gen_blocks_pipeline_patch():
+    """After Cancel→Open, stale pipeline threads must not clobber discovered."""
+    srv = _load_server()
+    jobs = {
+        "jobs": [
+            {
+                "id": "stale-run",
+                "status": "discovered",
+                "session_key": "agent:job-hunter:job-stale-run",
+                "fill_gen": 2,
+                "status_detail": "Cancelled by user — returned to Open.",
+                "timeline": [],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+    }
+    tok = srv._fill_run_ctx.set(("stale-run", 1))
+    try:
+        with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
+            srv, "write_jobs"
+        ) as wj:
+            srv._patch_job("stale-run", status="navigating", status_detail="should not apply")
+            wj.assert_not_called()
+        assert jobs["jobs"][0]["status"] == "discovered"
+        assert srv._job_fill_aborted("stale-run") is True
+    finally:
+        srv._fill_run_ctx.reset(tok)
+
+
+def test_session_running_local_includes_agent_turn():
+    """Start guard must see in-process agent_runner turns (no Popen)."""
+    srv = _load_server()
+    key = "agent:job-hunter:job-agentish"
+    with mock.patch.object(srv, "_running_procs", {}), mock.patch.object(
+        srv.agent_runner, "is_turn_active", return_value=True
+    ):
+        assert srv._session_running_local(key) is True
+    with mock.patch.object(srv, "_running_procs", {}), mock.patch.object(
+        srv.agent_runner, "is_turn_active", return_value=False
+    ):
+        assert srv._session_running_local(key) is False
+
+
 if __name__ == "__main__":
     test_hold_active_suspends_without_ready_status()
     test_hold_active_via_activity_event()
@@ -500,4 +572,7 @@ if __name__ == "__main__":
     test_agent_fallback_missing_tex_forces_stuck_in_source()
     test_app_js_surfaces_deleted_and_skip_without_classic()
     test_app_js_surfaces_applied_after_mark_submitted()
+    test_cancel_bumps_fill_gen()
+    test_stale_fill_gen_blocks_pipeline_patch()
+    test_session_running_local_includes_agent_turn()
     print("OK test_dashboard_bugs")
