@@ -686,6 +686,90 @@ def test_claim_fill_job_failure_marks_stuck():
         srv._active_fill_jobs.discard("dup-claim")
 
 
+def test_hold_detection_ignores_applied_status():
+    """Mark-applied jobs must not keep fill deadline suspended via hold activity."""
+    srv = _load_server()
+    job = {
+        "id": "hold-applied",
+        "status": "applied",
+        "status_detail": "Browser held open for review (never submitted)",
+    }
+    srv.clear_fill_activity("hold-applied")
+    srv.append_fill_activity("hold-applied", event="hold", detail="Keeping browser open…")
+    assert srv._job_is_holding_for_review(job, job_id="hold-applied") is False
+    assert srv._job_is_fill_paused(job, job_id="hold-applied") is False
+
+
+def test_patch_job_blocks_detail_on_terminal_status():
+    srv = _load_server()
+    jobs = {
+        "jobs": [
+            {
+                "id": "applied-x",
+                "status": "applied",
+                "status_detail": "Marked as applied by user from dashboard.",
+                "session_key": "agent:job-hunter:job-applied-x",
+            }
+        ]
+    }
+    with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
+        srv, "write_jobs"
+    ) as wj:
+        srv._patch_job("applied-x", status_detail="Browser held open for review")
+        wj.assert_not_called()
+
+
+def test_pipeline_stale_gen_handoff_marks_stuck():
+    srv = _load_server()
+    jobs = {
+        "jobs": [
+            {
+                "id": "stale-nav",
+                "status": "navigating",
+                "fill_gen": 3,
+                "session_key": "agent:job-hunter:job-stale-nav",
+            }
+        ]
+    }
+    tok = srv._bind_fill_run_ctx("stale-nav", 2)
+    try:
+        with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
+            srv, "write_jobs"
+        ):
+            stopped = srv._pipeline_stop_if_aborted("stale-nav", "fast_fill launch")
+            assert stopped is True
+            assert jobs["jobs"][0]["status"] == "stuck"
+            assert "fill_gen stale" in jobs["jobs"][0]["status_detail"]
+    finally:
+        srv._fill_run_ctx.reset(tok)
+
+
+def test_mark_submitted_releases_fill_and_clears_hold_in_source():
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    chunk = src.split("def _handle_mark_submitted", 1)[1].split(
+        "def _handle_edit_applied", 1
+    )[0]
+    assert "_release_fill_job" in chunk
+    assert "clear_fill_activity" in chunk
+    assert "stop_native_hud" in chunk
+
+
+def test_fill_streaming_aborts_on_terminal_status_in_source():
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    chunk = src.split("def _run_fill_subprocess_streaming", 1)[1].split(
+        "def _dummy_fill_flash_requested", 1
+    )[0]
+    assert "_job_fill_hard_aborted" in chunk
+
+
+def test_hybrid_fill_passes_fill_run_gen_in_source():
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    chunk = src.split("def _run_tailor_then_fill_body", 1)[1].split(
+        "def run_agent_message", 1
+    )[0]
+    assert "fill_run_gen=fill_run_gen" in chunk
+
+
 if __name__ == "__main__":
     test_hold_active_suspends_without_ready_status()
     test_hold_active_via_activity_event()
@@ -732,4 +816,10 @@ if __name__ == "__main__":
     test_run_tailor_then_fill_claim_failure_in_source()
     test_claim_fill_job_failure_marks_stuck()
     test_session_running_local_includes_agent_turn()
+    test_hold_detection_ignores_applied_status()
+    test_patch_job_blocks_detail_on_terminal_status()
+    test_pipeline_stale_gen_handoff_marks_stuck()
+    test_mark_submitted_releases_fill_and_clears_hold_in_source()
+    test_fill_streaming_aborts_on_terminal_status_in_source()
+    test_hybrid_fill_passes_fill_run_gen_in_source()
     print("OK test_dashboard_bugs")

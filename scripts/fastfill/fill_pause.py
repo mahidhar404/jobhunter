@@ -738,6 +738,39 @@ def use_native_hud() -> bool:
     return sys.platform == "darwin"
 
 
+def resolve_hud_python() -> str:
+    """Python interpreter for the tkinter HUD subprocess.
+
+    Skyvern/project venvs are often built without ``_tkinter``; the HUD only
+    needs stdlib tkinter + json, so prefer a system Python that has it.
+    """
+    override = (os.environ.get("FASTFILL_HUD_PYTHON") or "").strip()
+    if override:
+        return override
+    candidates = [
+        "/usr/bin/python3",
+        "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+        "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3",
+        sys.executable,
+    ]
+    seen: set[str] = set()
+    for cand in candidates:
+        if not cand or cand in seen:
+            continue
+        seen.add(cand)
+        try:
+            proc = subprocess.run(
+                [cand, "-c", "import tkinter"],
+                capture_output=True,
+                timeout=5,
+            )
+            if proc.returncode == 0:
+                return cand
+        except Exception:
+            continue
+    return sys.executable
+
+
 def _merge_native_activity() -> None:
     act = dict(_CURRENT_ACTIVITY)
     act["text"] = format_fill_activity_text(act)
@@ -819,16 +852,27 @@ def start_native_hud() -> dict[str, Any]:
     _merge_native_activity()
     _persist_native_state()
     script = Path(__file__).resolve().parent / "fill_pause_hud.py"
+    hud_py = resolve_hud_python()
+    log_path = fill_pause_state_path().parent / "fill_pause_hud.log"
+    try:
+        log_fh = open(log_path, "a", encoding="utf-8")
+    except Exception:
+        log_fh = subprocess.DEVNULL  # type: ignore[assignment]
     try:
         _hud_proc = subprocess.Popen(
-            [sys.executable, str(script), str(fill_pause_state_path())],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            [hud_py, str(script), str(fill_pause_state_path())],
+            stdout=log_fh if log_fh is not subprocess.DEVNULL else subprocess.DEVNULL,
+            stderr=log_fh if log_fh is not subprocess.DEVNULL else subprocess.DEVNULL,
             start_new_session=True,
         )
-        return {"started": True, "pid": _hud_proc.pid, "state": str(fill_pause_state_path())}
+        return {
+            "started": True,
+            "pid": _hud_proc.pid,
+            "python": hud_py,
+            "state": str(fill_pause_state_path()),
+        }
     except Exception as e:
-        return {"started": False, "error": str(e)[:120]}
+        return {"started": False, "error": str(e)[:120], "python": hud_py}
 
 
 def stop_native_hud() -> dict[str, Any]:

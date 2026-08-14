@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -321,6 +322,26 @@ def test_native_hud_default_on_darwin():
             os.environ.pop("FASTFILL_NATIVE_HUD", None)
         else:
             os.environ["FASTFILL_NATIVE_HUD"] = prev_hud
+
+
+def test_resolve_hud_python_prefers_tkinter_capable_interpreter():
+    from fill_pause import resolve_hud_python
+
+    py = resolve_hud_python()
+    assert py
+    proc = subprocess.run(
+        [py, "-c", "import tkinter"],
+        capture_output=True,
+        timeout=5,
+    )
+    assert proc.returncode == 0, (py, proc.stderr)
+
+
+def test_start_native_hud_uses_resolve_hud_python_in_source():
+    src = (HERE / "fill_pause.py").read_text(encoding="utf-8")
+    assert "resolve_hud_python" in src
+    chunk = src.split("def start_native_hud", 1)[1].split("def stop_native_hud", 1)[0]
+    assert "resolve_hud_python()" in chunk
 
 
 def test_set_fill_paused_native_state():
@@ -681,6 +702,8 @@ def main() -> int:
     test_wait_while_paused_resume_via_native_continue()
     test_set_fill_paused_native_state()
     test_native_hud_default_on_darwin()
+    test_resolve_hud_python_prefers_tkinter_capable_interpreter()
+    test_start_native_hud_uses_resolve_hud_python_in_source()
     test_dom_overlay_opt_in_only()
     test_overlay_id_stable()
     test_pause_captcha_gate_shows_continue_and_skips_wait()

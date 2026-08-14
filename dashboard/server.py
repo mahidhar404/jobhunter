@@ -3164,6 +3164,8 @@ def _job_is_holding_for_review(job: dict | None, *, job_id: str | None = None) -
     """
     if not isinstance(job, dict):
         return False
+    if job.get("status") in FILL_ABORT_STATUSES:
+        return False
     if job.get("status") == "ready_for_review":
         return True
     detail = (job.get("status_detail") or "").lower()
@@ -3193,6 +3195,8 @@ def _job_is_fill_paused(job: dict | None, *, job_id: str | None = None) -> bool:
     """
     if not isinstance(job, dict):
         job = {}
+    if job.get("status") in FILL_ABORT_STATUSES:
+        return False
     detail = (job.get("status_detail") or "").lower()
     if (
         "fill paused" in detail
@@ -3281,6 +3285,22 @@ def _pipeline_stop_if_aborted(job_id: str, stage: str) -> bool:
     )
     append_fill_activity(job_id, event="abort", detail=detail, persist=True)
     print(f"[fill] {job_id} handoff abort at {stage}: {reason}")
+    # Stale-gen stop while still in-progress: surface stuck (parallel restart /
+    # superseded run) instead of leaving navigating/tailoring forever.
+    if reason.startswith("fill_gen stale"):
+        with _lock:
+            data = read_jobs()
+            job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
+            if (
+                job is not None
+                and job.get("status") in IN_PROGRESS_STATUSES
+                and job.get("status") not in FILL_ABORT_STATUSES
+            ):
+                job["status"] = "stuck"
+                job["status_detail"] = detail[:500]
+                job["question"] = detail[:500]
+                job["updated_at"] = now_iso()
+                write_jobs(data)
     return True
 
 
@@ -3298,13 +3318,13 @@ def _patch_job(job_id: str, **fields) -> None:
         if job is None:
             return
         old_status = job.get("status")
-        if (
-            "status" in fields
-            and old_status in FILL_ABORT_STATUSES
-            and fields.get("status") != old_status
-        ):
-            # Pipeline / fill-end must never undelete or un-cancel.
-            return
+        if old_status in FILL_ABORT_STATUSES:
+            if "status" in fields and fields.get("status") != old_status:
+                # Pipeline / fill-end must never undelete or un-cancel.
+                return
+            if "status" not in fields and fields:
+                # Hold/pause stdout must not clobber applied/cancelled detail.
+                return
         job.update(fields)
         job["updated_at"] = now_iso()
         new_status = job.get("status")
@@ -3746,6 +3766,21 @@ def _run_fill_subprocess_streaming(
         deadline = time.monotonic() + max(1, int(timeout_s))
         try:
             while True:
+                if _job_fill_hard_aborted(job_id):
+                    append_fill_activity(
+                        job_id,
+                        event="abort",
+                        detail="Fill subprocess stopped (job cancelled/applied/deleted).",
+                    )
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    try:
+                        exit_code = proc.wait(timeout=10)
+                    except Exception:
+                        exit_code = FILL_ABORT_EXIT
+                    break
                 remaining = deadline - time.monotonic()
                 # Suspend kill-deadline once hold, Ready, OR Pause (indefinite review).
                 with _lock:
@@ -4135,6 +4170,11 @@ def _configure_fastfill_child_env(
             env["FASTFILL_ADDRESS_TEXT"] = addr
     env.setdefault("FASTFILL_ACTION_SUPERVISOR", "1")
     env.setdefault("FASTFILL_STRICT_COMPLETION", "1")
+    # Parallel headed fills: default cap 3 (one job on hold + others filling).
+    env.setdefault("FASTFILL_MAX_HEADED_CHROME_MAINS", "3")
+    if sys.platform == "darwin":
+        env.setdefault("FASTFILL_NATIVE_HUD", "1")
+        env.pop("FASTFILL_DOM_OVERLAY", None)
 
 
 def _playwright_fastfill_argv(
@@ -4202,6 +4242,7 @@ def run_hybrid_fill_dummy(
     restore_status: str | None = None,
     preserve_activity: bool = False,
     address_text: str | None = None,
+    fill_run_gen: int | None = None,
 ) -> None:
     """Dashboard fast fill — dummy (default) or real profile when test_mode=False.
 
@@ -4218,7 +4259,7 @@ def run_hybrid_fill_dummy(
     status=filling — otherwise the thread would only see filling and wrongly
     fall back to discovered (dropping stuck / blocked_captcha / cancelled).
     """
-    run_gen = _job_fill_gen(job_id)
+    run_gen = fill_run_gen if fill_run_gen is not None else _job_fill_gen(job_id)
     ctx_token = _fill_run_ctx.set((job_id, run_gen))
     try:
         _run_hybrid_fill_dummy_body(
@@ -4229,6 +4270,7 @@ def run_hybrid_fill_dummy(
             restore_status=restore_status,
             preserve_activity=preserve_activity,
             address_text=address_text,
+            fill_run_gen=run_gen,
         )
     except Exception as e:
         _mark_fill_thread_stuck(job_id, e, where="run_hybrid_fill_dummy")
@@ -4245,6 +4287,7 @@ def _run_hybrid_fill_dummy_body(
     restore_status: str | None = None,
     preserve_activity: bool = False,
     address_text: str | None = None,
+    fill_run_gen: int | None = None,
 ) -> None:
     if flash_leftovers is None:
         flash_leftovers = True
@@ -4414,12 +4457,35 @@ def _run_hybrid_fill_dummy_body(
     )
     # Safety contract failures must surface as stuck — never silently restore
     # to discovered as if the fill completed cleanly.
-    if detail.startswith(f"{prefix} SAFETY:"):
+    headed_cap_blocked = False
+    report_ready = False
+    if use_playwright and out_path.is_file():
+        try:
+            rep = json.loads(out_path.read_text())
+            headed_cap_blocked = str((rep or {}).get("blocker") or "") == "headed_cap"
+            report_ready = _report_allows_ready(rep)
+        except Exception:
+            rep = None
+    else:
+        rep = None
+    if detail.startswith(f"{prefix} SAFETY:") or headed_cap_blocked:
         final_status = "stuck"
+        if headed_cap_blocked:
+            cap_msg = ""
+            try:
+                cap_msg = str(
+                    ((rep or {}).get("headed_cap") or {}).get("message") or ""
+                )[:300]
+            except Exception:
+                cap_msg = ""
+            detail = (
+                f"{prefix} Headed fill refused (Chrome cap — another fill/hold "
+                f"window is using the slot). {cap_msg} Wait for the other job, "
+                f"or set FASTFILL_FORCE_HEADED=1. Never submitted."
+            )[:500]
     else:
         # Prefer Ready only when report honestly allows it (not hold alone).
-        report_ready = False
-        if use_playwright and out_path.is_file():
+        if not report_ready and use_playwright and out_path.is_file() and rep is None:
             try:
                 rep = json.loads(out_path.read_text())
                 report_ready = _report_allows_ready(rep)
@@ -4596,6 +4662,7 @@ def run_tailor_then_fill(
             force_partyrock=force_partyrock,
             restore_status=restore_status,
             fill_options=fill_options,
+            fill_run_gen=run_gen,
         )
     except Exception as e:
         _mark_fill_thread_stuck(job_id, e, where="run_tailor_then_fill")
@@ -4612,6 +4679,7 @@ def _fill_skipping_partyrock(
     apply_url0: str,
     fill_restore: str,
     fill_options: dict | None = None,
+    fill_run_gen: int | None = None,
 ) -> None:
     """PartyRock-bypass fast path shared by "resume already on disk" and the
     Test-Mode "skip PartyRock" toggle: publish any on-disk resume, then hand
@@ -4688,6 +4756,7 @@ def _fill_skipping_partyrock(
         flash_leftovers=_dummy_fill_flash_requested(fill_options),
         restore_status=fill_restore,
         preserve_activity=True,
+        fill_run_gen=fill_run_gen,
     )
 
 
@@ -4698,6 +4767,7 @@ def _run_tailor_then_fill_body(
     force_partyrock: bool = False,
     restore_status: str | None = None,
     fill_options: dict | None = None,
+    fill_run_gen: int | None = None,
 ) -> None:
     fill_restore = _dummy_restore_status(restore_status or "discovered")
     # Skip PartyRock when a resume is already on disk (upload or prior tailor),
@@ -4720,6 +4790,7 @@ def _run_tailor_then_fill_body(
             apply_url0=apply_url0,
             fill_restore=fill_restore,
             fill_options=fill_options,
+            fill_run_gen=fill_run_gen,
         )
         return
 
@@ -5186,6 +5257,7 @@ def _run_tailor_then_fill_body(
         restore_status=fill_restore,
         preserve_activity=True,
         address_text=address_text,
+        fill_run_gen=fill_run_gen,
     )
 
 
@@ -6524,6 +6596,18 @@ class Handler(BaseHTTPRequestHandler):
         _kill_process_tree(proc)
         if session_key:
             abort_gateway_session(session_key)
+        _release_fill_job(job_id)
+        try:
+            clear_fill_activity(job_id)
+        except Exception as e:
+            print(f"warn: clear_fill_activity on mark-applied for {job_id}: {e}")
+        try:
+            sys.path.insert(0, str(ROOT / "scripts" / "fastfill"))
+            from fill_pause import stop_native_hud
+
+            stop_native_hud()
+        except Exception as e:
+            print(f"warn: stop native HUD on mark-applied for {job_id}: {e}")
         try:
             sys.path.insert(0, str(ROOT / "scripts" / "fastfill"))
             from browser_launch import wipe_fill_profiles_for_job

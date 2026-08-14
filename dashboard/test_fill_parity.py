@@ -69,6 +69,26 @@ def test_configure_env_real_omits_empty_address():
     assert env["FASTFILL_ALLOW_REAL"] == "1"
 
 
+def test_configure_env_sets_parallel_headed_defaults():
+    """Dashboard child env must enable native HUD + headed cap for parallel fills."""
+    srv = _load_server()
+    env = {"PATH": "/usr/bin"}
+    srv._configure_fastfill_child_env(env, test_mode=True)
+    assert env.get("FASTFILL_MAX_HEADED_CHROME_MAINS") == "3"
+    if sys.platform == "darwin":
+        assert env.get("FASTFILL_NATIVE_HUD") == "1"
+        assert "FASTFILL_DOM_OVERLAY" not in env
+
+
+def test_headed_cap_surfaces_stuck_in_source():
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    chunk = src.split("def _run_hybrid_fill_dummy_body", 1)[1].split(
+        "def _dummy_fill_result_detail", 1
+    )[0]
+    assert "headed_cap" in chunk
+    assert 'final_status = "stuck"' in chunk
+
+
 def test_parse_test_mode_requires_explicit_flag():
     """UI-019 / DASH2-011: missing test_mode fails closed (no silent dummy)."""
     srv = _load_server()
@@ -335,6 +355,8 @@ if __name__ == "__main__":
     test_configure_env_dummy_clears_real_and_address()
     test_configure_env_real_sets_triple_opt_in_and_address()
     test_configure_env_real_omits_empty_address()
+    test_configure_env_sets_parallel_headed_defaults()
+    test_headed_cap_surfaces_stuck_in_source()
     test_parse_test_mode_requires_explicit_flag()
     test_skip_partyrock_only_meaningful_with_explicit_flag()
     test_playwright_timeout_covers_hold_and_refill()
