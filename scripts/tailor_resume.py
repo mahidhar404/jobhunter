@@ -46,7 +46,7 @@ from partyrock_config import (
 from partyrock_tabs import (
     clear_tab_meta,
     close_tab,
-    create_tab,
+    open_job_partyrock_tab,
     write_tab_meta,
 )
 
@@ -226,10 +226,24 @@ def main() -> None:
     target_id: str | None = None
     success = False
     try:
-        # Create tab via CDP HTTP so Playwright disconnect does not own/close it.
-        tab_info = create_tab(url, cdp_http=cdp_http)
+        # One tab per job: reuse live registry entry when present (dedupe retries).
+        if job_id:
+            tab_info = open_job_partyrock_tab(
+                job_dir,
+                job_id,
+                url,
+                cdp_http=cdp_http,
+            )
+        else:
+            from partyrock_tabs import create_tab
+
+            tab_info = create_tab(url, cdp_http=cdp_http)
         target_id = str(tab_info["id"])
-        log(f"opened PartyRock tab target_id={target_id}")
+        reused = bool(tab_info.get("reused"))
+        log(
+            f"{'reusing' if reused else 'opened'} PartyRock tab "
+            f"target_id={target_id}"
+        )
 
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(args.cdp_url)

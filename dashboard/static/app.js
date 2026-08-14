@@ -3390,6 +3390,20 @@ function confirmTestModeFill() {
   });
 }
 
+/** Optimistic in-progress UI before /start round-trip (Fill feels instant). */
+function applyFillStartLocally(jobId, { skipPartyrock, testMode }) {
+  const job = jobs.find(j => j.id === jobId);
+  if (!job) return;
+  const prefix = testMode ? "[DUMMY/TEST] " : "";
+  job.status = skipPartyrock ? "navigating" : "tailoring";
+  job.status_detail = skipPartyrock
+    ? `${prefix}Starting fill…`
+    : `${prefix}Tailoring resume via PartyRock…`;
+  job.updated_at = new Date().toISOString();
+  if (queue !== "progress" && queue !== "all") setQueue("progress");
+  render();
+}
+
 async function startJob(jobId, opts = {}) {
   const testMode = testModeEnabled;
   if (testMode) {
@@ -3405,6 +3419,7 @@ async function startJob(jobId, opts = {}) {
   } else {
     skipPartyrock = testMode && !partyRockEnabled;
   }
+  applyFillStartLocally(jobId, { skipPartyrock, testMode });
   const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/start`, {
     method: "POST",
     headers: {"Content-Type":"application/json"},

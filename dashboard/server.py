@@ -144,6 +144,9 @@ FILL_ABORT_STATUSES = frozenset({
 _fill_run_ctx: contextvars.ContextVar[tuple[str, int] | None] = contextvars.ContextVar(
     "_fill_run_ctx", default=None
 )
+# One active tailor+fill pipeline thread per job (parallel across jobs OK).
+_fill_job_guard = threading.Lock()
+_active_fill_jobs: set[str] = set()
 
 
 def _job_fill_gen(job_id: str) -> int:
@@ -167,6 +170,26 @@ def _fill_run_stale(job_id: str) -> bool:
     if ctx is None or ctx[0] != job_id:
         return False
     return _job_fill_gen(job_id) != ctx[1]
+
+
+def _claim_fill_job(job_id: str) -> bool:
+    """Register this job as having an active tailor/fill pipeline thread."""
+    with _fill_job_guard:
+        if job_id in _active_fill_jobs:
+            return False
+        _active_fill_jobs.add(job_id)
+        return True
+
+
+def _release_fill_job(job_id: str) -> None:
+    with _fill_job_guard:
+        _active_fill_jobs.discard(job_id)
+
+
+def _bind_fill_run_ctx(job_id: str, fill_run_gen: int | None = None) -> object:
+    """Capture fill_gen for this pipeline thread (must match Start bump)."""
+    run_gen = fill_run_gen if fill_run_gen is not None else _job_fill_gen(job_id)
+    return _fill_run_ctx.set((job_id, run_gen))
 # Pre-redesign holding-pen statuses (no longer a visible Skipped queue).
 LEGACY_SKIP_STATUSES = frozenset({
     "skipped_manual",
@@ -263,6 +286,7 @@ OPENCLAW_BROWSER_CDP_PORT = 18800
 _discovery_lock = threading.Lock()
 # Exit code returned by _run_subprocess_step when cooperatively aborted.
 DISCOVERY_ABORT_EXIT = -2
+FILL_ABORT_EXIT = -3
 # Listing sources discovery actually scrapes (JobSpy sites + ATS boards + Built In).
 # Each enabled catalog source runs as its own subprocess (scout --sites / scrape_ats
 # --platforms / scrape_builtin) with a per-source listing file and abort track key.
@@ -2132,6 +2156,10 @@ def _run_subprocess_step(cmd: list[str], log_name: str, timeout_s: int,
             if allow_abort and _discovery_abort_requested() and not protect_from_abort:
                 _kill_discovery_process_tree(proc)
                 exit_code = DISCOVERY_ABORT_EXIT
+                break
+            if activity_job_id and _job_fill_aborted(activity_job_id):
+                _kill_discovery_process_tree(proc)
+                exit_code = FILL_ABORT_EXIT
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -4468,6 +4496,7 @@ def run_tailor_then_fill(
     force_partyrock: bool = False,
     restore_status: str | None = None,
     fill_options: dict | None = None,
+    fill_run_gen: int | None = None,
 ) -> None:
     """Resume tailoring is "paste text, wait for a web app, copy the
     result" - no judgment calls, so it runs as a plain script
@@ -4499,8 +4528,11 @@ def run_tailor_then_fill(
     claims navigating/tailoring — otherwise Test Mode fill would always
     restore to discovered and drop stuck / blocked_captcha.
     """
-    run_gen = _job_fill_gen(job_id)
-    ctx_token = _fill_run_ctx.set((job_id, run_gen))
+    run_gen = fill_run_gen if fill_run_gen is not None else _job_fill_gen(job_id)
+    if not _claim_fill_job(job_id):
+        print(f"warn: tailor/fill already active for {job_id} — skipping duplicate thread")
+        return
+    ctx_token = _bind_fill_run_ctx(job_id, run_gen)
     try:
         _run_tailor_then_fill_body(
             job_id,
@@ -4514,6 +4546,7 @@ def run_tailor_then_fill(
         _mark_fill_thread_stuck(job_id, e, where="run_tailor_then_fill")
     finally:
         _fill_run_ctx.reset(ctx_token)
+        _release_fill_job(job_id)
 
 
 def _fill_skipping_partyrock(
@@ -6938,7 +6971,7 @@ class Handler(BaseHTTPRequestHandler):
                     f"Started by user from dashboard. Tailoring resume via PartyRock "
                     f"({pr_mode}): {pr_url}"
                 )
-            _bump_job_fill_gen_locked(job)
+            fill_run_gen = _bump_job_fill_gen_locked(job)
             job["updated_at"] = now_iso()
             _append_timeline_locked(
                 job,
@@ -6979,6 +7012,7 @@ class Handler(BaseHTTPRequestHandler):
                 "force_partyrock": force_partyrock,
                 "restore_status": prior_restore,
                 "fill_options": payload,
+                "fill_run_gen": fill_run_gen,
             },
             daemon=True,
         ).start()

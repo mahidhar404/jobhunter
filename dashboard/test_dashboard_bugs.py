@@ -278,6 +278,49 @@ def test_partyrock_parallel_no_global_lock():
     assert "close_job_partyrock_tab" in chunk
 
 
+def test_claim_fill_job_blocks_duplicate_thread():
+    """Only one tailor/fill pipeline thread per job_id at a time."""
+    srv = _load_server()
+    srv._active_fill_jobs.clear()
+    assert srv._claim_fill_job("dup-job") is True
+    assert srv._claim_fill_job("dup-job") is False
+    assert srv._claim_fill_job("other-job") is True
+    srv._release_fill_job("dup-job")
+    assert srv._claim_fill_job("dup-job") is True
+    srv._active_fill_jobs.clear()
+
+
+def test_bind_fill_run_ctx_uses_explicit_gen():
+    """Start must pass bumped fill_gen so the new thread is not stale."""
+    srv = _load_server()
+    jobs = {
+        "jobs": [
+            {
+                "id": "job-x",
+                "status": "tailoring",
+                "fill_gen": 7,
+                "session_key": "agent:job-hunter:job-x",
+            }
+        ]
+    }
+    tok = srv._bind_fill_run_ctx("job-x", 7)
+    try:
+        with mock.patch.object(srv, "read_jobs", return_value=jobs):
+            assert srv._fill_run_stale("job-x") is False
+            jobs["jobs"][0]["fill_gen"] = 8
+            assert srv._fill_run_stale("job-x") is True
+    finally:
+        srv._fill_run_ctx.reset(tok)
+
+
+def test_app_js_optimistic_fill_start():
+    """Fill should flip to in-progress locally before /start returns."""
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "applyFillStartLocally" in src
+    assert "applyFillStartLocally(jobId" in src
+    assert 'setQueue("progress")' in src
+
+
 def test_app_js_mark_applied_while_in_progress():
     """Mark as applied visible during fill/tailor/stuck — not gated on !runInProgress."""
     src = APP_JS.read_text(encoding="utf-8")
@@ -559,6 +602,9 @@ if __name__ == "__main__":
     test_delete_kills_running_proc_in_source()
     test_handle_cancel_allows_stuck_in_source()
     test_partyrock_parallel_no_global_lock()
+    test_claim_fill_job_blocks_duplicate_thread()
+    test_bind_fill_run_ctx_uses_explicit_gen()
+    test_app_js_optimistic_fill_start()
     test_app_js_mark_applied_while_in_progress()
     test_force_stuck_orphaned_in_progress_ignores_age_on_startup()
     test_force_stuck_orphaned_respects_stale_age()

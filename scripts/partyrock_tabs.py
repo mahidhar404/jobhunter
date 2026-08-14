@@ -88,24 +88,99 @@ def cdp_json(path: str, *, cdp_http: str = DEFAULT_CDP_HTTP, method: str = "GET"
         return raw.decode("utf-8", errors="replace")
 
 
+def _page_target_ids(*, cdp_http: str = DEFAULT_CDP_HTTP) -> set[str]:
+    return {
+        str(t.get("id"))
+        for t in list_page_targets(cdp_http=cdp_http)
+        if t.get("id")
+    }
+
+
+def target_exists(target_id: str, *, cdp_http: str = DEFAULT_CDP_HTTP) -> bool:
+    """True when *target_id* is still a live CDP page target."""
+    tid = (target_id or "").strip()
+    if not tid:
+        return False
+    return tid in _page_target_ids(cdp_http=cdp_http)
+
+
+def _single_new_tab_payload(
+    new_ids: set[str],
+    *,
+    url: str,
+    cdp_http: str = DEFAULT_CDP_HTTP,
+) -> dict[str, Any] | None:
+    """Build a /json/new-like payload when Chrome opened a tab but HTTP body was bad."""
+    if not new_ids:
+        return None
+    tid = sorted(new_ids)[0]
+    for orphan in new_ids:
+        if orphan != tid:
+            try:
+                close_tab(orphan, cdp_http=cdp_http)
+            except Exception:
+                pass
+    return {"id": tid, "url": url}
+
+
 def create_tab(url: str, *, cdp_http: str = DEFAULT_CDP_HTTP) -> dict[str, Any]:
     """Open a new page target. Returns Chrome ``/json/new`` payload (has ``id``).
 
     PR2-004: try PUT first (Chromium), then GET — some builds only accept one.
+    PR2-005: never fall through to GET when PUT already created a tab (orphan tabs).
     """
     quoted = urllib.parse.quote(url, safe="")
     path = f"/json/new?{quoted}"
+    before = _page_target_ids(cdp_http=cdp_http)
     last_err: Exception | None = None
     for method in ("PUT", "GET"):
         try:
             data = cdp_json(path, cdp_http=cdp_http, method=method)
             if isinstance(data, dict) and data.get("id"):
                 return data
+            new_ids = _page_target_ids(cdp_http=cdp_http) - before
+            recovered = _single_new_tab_payload(new_ids, url=url, cdp_http=cdp_http)
+            if recovered is not None:
+                return recovered
             last_err = RuntimeError(f"CDP /json/new ({method}) bad payload: {data!r}")
         except Exception as e:
+            new_ids = _page_target_ids(cdp_http=cdp_http) - before
+            recovered = _single_new_tab_payload(new_ids, url=url, cdp_http=cdp_http)
+            if recovered is not None:
+                return recovered
             last_err = e
             continue
     raise RuntimeError(f"CDP /json/new failed: {last_err!r}")
+
+
+def open_job_partyrock_tab(
+    job_dir: Path | str,
+    job_id: str,
+    url: str,
+    *,
+    cdp_http: str = DEFAULT_CDP_HTTP,
+    force_new: bool = False,
+) -> dict[str, Any]:
+    """Open or reuse this job's PartyRock CDP tab (one tab per job per run).
+
+    When ``partyrock_tab.json`` points at a live target and ``force_new`` is
+    False, navigate is left to the caller (tailor_resume attaches via CDP).
+    """
+    if not force_new:
+        meta = read_tab_meta(job_dir)
+        if meta:
+            tid = str(meta.get("target_id") or "").strip()
+            if tid and target_exists(tid, cdp_http=cdp_http):
+                return {"id": tid, "url": meta.get("url") or url, "reused": True}
+    tab_info = create_tab(url, cdp_http=cdp_http)
+    write_tab_meta(
+        job_dir,
+        job_id=job_id,
+        target_id=str(tab_info["id"]),
+        url=url,
+    )
+    tab_info["reused"] = False
+    return tab_info
 
 
 def close_tab(target_id: str, *, cdp_http: str = DEFAULT_CDP_HTTP) -> bool:

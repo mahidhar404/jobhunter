@@ -7,6 +7,7 @@ import sys
 import tempfile
 import urllib.error
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -17,6 +18,7 @@ from partyrock_tabs import (  # noqa: E402
     close_tab,
     create_tab,
     list_page_targets,
+    open_job_partyrock_tab,
     read_tab_meta,
     write_tab_meta,
 )
@@ -47,6 +49,44 @@ def test_close_job_isolates_by_meta(tmp_path: Path) -> None:
     assert read_tab_meta(a)["target_id"] == "AAA"
     assert read_tab_meta(b) is not None
     assert read_tab_meta(b)["target_id"] == "BBB"
+
+
+def test_create_tab_does_not_double_open_on_bad_put_payload() -> None:
+    """PUT may create a tab but return a bad body — GET must not open a second."""
+    calls: list[str] = []
+    state = {"ids": {"existing"}}
+
+    def fake_list(*, cdp_http: str = "http://127.0.0.1:18800"):
+        return [{"id": tid, "type": "page"} for tid in sorted(state["ids"])]
+
+    def fake_json(path: str, *, cdp_http: str = "http://127.0.0.1:18800", method: str = "GET"):
+        calls.append(method)
+        if path.startswith("/json/new"):
+            if method == "PUT":
+                state["ids"].add("new-tab")
+                return "not-json"
+            return {"id": "should-not-happen"}
+        raise AssertionError(f"unexpected path {path}")
+
+    with mock.patch("partyrock_tabs.list_page_targets", fake_list), mock.patch(
+        "partyrock_tabs.cdp_json", fake_json
+    ):
+        info = create_tab("https://example.com/partyrock", cdp_http="http://127.0.0.1:9")
+    assert info["id"] == "new-tab"
+    assert calls == ["PUT"]
+
+
+def test_open_job_partyrock_tab_reuses_live_target(tmp_path: Path) -> None:
+    job_dir = tmp_path / "jobA"
+    write_tab_meta(job_dir, job_id="jobA", target_id="LIVE", url="https://example.com/pr")
+
+    with mock.patch("partyrock_tabs.target_exists", lambda tid, **kw: tid == "LIVE"), mock.patch(
+        "partyrock_tabs.create_tab",
+        side_effect=AssertionError("should not create"),
+    ):
+        info = open_job_partyrock_tab(job_dir, "jobA", "https://example.com/pr")
+    assert info["id"] == "LIVE"
+    assert info.get("reused") is True
 
 
 def test_force_partyrock_bypasses_ondisk_reuse() -> None:
@@ -114,6 +154,8 @@ if __name__ == "__main__":
         p = Path(td)
         test_tab_meta_roundtrip(p / "meta")
         test_close_job_isolates_by_meta(p / "iso")
+        test_create_tab_does_not_double_open_on_bad_put_payload()
+        test_open_job_partyrock_tab_reuses_live_target(p / "reuse")
         test_force_partyrock_bypasses_ondisk_reuse()
         test_cdp_create_close_live()
         test_close_job_live_two_tabs(p / "live2")
