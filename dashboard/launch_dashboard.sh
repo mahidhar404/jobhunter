@@ -92,7 +92,6 @@ RESTARTING=0
 WE_OWN_LOCK=0
 
 mkdir -p "$ROOT/logs" "$UI_PROFILE"
-restore_dashboard_port_from_file
 
 # Prefer repo venv over bare system python (Desktop applet PATH can be thin).
 resolve_dashboard_python() {
@@ -751,8 +750,9 @@ start_dashboard_server() {
     "${py_bin}" "$DASHBOARD_DIR/server.py" >> "$LOG_FILE" 2>&1 &
   SERVER_PID=$!
   STARTED_BY_US=1
+  disown "$SERVER_PID" 2>/dev/null || true
   echo "$SERVER_PID" > "$PID_FILE"
-  echo "started dashboard server pid=$SERVER_PID"
+  echo "started dashboard server pid=$SERVER_PID on :${DASHBOARD_PORT}"
 
   local _
   for _ in $(seq 1 40); do
@@ -760,9 +760,10 @@ start_dashboard_server() {
       return 0
     fi
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+      wait "$SERVER_PID" 2>/dev/null || true
       echo "dashboard server exited before becoming ready; see $LOG_FILE" >&2
       # Post-reboot: port race or stale listener — re-resolve and let caller retry.
-      if server_up; then
+      if sync_serving_dashboard_port; then
         SERVER_PID="$(listener_pid)"
         echo "recoverable: ops shell up on :${DASHBOARD_PORT} after early exit"
         return 0
@@ -889,10 +890,10 @@ if [[ "$MODE" == "--cft-roles" ]]; then
   exit 0
 fi
 
+restore_dashboard_port_from_file
 acquire_launcher_lock
 
 if [[ "$MODE" == "--restart" ]]; then
-  restore_dashboard_port_from_file
   echo "launch_dashboard.sh --restart: waiting for old server to release :${DASHBOARD_PORT}"
   RESTARTING=1
   wait_for_port_free
