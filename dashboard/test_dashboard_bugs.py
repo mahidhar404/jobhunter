@@ -712,8 +712,8 @@ def test_pipeline_stop_if_aborted_logs_stale_gen():
     tok = srv._fill_run_ctx.set(("stale-handoff", 2))
     try:
         with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-            srv, "append_fill_activity"
-        ) as af:
+            srv, "write_jobs"
+        ), mock.patch.object(srv, "append_fill_activity") as af:
             stopped = srv._pipeline_stop_if_aborted("stale-handoff", "PartyRock gather")
             assert stopped is True
             af.assert_called_once()

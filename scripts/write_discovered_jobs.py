@@ -68,6 +68,8 @@ def trim_description(full_text: str) -> str:
 
 
 def write_full_description(job_id: str, full_text: str) -> None:
+    if not isinstance(full_text, str):
+        full_text = "" if full_text is None else str(full_text)
     job_dir = RESUMES_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     (job_dir / "jd_full.txt").write_text(full_text)

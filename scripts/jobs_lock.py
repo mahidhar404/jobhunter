@@ -23,11 +23,41 @@ the file should go through here.
 """
 import fcntl
 import json
+import shutil
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 JOBS_FILE = Path(__file__).parent.parent / "jobs.json"
 LOCK_FILE = JOBS_FILE.with_suffix(".json.lock")
+_AUTO_BACKUP_KEEP = 5
+
+
+def backup_jobs_file() -> None:
+    """Snapshot jobs.json before a destructive write (best-effort)."""
+    if not JOBS_FILE.is_file():
+        return
+    try:
+        if JOBS_FILE.stat().st_size <= 0:
+            return
+    except OSError:
+        return
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    bak = JOBS_FILE.with_name(f"jobs.json.bak-auto-{ts}")
+    try:
+        shutil.copy2(JOBS_FILE, bak)
+    except OSError:
+        return
+    backups = sorted(
+        JOBS_FILE.parent.glob("jobs.json.bak-auto-*"),
+        key=lambda p: p.stat().st_mtime if p.is_file() else 0,
+        reverse=True,
+    )
+    for old in backups[_AUTO_BACKUP_KEEP:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
 
 
 @contextmanager
@@ -43,6 +73,7 @@ def locked_jobs_for_write():
         try:
             data = json.loads(JOBS_FILE.read_text()) if JOBS_FILE.exists() else {"jobs": []}
             yield data
+            backup_jobs_file()
             JOBS_FILE.write_text(json.dumps(data, indent=2))
         finally:
             fcntl.flock(lockfile, fcntl.LOCK_UN)

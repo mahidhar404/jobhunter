@@ -57,6 +57,7 @@ from blocked_urls import (  # noqa: E402
     unblock_job,
 )
 from resume_publish import publish_resume_to_by_company  # noqa: E402
+from jobs_lock import backup_jobs_file  # noqa: E402
 JOBS_FILE = ROOT / "jobs.json"
 # Same lock file scripts/jobs_lock.py uses - update_job.py and
 # write_discovered_jobs.py run as separate OS processes with no visibility
@@ -2871,6 +2872,7 @@ def write_jobs(data: dict) -> None:
     with open(JOBS_LOCK_FILE, "r+") as lockfile:
         fcntl.flock(lockfile, fcntl.LOCK_EX)
         try:
+            backup_jobs_file()
             JOBS_FILE.write_text(json.dumps(data, indent=2))
         finally:
             fcntl.flock(lockfile, fcntl.LOCK_UN)
