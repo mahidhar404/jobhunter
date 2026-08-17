@@ -216,6 +216,16 @@ def test_stealth_readback_retry_in_source():
     assert "stealth_readback_retry" in src
 
 
+def test_find_fill_chrome_pid_for_profile_source():
+    src = (HERE / "browser_launch.py").read_text(encoding="utf-8")
+    assert "def find_fill_chrome_pid_for_profile" in src
+
+
+def test_fast_fill_notes_chrome_pid_for_hud():
+    src = (HERE / "fast_fill.py").read_text(encoding="utf-8")
+    assert "note_fill_chrome_for_hud" in src
+
+
 def test_fill_pause_default_no_dom_overlay():
     src = (HERE / "fill_pause.py").read_text(encoding="utf-8")
     assert "use_dom_overlay" in src
@@ -241,5 +251,7 @@ if __name__ == "__main__":
     test_close_fill_context_idempotent()
     test_ashby_storage_clear_before_entry_prepass_in_source()
     test_stealth_readback_retry_in_source()
+    test_find_fill_chrome_pid_for_profile_source()
+    test_fast_fill_notes_chrome_pid_for_hud()
     test_fill_pause_default_no_dom_overlay()
     print("test_browser_launch: OK")

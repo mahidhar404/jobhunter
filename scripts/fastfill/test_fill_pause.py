@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -653,6 +654,105 @@ def test_native_state_atomic_write_in_source():
     assert ".with_suffix(\".tmp\")" in src
     hud = (HERE / "fill_pause_hud.py").read_text(encoding="utf-8")
     assert ".with_suffix(\".tmp\")" in hud
+    assert "hud_chrome_bounds" in hud
+    assert "#0a0a0a" in hud
+
+
+def test_hud_pin_chrome_env_default_on():
+    from fill_pause import use_hud_pin_chrome
+
+    prev = os.environ.pop("FASTFILL_HUD_PIN_CHROME", None)
+    prev_dom = os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+    try:
+        os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+        if sys.platform == "darwin":
+            assert use_hud_pin_chrome() is True
+        os.environ["FASTFILL_HUD_PIN_CHROME"] = "0"
+        assert use_hud_pin_chrome() is False
+    finally:
+        if prev is None:
+            os.environ.pop("FASTFILL_HUD_PIN_CHROME", None)
+        else:
+            os.environ["FASTFILL_HUD_PIN_CHROME"] = prev
+        if prev_dom is None:
+            os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+        else:
+            os.environ["FASTFILL_DOM_OVERLAY"] = prev_dom
+
+
+def test_note_fill_chrome_for_hud_persists_pid():
+    from fill_pause import fill_pause_state_path, note_fill_chrome_for_hud, reset_native_pause_state
+
+    with tempfile.TemporaryDirectory() as td:
+        state = Path(td) / ".fill_pause_state.json"
+        prev = os.environ.get("FASTFILL_FILL_PAUSE_STATE")
+        os.environ["FASTFILL_FILL_PAUSE_STATE"] = str(state)
+        try:
+            reset_native_pause_state()
+            out = note_fill_chrome_for_hud(pid=4242, job_id="job-abc")
+            assert out["pid"] == 4242
+            data = json.loads(state.read_text(encoding="utf-8"))
+            assert data["fill_chrome_pid"] == 4242
+            assert data["job_id"] == "job-abc"
+        finally:
+            if prev is None:
+                os.environ.pop("FASTFILL_FILL_PAUSE_STATE", None)
+            else:
+                os.environ["FASTFILL_FILL_PAUSE_STATE"] = prev
+
+
+def test_hud_chrome_offset_math():
+    from hud_chrome_bounds import (
+        BoundsCache,
+        compute_hud_xy,
+        default_hud_margins,
+        margins_from_hud_xy,
+    )
+
+    chrome = {"x": 100, "y": 50, "width": 1200, "height": 800}
+    mr, mt = default_hud_margins()
+    hud_w, hud_h = 300, 120
+    x, y = compute_hud_xy(
+        chrome,
+        hud_width=hud_w,
+        hud_height=hud_h,
+        margin_right=mr,
+        margin_top=mt,
+    )
+    assert x == chrome["x"] + chrome["width"] - hud_w - mr
+    assert y == chrome["y"] + mt
+    back_mr, back_mt = margins_from_hud_xy(
+        chrome, hud_x=x, hud_y=y, hud_width=hud_w, hud_height=hud_h
+    )
+    assert (back_mr, back_mt) == (mr, mt)
+
+    moved = {"x": 200, "y": 80, "width": 1200, "height": 800}
+    x2, y2 = compute_hud_xy(
+        moved,
+        hud_width=hud_w,
+        hud_height=hud_h,
+        margin_right=back_mr,
+        margin_top=back_mt,
+    )
+    assert x2 == moved["x"] + moved["width"] - hud_w - back_mr
+    assert y2 == moved["y"] + back_mt
+
+
+def test_bounds_cache_skips_unchanged():
+    from hud_chrome_bounds import BoundsCache
+
+    cache = BoundsCache()
+    chrome = {"x": 10, "y": 20, "width": 800, "height": 600}
+    assert cache.should_reposition(
+        chrome, hud_width=300, hud_height=100, margin_right=12, margin_top=12
+    )
+    assert not cache.should_reposition(
+        chrome, hud_width=300, hud_height=100, margin_right=12, margin_top=12
+    )
+    chrome2 = dict(chrome, x=11)
+    assert cache.should_reposition(
+        chrome2, hud_width=300, hud_height=100, margin_right=12, margin_top=12
+    )
 
 
 def test_stealth_resolve_defaults():
@@ -693,6 +793,10 @@ def main() -> int:
     test_resolve_fill_pause_env()
     test_stealth_resolve_defaults()
     test_native_state_atomic_write_in_source()
+    test_hud_pin_chrome_env_default_on()
+    test_note_fill_chrome_for_hud_persists_pid()
+    test_hud_chrome_offset_math()
+    test_bounds_cache_skips_unchanged()
     test_sentinel_paths_default()
     test_consume_continue_sentinel()
     test_force_pause_sentinel_present()

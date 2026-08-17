@@ -10967,6 +10967,17 @@ async def run_fast_fill_async(
                 bring_fill_chrome_to_front(loud=True)
             except Exception:
                 pass
+            if do_fill_pause:
+                try:
+                    from fill_pause import note_fill_chrome_for_hud
+
+                    note_fill_chrome_for_hud(
+                        pid=None,
+                        job_id=job_id,
+                        profile_dir=profile_dir,
+                    )
+                except Exception:
+                    pass
             print(
                 "[browser] Headed Google Chrome launched (job_hunter_fill_profiles) — "
                 "look for the job URL window (may be behind other apps).\n"
@@ -10993,6 +11004,17 @@ async def run_fast_fill_async(
         if do_fill_pause:
             try:
                 await ensure_fill_pause_ready(page, report)
+                if is_headed:
+                    from fill_pause import note_fill_chrome_for_hud
+
+                    chrome_note = note_fill_chrome_for_hud(
+                        pid=None,
+                        job_id=job_id,
+                        profile_dir=profile_dir,
+                    )
+                    fp = report.setdefault("fill_pause", {})
+                    if isinstance(fp, dict):
+                        fp["chrome_pid"] = chrome_note.get("pid")
             except Exception as e:
                 report.setdefault("errors", []).append(
                     {"fill_pause_inject": str(e)[:120]}

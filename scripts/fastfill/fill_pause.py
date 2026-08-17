@@ -705,6 +705,8 @@ _NATIVE_STATE: dict[str, Any] = {
     "continue_count": 0,
     "hud_action": None,
     "hud_stop": 0,
+    "fill_chrome_pid": None,
+    "job_id": None,
 }
 _hud_proc: subprocess.Popen | None = None
 _last_hud_action_seen: str | None = None
@@ -736,6 +738,42 @@ def use_native_hud() -> bool:
     ):
         return False
     return sys.platform == "darwin"
+
+
+def use_hud_pin_chrome() -> bool:
+    """Pin native HUD to fill Chrome window (default ON). ``FASTFILL_HUD_PIN_CHROME=0`` → screen."""
+    if not use_native_hud():
+        return False
+    raw = (os.environ.get("FASTFILL_HUD_PIN_CHROME") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def note_fill_chrome_for_hud(
+    *,
+    pid: int | None,
+    job_id: str | None = None,
+    profile_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Record fill Chrome PID so the HUD can pin to that window."""
+    out: dict[str, Any] = {"pid": pid, "job_id": job_id}
+    if pid is None and profile_dir is not None:
+        try:
+            from browser_launch import find_fill_chrome_pid_for_profile
+
+            pid = find_fill_chrome_pid_for_profile(profile_dir)
+            out["pid"] = pid
+            out["via"] = "profile_scan"
+        except Exception:
+            pass
+    if pid is not None:
+        try:
+            _NATIVE_STATE["fill_chrome_pid"] = int(pid)
+        except (TypeError, ValueError):
+            _NATIVE_STATE["fill_chrome_pid"] = None
+    if job_id is not None:
+        _NATIVE_STATE["job_id"] = str(job_id)
+    _persist_native_state()
+    return out
 
 
 def resolve_hud_python() -> str:
@@ -808,6 +846,10 @@ def _load_native_state_from_disk() -> None:
             "pause_count",
             "continue_count",
             "hud_action",
+            "fill_chrome_pid",
+            "job_id",
+            "hud_margin_right",
+            "hud_margin_top",
         ):
             if key in data:
                 _NATIVE_STATE[key] = data[key]
@@ -908,6 +950,10 @@ def reset_native_pause_state() -> None:
             "continue_count": 0,
             "hud_action": None,
             "hud_stop": 0,
+            "fill_chrome_pid": None,
+            "job_id": None,
+            "hud_margin_right": None,
+            "hud_margin_top": None,
         }
     )
     _last_hud_action_seen = None

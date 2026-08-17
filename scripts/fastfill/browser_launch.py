@@ -153,6 +153,34 @@ def _is_fill_chrome_main_line(line: str, *, headed_only: bool = False) -> bool:
     return False
 
 
+def find_fill_chrome_pid_for_profile(profile_dir: Path | str | None) -> int | None:
+    """Best-effort PID of the headed fill Chrome for a profile directory."""
+    if not profile_dir:
+        return None
+    marker = f"--user-data-dir={Path(profile_dir).resolve()}"
+    try:
+        out = subprocess.check_output(
+            ["pgrep", "-lf", "Google Chrome"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return None
+    for line in out.splitlines():
+        if marker not in line:
+            continue
+        if not _is_fill_chrome_main_line(line, headed_only=True):
+            continue
+        parts = line.strip().split(None, 1)
+        if not parts:
+            continue
+        try:
+            return int(parts[0])
+        except ValueError:
+            continue
+    return None
+
+
 def count_fill_chrome_mains(*, headed_only: bool = False) -> list[int]:
     """PIDs of fill Chrome mains (regular Chrome + job_hunter_fill_profiles)."""
     patterns = ("Google Chrome", "Google Chrome for Testing")
