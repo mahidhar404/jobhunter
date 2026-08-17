@@ -512,7 +512,7 @@ def test_app_js_surfaces_applied_after_mark_submitted():
 def test_launch_script_reloads_focused_ui_on_reuse():
     """Blank CfT --app= tabs after server downtime must reload on focus."""
     src = (HERE / "launch_dashboard.sh").read_text(encoding="utf-8")
-    assert 'grep -q \'class="ops-header"\'' in src
+    assert 'grep -q \'class="ops-shell"\'' in src
     assert "reload_dashboard_ui_window" in src
     open_chunk = src.split("open_dashboard_ui() {", 1)[1].split("\n}\n", 1)[0]
     assert "focus_dashboard_ui" in open_chunk
@@ -537,7 +537,9 @@ def test_app_js_job_sort_fallbacks():
 def test_index_html_embedded_browser_boot():
     """Zero-height embedded browsers must still paint; scripts must surface load errors."""
     html = (HERE / "static" / "index.html").read_text(encoding="utf-8")
+    assert "min-height: 480px" in html
     assert "min-height: max(100vh, 480px)" in html
+    assert 'id="ops-shell"' in html and "min-height:480px" in html
     assert 'id="list-boot-msg"' in html
     assert "__jhBootFailed" in html
     assert 'onerror="window.__jhBootFailed' in html
@@ -548,8 +550,11 @@ def test_app_js_boot_render_and_auto_queue():
     src = APP_JS.read_text(encoding="utf-8")
     assert "list-boot-msg" in src
     assert "maybeAutoSelectQueue" in src
+    assert "markDashboardPainted" in src
     boot = src.split("try {", 1)[1].split("} catch (bootErr)", 1)[0]
     assert "render();" in boot
+    assert "markDashboardPainted();" in boot
+    assert boot.index("render();") < boot.index("markDashboardPainted();")
     assert "poll();" in boot
 
 

@@ -97,7 +97,7 @@ listener_pid() {
 
 server_up() {
   # Require the real ops shell — a bare TCP listener or proxy 200 is not enough.
-  curl -sf "$URL" 2>/dev/null | grep -q 'class="ops-header"'
+  curl -sf "$URL" 2>/dev/null | grep -q 'class="ops-shell"'
 }
 
 wait_for_port_free() {
@@ -230,10 +230,10 @@ reload_dashboard_ui_window() {
     "tell application \"System Events\"
       set frontmost of first process whose unix id is ${pid} to true
       delay 0.12
-      keystroke \"r\" using command down
+      keystroke \"r\" using {command down, shift down}
     end tell" \
     >/dev/null 2>&1 || true
-  echo "reloaded dashboard UI pid=${pid}"
+  echo "hard-reloaded dashboard UI pid=${pid}"
   return 0
 }
 

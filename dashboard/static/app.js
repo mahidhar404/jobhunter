@@ -1828,6 +1828,19 @@ function setSyncState(state) {
   showConnectionBanner(state === "error");
 }
 
+/** Persistent boot/render failure banner (index.html #boot-error-bar). */
+function showBootError(message) {
+  const bar = document.getElementById("boot-error-bar");
+  if (!bar) return;
+  if (!message) {
+    bar.textContent = "";
+    bar.classList.remove("visible");
+    return;
+  }
+  bar.textContent = message;
+  bar.classList.add("visible");
+}
+
 /** Visible when /api/jobs is unreachable (server down or stale CfT error tab). */
 function showConnectionBanner(visible) {
   let bar = document.getElementById("connection-error-bar");
@@ -3178,10 +3191,17 @@ function renderTimeline() {
 }
 
 function render() {
-  renderStats();
-  renderList();
-  renderDossier();
-  renderTimeline();
+  try {
+    renderStats();
+    renderList();
+    renderDossier();
+    renderTimeline();
+    showBootError("");
+  } catch (err) {
+    console.error("render failed", err);
+    showBootError(`Dashboard render failed (${err}). Hard-refresh or restart the server.`);
+    setSyncState("error");
+  }
 }
 
 function bindOpsChrome() {
@@ -4714,9 +4734,11 @@ async function saveCronSchedule() {
   await loadCron();
 }
 
-
-
-bindOpsChrome();
+try {
+  bindOpsChrome();
+} catch (chromeErr) {
+  console.error("bindOpsChrome failed", chromeErr);
+}
 // job_sort.js should load first; fall back so a failed script tag doesn't brick render().
 if (typeof compareByPosted !== "function") {
   console.error("job_sort.js missing — using posted-date sort fallbacks");
@@ -4758,6 +4780,7 @@ if (typeof postedAgeLabel !== "function") {
 try {
   setTimelineCollapsed(timelineCollapsed);
   render();
+  markDashboardPainted();
   poll();
   pollStatus();
   pollFillMetrics();
@@ -4775,11 +4798,7 @@ try {
   });
 } catch (bootErr) {
   console.error("dashboard boot failed", bootErr);
-  const bar = document.getElementById("boot-error-bar");
-  if (bar) {
-    bar.textContent = `Dashboard failed to start (${bootErr}). Hard-refresh or restart the server.`;
-    bar.classList.add("visible");
-  }
+  showBootError(`Dashboard failed to start (${bootErr}). Hard-refresh or restart the server.`);
   setSyncState("error");
 }
 
@@ -4798,6 +4817,34 @@ const UI_HEARTBEAT_MS = 5000;
 let _dashboardRestartInFlight = false;
 let _dashboardQuitInFlight = false;
 
+/** Cursor Simple Browser / vscode webview previews — not a real dashboard quit target. */
+function isEmbeddedDashboardView() {
+  try {
+    if (window.self !== window.top) return true;
+    const p = String(window.location?.protocol || "");
+    if (p === "vscode-webview:" || p === "cursor:") return true;
+  } catch (_) { /* cross-origin parent */ return true; }
+  return false;
+}
+
+/** Hide the static HTML fallback only after the ops shell has painted (never on boot start). */
+function markDashboardPainted() {
+  if (document.body?.classList.contains("jh-booted")) return;
+  const paint = () => {
+    document.body?.classList.add("jh-booted");
+    document.getElementById("ops-shell")?.classList.add("jh-booted");
+  };
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => requestAnimationFrame(paint));
+  } else {
+    paint();
+  }
+}
+
+function shouldRunUiLifecycle() {
+  return !isEmbeddedDashboardView();
+}
+
 const REFRESH_BTN_ICON_HTML = `
   <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
     <path fill="currentColor" d="M13.65 2.35A7.96 7.96 0 0 0 8 0C3.58 0 0 3.58 0 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 8 14A6 6 0 1 1 8 2c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z"/>
@@ -4814,6 +4861,7 @@ function dashboardClientId() {
 }
 
 async function sendUiHeartbeat() {
+  if (!shouldRunUiLifecycle()) return;
   if (_dashboardRestartInFlight || _dashboardQuitInFlight) return;
   try {
     await fetch("/api/heartbeat", {
@@ -4826,6 +4874,9 @@ async function sendUiHeartbeat() {
 }
 
 function beaconUiShutdown() {
+  // Embedded previews (Cursor Simple Browser) fire pagehide when discarded —
+  // must not POST /api/shutdown and kill the stack for the real Desktop window.
+  if (!shouldRunUiLifecycle()) return;
   // Refresh owns cleanup via /api/restart; Quit already POSTed /api/shutdown.
   if (_dashboardRestartInFlight || _dashboardQuitInFlight) return;
   const body = JSON.stringify({ client_id: dashboardClientId() });

@@ -61,16 +61,23 @@
   html {
     /* 100% alone collapses to 0px in embedded browsers (Cursor Simple Browser,
        vscode webview) whose iframe starts at 0 height — paints a blank black
-       page even though the DOM is loaded. min-height guarantees a paintable shell. */
+       page even though the DOM is loaded. Layered min-height: older webviews
+       without max()/dvh ignore those rules but still get 480px / 100vh. */
     height: 100%;
+    min-height: 480px;
+    min-height: 100vh;
     min-height: max(100vh, 480px);
+    min-height: max(100dvh, 100vh, 480px);
     margin: 0;
     background: var(--bg);
     color-scheme: dark;
   }
   body {
     height: 100%;
+    min-height: 480px;
+    min-height: 100vh;
     min-height: max(100vh, 480px);
+    min-height: max(100dvh, 100vh, 480px);
     margin: 0;
     font-family: var(--sans);
     background: var(--bg);
@@ -81,7 +88,41 @@
     flex-direction: column;
     overflow: hidden;
     color-scheme: dark;
+    visibility: visible;
   }
+  /* Flex shell — min-height on body alone is not enough when webviews clip flex
+     children to 0; the shell must own the paintable column. */
+  .ops-shell {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 480px;
+    min-height: 100vh;
+    min-height: max(100vh, 480px);
+    min-height: max(100dvh, 100vh, 480px);
+    width: 100%;
+    visibility: visible;
+    opacity: 1;
+    background: var(--bg);
+    color: var(--text);
+  }
+  body:not(.jh-booted) .ops-shell {
+    /* Until JS paints, never collapse below the static fallback band. */
+    min-height: 480px;
+  }
+  .jh-static-fallback {
+    flex-shrink: 0;
+    display: block;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--blue-edge);
+    background: #0a0a0a;
+    color: var(--cyan);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    line-height: 1.4;
+  }
+  body.jh-booted .jh-static-fallback { display: none; }
   /* Explicit dark controls — Chrome --app= / Safari otherwise paint light UA chrome. */
   button, input, select, textarea {
     font: inherit;
@@ -1944,6 +1985,17 @@
 </head>
 <body>
 
+<noscript>
+  <div class="jh-static-fallback" style="display:block">
+  JOB HUNT · OPS — JavaScript is required. Enable JS and reload <code>http://127.0.0.1:8787/</code>.
+  </div>
+</noscript>
+<div id="jh-static-fallback" class="jh-static-fallback" role="status">
+  <strong>JOB HUNT · OPS</strong> — loading dashboard… If this line stays visible, hard-refresh or restart the server.
+</div>
+
+<div class="ops-shell" id="ops-shell" style="min-height:480px">
+
 <header class="ops-header">
   <div class="brand">
     <span class="sync-dot" id="sync-dot" title="Sync live"></span>
@@ -2220,6 +2272,8 @@
     <div class="tl-list" id="timeline"></div>
   </aside>
 </div>
+
+</div><!-- .ops-shell -->
 
 <div id="console-pane" class="hidden">
   <div id="util-tabs">
