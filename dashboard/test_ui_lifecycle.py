@@ -208,19 +208,25 @@ def test_jh_browser_paths_are_dedicated() -> None:
 
 
 def test_dashboard_ui_not_hosted_by_daily_chrome() -> None:
-    """CHR2-007: UI window must not run on /Applications/Google Chrome.app.
+    """CHR2-007: dashboard UI must not hijack the daily Chrome profile.
 
-    Launching that bundle with a custom --user-data-dir makes it the running
-    com.google.Chrome instance, so Dock/Spotlight "Google Chrome" would open
-    the empty dashboard profile instead of the user's daily one. Launcher
-    must fail loud when CfT/Chromium is missing — never fall back.
+    Launching Google Chrome.app with a custom --user-data-dir makes it the
+    running com.google.Chrome instance, so Dock/Spotlight would open the empty
+    dashboard profile instead of the user's daily one. CfT/Chromium with a
+    dedicated profile is preferred; when missing, open a normal Chrome tab
+    via ``open -a`` (no custom user-data-dir) so daily browsing stays intact.
     """
     launcher = (Path(srv.__file__).resolve().parent / "launch_dashboard.sh").read_text()
     body = launcher.split("open_dashboard_ui()", 1)[1].split("\nrelease_launcher_lock", 1)[0]
     chrome_app = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    assert chrome_app not in body, "CHR2-007: daily Chrome fallback must be removed"
-    assert "refusing Google Chrome.app fallback" in body
-    assert "return 1" in body
+    assert chrome_app not in body, (
+        "CHR2-007: must not exec Google Chrome.app with --user-data-dir"
+    )
+    assert '--user-data-dir="$UI_PROFILE"' in body or "--user-data-dir=\"$UI_PROFILE\"" in body
+    assert 'open -a "Google Chrome"' in body, (
+        "CHR2-007: CfT-missing fallback should open a normal Chrome tab"
+    )
+    assert "falling back to Google Chrome tab" in body
 
 
 def test_chrome_for_testing_teardown_skips_dashboard_ui() -> None:
