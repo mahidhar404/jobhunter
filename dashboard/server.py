@@ -2672,6 +2672,40 @@ def runtime_status() -> dict:
     }
 
 
+def _parse_jobs_payload(raw: str) -> dict:
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError("jobs root must be object", raw, 0)
+    if not isinstance(data.get("jobs"), list):
+        data["jobs"] = []
+    return data
+
+
+def _recover_jobs_json_from_backup() -> dict | None:
+    """Best-effort restore from jobs.json.bak* when the live file is corrupt."""
+    backups = sorted(
+        JOBS_FILE.parent.glob("jobs.json.bak*"),
+        key=lambda p: p.stat().st_mtime if p.is_file() else 0,
+        reverse=True,
+    )
+    for bak in backups:
+        try:
+            data = _parse_jobs_payload(bak.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+        try:
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            corrupt_path = JOBS_FILE.with_name(f"jobs.json.corrupt-{ts}")
+            if JOBS_FILE.exists():
+                JOBS_FILE.rename(corrupt_path)
+            JOBS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            print(f"warn: restored jobs.json from {bak.name} (corrupt copy → {corrupt_path.name})")
+            return data
+        except OSError as e:
+            print(f"warn: could not restore jobs.json from {bak.name}: {e}")
+    return None
+
+
 def read_jobs() -> dict:
     if not JOBS_FILE.exists():
         return {"jobs": []}
@@ -2679,9 +2713,23 @@ def read_jobs() -> dict:
     with open(JOBS_LOCK_FILE, "r+") as lockfile:
         fcntl.flock(lockfile, fcntl.LOCK_SH)
         try:
-            return json.loads(JOBS_FILE.read_text())
+            try:
+                return _parse_jobs_payload(JOBS_FILE.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                print(f"warn: jobs.json corrupt ({e})")
         finally:
             fcntl.flock(lockfile, fcntl.LOCK_UN)
+    recovered = _recover_jobs_json_from_backup()
+    if recovered is not None:
+        return recovered
+    try:
+        if JOBS_FILE.exists():
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            JOBS_FILE.rename(JOBS_FILE.with_name(f"jobs.json.corrupt-{ts}"))
+    except OSError as e:
+        print(f"warn: could not quarantine corrupt jobs.json: {e}")
+    print("warn: jobs.json unreadable — using empty job list")
+    return {"jobs": []}
 
 
 # Truncation note written by write_discovered_jobs.trim_description / manual add.

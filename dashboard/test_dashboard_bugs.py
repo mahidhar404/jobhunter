@@ -6,6 +6,7 @@ No browser — exercises server helpers and static UI source contracts.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -517,6 +518,50 @@ def test_launch_script_reloads_focused_ui_on_reuse():
     open_chunk = src.split("open_dashboard_ui() {", 1)[1].split("\n}\n", 1)[0]
     assert "focus_dashboard_ui" in open_chunk
     assert "reload_dashboard_ui_window" in open_chunk
+
+
+def test_launch_script_post_reboot_port_and_python():
+    """Post-reboot: scan ports, persist choice, prefer repo venv python."""
+    src = (HERE / "launch_dashboard.sh").read_text(encoding="utf-8")
+    assert "resolve_dashboard_port" in src
+    assert "port_is_bindable" in src
+    assert "resolve_dashboard_python" in src
+    assert "remember_dashboard_port" in src
+    assert "restore_dashboard_port_from_file" in src
+    assert 'open -a "Google Chrome"' in src
+    assert ".venv/bin/python3" in src
+    assert "skyvern_runtime/venv/bin/python3" in src
+    assert "JOBHUNTER_DASHBOARD_PORT" in src
+
+
+def test_read_jobs_recovers_corrupt_json(tmp_path):
+    """Corrupt jobs.json must not crash dashboard reads."""
+    srv = _load_server()
+    jobs_file = tmp_path / "jobs.json"
+    jobs_file.write_text("{not json", encoding="utf-8")
+    backup = tmp_path / "jobs.json.bak-recovery"
+    backup.write_text(
+        json.dumps({"jobs": [{"id": "ok", "status": "discovered"}]}),
+        encoding="utf-8",
+    )
+    with mock.patch.object(srv, "JOBS_FILE", jobs_file), mock.patch.object(
+        srv, "JOBS_LOCK_FILE", tmp_path / "jobs.json.lock"
+    ):
+        data = srv.read_jobs()
+    assert data["jobs"][0]["id"] == "ok"
+    assert jobs_file.read_text(encoding="utf-8").startswith("{")
+    assert not jobs_file.read_text(encoding="utf-8").startswith("{not")
+
+
+def test_read_jobs_empty_when_corrupt_and_no_backup(tmp_path):
+    srv = _load_server()
+    jobs_file = tmp_path / "jobs.json"
+    jobs_file.write_text("{broken", encoding="utf-8")
+    with mock.patch.object(srv, "JOBS_FILE", jobs_file), mock.patch.object(
+        srv, "JOBS_LOCK_FILE", tmp_path / "jobs.json.lock"
+    ):
+        data = srv.read_jobs()
+    assert data == {"jobs": []}
 
 
 def test_app_js_connection_error_banner():

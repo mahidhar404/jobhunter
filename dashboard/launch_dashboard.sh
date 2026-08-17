@@ -68,6 +68,7 @@ PID_FILE="$ROOT/logs/dashboard_server.pid"
 LAUNCHER_PID_FILE="$ROOT/logs/dashboard_launcher.pid"
 UI_PID_FILE="$ROOT/logs/dashboard_chrome.pid"
 RESTART_FLAG="$ROOT/logs/dashboard_restart.flag"
+DASHBOARD_PORT_FILE="$ROOT/logs/dashboard_port"
 LOCK_DIR="$ROOT/logs/dashboard_launcher.lockdir"
 # Dedicated profile so we can quit this window without touching the user's
 # normal browsing profile (same idea as partyrock_chrome_profile/).
@@ -91,6 +92,70 @@ RESTARTING=0
 WE_OWN_LOCK=0
 
 mkdir -p "$ROOT/logs" "$UI_PROFILE"
+restore_dashboard_port_from_file
+
+# Prefer repo venv over bare system python (Desktop applet PATH can be thin).
+resolve_dashboard_python() {
+  local cand
+
+  cand="${JOB_HUNTER_DASHBOARD_PYTHON:-}"
+  if [[ -n "$cand" ]] && [[ -x "$cand" ]]; then
+    printf '%s\n' "$cand"
+    return 0
+  fi
+
+  for cand in \
+    "$ROOT/.venv/bin/python3" \
+    "$ROOT/skyvern_runtime/venv/bin/python3" \
+    "$ROOT/skyvern_runtime/venv/bin/python"; do
+    if [[ -x "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+    return 0
+  fi
+  return 1
+}
+
+remember_dashboard_port() {
+  echo "${DASHBOARD_PORT}" > "$DASHBOARD_PORT_FILE" 2>/dev/null || true
+}
+
+restore_dashboard_port_from_file() {
+  local saved=""
+  [[ -n "${JOBHUNTER_DASHBOARD_PORT:-}" ]] && return 0
+  [[ ! -f "$DASHBOARD_PORT_FILE" ]] && return 0
+  saved="$(tr -d '[:space:]' < "$DASHBOARD_PORT_FILE" 2>/dev/null || true)"
+  [[ "${saved}" =~ ^[0-9]+$ ]] || return 0
+  DASHBOARD_PORT="${saved}"
+  URL="http://127.0.0.1:${DASHBOARD_PORT}"
+}
+
+dashboard_port_candidates() {
+  if [[ -n "${JOBHUNTER_DASHBOARD_PORT:-}" ]]; then
+    echo "${JOBHUNTER_DASHBOARD_PORT}"
+  else
+    echo 8787 8788 8789 8790 8791 8792
+  fi
+}
+
+# Post-reboot the server may be on :8788+ while UI still points at :8787.
+sync_serving_dashboard_port() {
+  local p
+  for p in $(dashboard_port_candidates); do
+    if server_up_on_port "$p"; then
+      DASHBOARD_PORT="$p"
+      URL="http://127.0.0.1:${p}"
+      remember_dashboard_port
+      return 0
+    fi
+  done
+  return 1
+}
 
 listener_pid_on_port() {
   local port="${1:-$DASHBOARD_PORT}"
@@ -108,7 +173,10 @@ server_up_on_port() {
 
 server_up() {
   # Require the real ops shell — a bare TCP listener or proxy 200 is not enough.
-  server_up_on_port "$DASHBOARD_PORT"
+  if server_up_on_port "$DASHBOARD_PORT"; then
+    return 0
+  fi
+  sync_serving_dashboard_port
 }
 
 is_our_dashboard_server_pid() {
@@ -150,6 +218,7 @@ resolve_dashboard_port() {
     if server_up_on_port "$p"; then
       DASHBOARD_PORT="$p"
       URL="http://127.0.0.1:${p}"
+      remember_dashboard_port
       echo "dashboard already serving on :${p}"
       return 0
     fi
@@ -174,6 +243,7 @@ resolve_dashboard_port() {
     if port_is_bindable "$p"; then
       DASHBOARD_PORT="$p"
       URL="http://127.0.0.1:${p}"
+      remember_dashboard_port
       return 0
     fi
     echo "warn: port ${p} not bindable (hidden listener) — trying next" >&2
@@ -640,6 +710,12 @@ acquire_launcher_lock() {
     fi
     sleep 0.25
   done
+  restore_dashboard_port_from_file
+  if sync_serving_dashboard_port; then
+    echo "dashboard already serving on ${URL} — focusing UI (lock held by pid=${stale_pid:-unknown})"
+    open_dashboard_ui
+    exit 0
+  fi
   echo "could not acquire launcher lock; see $LOCK_DIR" >&2
   exit 1
 }
@@ -661,12 +737,18 @@ start_dashboard_server() {
   fi
 
   cd "$ROOT" || return 1
+  local py_bin
+  py_bin="$(resolve_dashboard_python || true)"
+  if [[ -z "${py_bin}" ]] || [[ ! -x "${py_bin}" ]]; then
+    echo "error: no python3 found (.venv, skyvern_runtime/venv, or PATH)" >&2
+    return 1
+  fi
   # No nohup: if the desktop applet / this wrapper is force-quit, the
   # background server should not quietly survive forever. Explicit UI quit
   # (header × / last window close / Cmd+Q → /api/shutdown) is the primary
   # stop path; idle heartbeat stall does not shut the server down.
   /usr/bin/env JOBHUNTER_DASHBOARD_PORT="${DASHBOARD_PORT}" \
-    python3 "$DASHBOARD_DIR/server.py" >> "$LOG_FILE" 2>&1 &
+    "${py_bin}" "$DASHBOARD_DIR/server.py" >> "$LOG_FILE" 2>&1 &
   SERVER_PID=$!
   STARTED_BY_US=1
   echo "$SERVER_PID" > "$PID_FILE"
@@ -679,6 +761,14 @@ start_dashboard_server() {
     fi
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
       echo "dashboard server exited before becoming ready; see $LOG_FILE" >&2
+      # Post-reboot: port race or stale listener — re-resolve and let caller retry.
+      if server_up; then
+        SERVER_PID="$(listener_pid)"
+        echo "recoverable: ops shell up on :${DASHBOARD_PORT} after early exit"
+        return 0
+      fi
+      wait_for_port_free "$DASHBOARD_PORT"
+      resolve_dashboard_port || true
       return 1
     fi
     sleep 0.25
@@ -706,6 +796,7 @@ wait_for_server_exit() {
       sleep 1
     done
     echo "dashboard pid=$wait_pid exited"
+    wait "$wait_pid" 2>/dev/null || true
   else
     echo "warn: could not resolve dashboard pid; not waiting" >&2
   fi
@@ -759,6 +850,7 @@ trap on_signal INT TERM HUP
 # If the server died but the Dock applet is still alive, upgrade to a full launch
 # so double-click always works (do not fail silently with exit 1).
 if [[ "$MODE" == "--focus-ui" ]]; then
+  restore_dashboard_port_from_file
   if server_up; then
     open_dashboard_ui
     exit 0
@@ -800,6 +892,7 @@ fi
 acquire_launcher_lock
 
 if [[ "$MODE" == "--restart" ]]; then
+  restore_dashboard_port_from_file
   echo "launch_dashboard.sh --restart: waiting for old server to release :${DASHBOARD_PORT}"
   RESTARTING=1
   wait_for_port_free
@@ -816,13 +909,19 @@ while true; do
       break
     fi
     local_start_attempts=$((local_start_attempts + 1))
-    if [[ "${RESTARTING}" -eq 1 ]] && [[ "${local_start_attempts}" -lt 5 ]]; then
-      echo "warn: restart start failed (attempt ${local_start_attempts}/5); retrying…" >&2
+    if [[ "${local_start_attempts}" -lt 5 ]]; then
+      echo "warn: dashboard start failed (attempt ${local_start_attempts}/5); retrying…" >&2
       sleep 0.5
       wait_for_port_free
       continue
     fi
     echo "dashboard server failed to start; giving up" >&2
+    # Race / foreign listener: if ops HTML is already served, treat as recoverable.
+    if sync_serving_dashboard_port; then
+      echo "recoverable: ops shell is up on ${URL} despite start errors — continuing"
+      open_dashboard_ui
+      exit 0
+    fi
     exit 1
   done
 
@@ -841,3 +940,5 @@ while true; do
   fi
   break
 done
+
+exit 0
