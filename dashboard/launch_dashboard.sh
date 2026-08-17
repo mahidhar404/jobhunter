@@ -61,7 +61,8 @@ set -euo pipefail
 # CHR2-009: resolve repo root from this script (no hardcoded absolute path).
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DASHBOARD_DIR="$ROOT/dashboard"
-URL="http://127.0.0.1:8787"
+DASHBOARD_PORT="${JOBHUNTER_DASHBOARD_PORT:-8787}"
+URL="http://127.0.0.1:${DASHBOARD_PORT}"
 LOG_FILE="$ROOT/logs/dashboard_server.out"
 PID_FILE="$ROOT/logs/dashboard_server.pid"
 LAUNCHER_PID_FILE="$ROOT/logs/dashboard_launcher.pid"
@@ -91,25 +92,110 @@ WE_OWN_LOCK=0
 
 mkdir -p "$ROOT/logs" "$UI_PROFILE"
 
+listener_pid_on_port() {
+  local port="${1:-$DASHBOARD_PORT}"
+  /usr/sbin/lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null | head -1 || true
+}
+
 listener_pid() {
-  /usr/sbin/lsof -nP -iTCP:8787 -sTCP:LISTEN -t 2>/dev/null | head -1 || true
+  listener_pid_on_port "$DASHBOARD_PORT"
+}
+
+server_up_on_port() {
+  local port="${1:-$DASHBOARD_PORT}"
+  curl -sf "http://127.0.0.1:${port}" 2>/dev/null | grep -q 'class="ops-shell"'
 }
 
 server_up() {
   # Require the real ops shell — a bare TCP listener or proxy 200 is not enough.
-  curl -sf "$URL" 2>/dev/null | grep -q 'class="ops-shell"'
+  server_up_on_port "$DASHBOARD_PORT"
+}
+
+is_our_dashboard_server_pid() {
+  local pid="${1:-}"
+  [[ -z "${pid}" ]] && return 1
+  /bin/ps -p "${pid}" -o command= 2>/dev/null | /usr/bin/grep -qF "${DASHBOARD_DIR}/server.py"
+}
+
+port_is_bindable() {
+  local port="${1:-}"
+  [[ -z "${port}" ]] && return 1
+  /usr/bin/env python3 - "$port" <<'PY' 2>/dev/null
+import socket, sys
+port = int(sys.argv[1])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(("127.0.0.1", port))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+PY
+}
+
+# Post-reboot: Cursor/MCP or a zombie server.py can hold :8787 without serving ops HTML.
+# Scan the default port range for a live dashboard, reclaim our stale listener, or pick a free port.
+resolve_dashboard_port() {
+  local preferred="${JOBHUNTER_DASHBOARD_PORT:-8787}"
+  local ports=()
+  local p lp
+
+  if [[ -n "${JOBHUNTER_DASHBOARD_PORT:-}" ]]; then
+    ports=("${preferred}")
+  else
+    ports=(8787 8788 8789 8790 8791 8792)
+  fi
+
+  for p in "${ports[@]}"; do
+    if server_up_on_port "$p"; then
+      DASHBOARD_PORT="$p"
+      URL="http://127.0.0.1:${p}"
+      echo "dashboard already serving on :${p}"
+      return 0
+    fi
+  done
+
+  for p in "${ports[@]}"; do
+    lp="$(listener_pid_on_port "$p")"
+    if [[ -n "${lp}" ]]; then
+      if is_our_dashboard_server_pid "$lp"; then
+        echo "stale dashboard listener pid=${lp} on :${p} (not serving ops HTML) — stopping"
+        kill "$lp" 2>/dev/null || true
+        wait_for_port_free "$p"
+      else
+        echo "warn: port ${p} held by foreign pid=${lp} (not job-hunter dashboard)" >&2
+        /bin/ps -p "${lp}" -o command= 2>/dev/null | sed 's/^/  /' >&2 || true
+        if [[ -n "${JOBHUNTER_DASHBOARD_PORT:-}" ]]; then
+          return 1
+        fi
+        continue
+      fi
+    fi
+    if port_is_bindable "$p"; then
+      DASHBOARD_PORT="$p"
+      URL="http://127.0.0.1:${p}"
+      return 0
+    fi
+    echo "warn: port ${p} not bindable (hidden listener) — trying next" >&2
+    if [[ -n "${JOBHUNTER_DASHBOARD_PORT:-}" ]]; then
+      return 1
+    fi
+  done
+  echo "error: no free dashboard port in ${ports[*]}" >&2
+  return 1
 }
 
 wait_for_port_free() {
-  # Used by --restart: old server is shutting down; wait for :8787 to clear.
+  # Used by --restart: old server is shutting down; wait for the active port to clear.
+  local port="${1:-$DASHBOARD_PORT}"
   local i
   for i in $(seq 1 60); do
-    if [[ -z "$(listener_pid)" ]]; then
+    if [[ -z "$(listener_pid_on_port "$port")" ]]; then
       return 0
     fi
     sleep 0.25
   done
-  echo "warn: port 8787 still busy after wait; continuing anyway" >&2
+  echo "warn: port ${port} still busy after wait; continuing anyway" >&2
   return 0
 }
 
@@ -458,9 +544,12 @@ open_dashboard_ui() {
   # daily Chrome (com.google.Chrome). Prefer CfT/Chromium only; fail loud.
   if [[ -z "${ui_bin}" ]] || [[ ! -x "${ui_bin}" ]]; then
     echo "warn: no Chrome-for-Testing/Chromium found for dashboard UI." >&2
-    echo "warn: falling back to default browser tab at ${URL}" >&2
+    echo "warn: falling back to Google Chrome tab at ${URL}" >&2
     echo "Fix: python3 -m playwright install chromium" >&2
     echo "Or:  JOB_HUNTER_UI_BROWSER=/path/to/Chrome-for-Testing-or-Chromium" >&2
+    if /usr/bin/open -a "Google Chrome" "${URL}/?jh_boot=$(date +%s)" >/dev/null 2>&1; then
+      return 0
+    fi
     /usr/bin/open "${URL}/?jh_boot=$(date +%s)" >/dev/null 2>&1 || true
     return 0
   fi
@@ -495,8 +584,11 @@ open_dashboard_ui() {
     fi
     sleep 0.25
   done
-  echo "warn: dashboard UI did not appear with expected profile" >&2
-  return 1
+  echo "warn: dashboard UI did not appear with expected profile — opening Chrome tab" >&2
+  /usr/bin/open -a "Google Chrome" "${URL}/?jh_boot=$(date +%s)" >/dev/null 2>&1 \
+    || /usr/bin/open "${URL}/?jh_boot=$(date +%s)" >/dev/null 2>&1 \
+    || true
+  return 0
 }
 
 release_launcher_lock() {
@@ -553,13 +645,18 @@ acquire_launcher_lock() {
 }
 
 start_dashboard_server() {
-  # Returns 0 when :8787 is serving; 1 on failure (caller may retry).
+  # Returns 0 when the dashboard port is serving; 1 on failure (caller may retry).
   STARTED_BY_US=0
   SERVER_PID=""
 
+  if ! resolve_dashboard_port; then
+    echo "dashboard port resolution failed; see logs above" >&2
+    return 1
+  fi
+
   if server_up; then
     SERVER_PID="$(listener_pid)"
-    echo "dashboard already running (pid=${SERVER_PID:-unknown})"
+    echo "dashboard already running (pid=${SERVER_PID:-unknown}) on :${DASHBOARD_PORT}"
     return 0
   fi
 
@@ -568,7 +665,8 @@ start_dashboard_server() {
   # background server should not quietly survive forever. Explicit UI quit
   # (header × / last window close / Cmd+Q → /api/shutdown) is the primary
   # stop path; idle heartbeat stall does not shut the server down.
-  /usr/bin/env python3 "$DASHBOARD_DIR/server.py" >> "$LOG_FILE" 2>&1 &
+  /usr/bin/env JOBHUNTER_DASHBOARD_PORT="${DASHBOARD_PORT}" \
+    python3 "$DASHBOARD_DIR/server.py" >> "$LOG_FILE" 2>&1 &
   SERVER_PID=$!
   STARTED_BY_US=1
   echo "$SERVER_PID" > "$PID_FILE"
@@ -702,7 +800,7 @@ fi
 acquire_launcher_lock
 
 if [[ "$MODE" == "--restart" ]]; then
-  echo "launch_dashboard.sh --restart: waiting for old server to release :8787"
+  echo "launch_dashboard.sh --restart: waiting for old server to release :${DASHBOARD_PORT}"
   RESTARTING=1
   wait_for_port_free
   rm -f "$RESTART_FLAG" 2>/dev/null || true
