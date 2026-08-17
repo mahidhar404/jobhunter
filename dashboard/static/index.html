@@ -59,13 +59,18 @@
   }
   * { box-sizing: border-box; }
   html {
+    /* 100% alone collapses to 0px in embedded browsers (Cursor Simple Browser,
+       vscode webview) whose iframe starts at 0 height — paints a blank black
+       page even though the DOM is loaded. min-height guarantees a paintable shell. */
     height: 100%;
+    min-height: max(100vh, 480px);
     margin: 0;
     background: var(--bg);
     color-scheme: dark;
   }
   body {
     height: 100%;
+    min-height: max(100vh, 480px);
     margin: 0;
     font-family: var(--sans);
     background: var(--bg);
@@ -586,6 +591,24 @@
 
   /* Scrollport for sticky reason headers — keep overflow on this node only. */
   .job-list { flex: 1; overflow-y: auto; min-height: 0; }
+  .list-boot-msg {
+    padding: 20px 12px;
+    text-align: center;
+    color: var(--text-mute);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+  }
+  #boot-error-bar {
+    flex-shrink: 0;
+    display: none;
+    padding: 8px 14px;
+    border-bottom: 1px solid #5a2020;
+    background: #1a0808;
+    color: #e05555;
+    font-size: 11px;
+    letter-spacing: 0.03em;
+  }
+  #boot-error-bar.visible { display: block; }
   .job-row {
     display: grid;
     grid-template-columns: 8px 1fr auto;
@@ -2039,6 +2062,8 @@
   </div>
 </header>
 
+<div id="boot-error-bar" role="alert"></div>
+
 <div id="status-bar" aria-live="polite">
   <span class="pulse" aria-hidden="true"></span>
   <span class="status-text" id="status-bar-text"></span>
@@ -2177,7 +2202,7 @@
       <span>No matches — clear filters</span>
       <button type="button" id="clear-filters-btn">Clear filters</button>
     </div>
-    <div class="job-list" id="job-list"></div>
+    <div class="job-list" id="job-list"><div class="list-boot-msg" id="list-boot-msg">Loading jobs…</div></div>
   </aside>
 
   <main class="pane dossier" id="dossier-pane">
@@ -2217,7 +2242,18 @@
   </div>
 </div>
 
-<script src="/job_sort.js"></script>
-<script src="/app.js"></script>
+<script>
+  window.__jhBootFailed = function (which) {
+    var bar = document.getElementById("boot-error-bar");
+    if (bar) {
+      bar.textContent = "Dashboard script failed to load (" + which + "). Check that the server is running on http://127.0.0.1:8787 and hard-refresh.";
+      bar.classList.add("visible");
+    }
+    var boot = document.getElementById("list-boot-msg");
+    if (boot) boot.textContent = "Scripts failed to load — see banner above.";
+  };
+</script>
+<script src="/job_sort.js" onerror="window.__jhBootFailed('job_sort.js')"></script>
+<script src="/app.js" onerror="window.__jhBootFailed('app.js')"></script>
 </body>
 </html>

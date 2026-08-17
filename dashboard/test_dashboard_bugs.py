@@ -534,6 +534,25 @@ def test_app_js_job_sort_fallbacks():
     assert "job_sort.js missing" in src
 
 
+def test_index_html_embedded_browser_boot():
+    """Zero-height embedded browsers must still paint; scripts must surface load errors."""
+    html = (HERE / "static" / "index.html").read_text(encoding="utf-8")
+    assert "min-height: max(100vh, 480px)" in html
+    assert 'id="list-boot-msg"' in html
+    assert "__jhBootFailed" in html
+    assert 'onerror="window.__jhBootFailed' in html
+
+
+def test_app_js_boot_render_and_auto_queue():
+    """First paint before poll completes; auto-jump to a non-empty queue section."""
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "list-boot-msg" in src
+    assert "maybeAutoSelectQueue" in src
+    boot = src.split("try {", 1)[1].split("} catch (bootErr)", 1)[0]
+    assert "render();" in boot
+    assert "poll();" in boot
+
+
 def test_cancel_bumps_fill_gen():
     """Cancel must invalidate in-flight fill/tailor threads (fill_gen bump)."""
     srv = _load_server()

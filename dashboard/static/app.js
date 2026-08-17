@@ -2026,6 +2026,7 @@ function renderDeletedReasonGroups(items) {
 function renderList() {
   const list = document.getElementById("job-list");
   if (!list) return;
+  document.getElementById("list-boot-msg")?.remove();
   populateSourceFilter();
   updateFiltersChrome();
   const visible = visibleJobs();
@@ -4212,6 +4213,30 @@ async function loadActivity() {
 }
 
 let lastJobsJSON = null;
+let _firstPollDone = false;
+
+/** If the active queue section is empty but another has work, jump there once. */
+function maybeAutoSelectQueue() {
+  if (_firstPollDone || !jobs.length) return;
+  if (visibleJobs().length) {
+    _firstPollDone = true;
+    return;
+  }
+  const buckets = ["stuck", "ready", "progress", "open", "applied"];
+  for (const q of buckets) {
+    if (q === queue) continue;
+    const prev = queue;
+    queue = q;
+    const n = visibleJobs().length;
+    queue = prev;
+    if (n > 0) {
+      setQueue(q);
+      _firstPollDone = true;
+      return;
+    }
+  }
+  _firstPollDone = true;
+}
 let _pollSeq = 0;
 
 
@@ -4529,6 +4554,7 @@ async function poll() {
     lastJobsJSON = newJobsJSON;
     jobs = data.jobs || [];
     checkReadyForReviewAnnouncements(jobs);
+    maybeAutoSelectQueue();
     // Keep unsaved inline edits intact if another job changes during polling.
     if (editingAppliedId) {
       setSyncState("live");
@@ -4729,22 +4755,33 @@ if (typeof postedAgeLabel !== "function") {
     return (approx ? "~" : "") + days + "d";
   };
 }
-setTimelineCollapsed(timelineCollapsed);
-poll();
-pollStatus();
-pollFillMetrics();
-loadCron();
-loadPruneSettings();
-renderDiscoverPopover(null);
-syncTestModeToggleUI();
-setInterval(poll, 3000);
-setInterval(pollStatus, 1500);
-setInterval(pollFillMetrics, 15000);
-setInterval(loadCron, 15000);
-window.addEventListener("online", () => {
+try {
+  setTimelineCollapsed(timelineCollapsed);
+  render();
   poll();
   pollStatus();
-});
+  pollFillMetrics();
+  loadCron();
+  loadPruneSettings();
+  renderDiscoverPopover(null);
+  syncTestModeToggleUI();
+  setInterval(poll, 3000);
+  setInterval(pollStatus, 1500);
+  setInterval(pollFillMetrics, 15000);
+  setInterval(loadCron, 15000);
+  window.addEventListener("online", () => {
+    poll();
+    pollStatus();
+  });
+} catch (bootErr) {
+  console.error("dashboard boot failed", bootErr);
+  const bar = document.getElementById("boot-error-bar");
+  if (bar) {
+    bar.textContent = `Dashboard failed to start (${bootErr}). Hard-refresh or restart the server.`;
+    bar.classList.add("visible");
+  }
+  setSyncState("error");
+}
 
 
 // ---------------------------------------------------------- UI lifecycle
