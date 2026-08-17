@@ -92,19 +92,26 @@
   }
   /* Flex shell — min-height on body alone is not enough when webviews clip flex
      children to 0; the shell must own the paintable column. */
+  /* Nuclear paint for embedded webviews (Cursor Simple Browser, vscode webview):
+     parent iframe often starts at 0 height — fixed shell + !important min-height
+     must paint even when html/body height:100% collapses. */
+  #ops-shell,
   .ops-shell {
+    position: fixed;
+    inset: 0;
     display: flex;
     flex-direction: column;
     flex: 1 1 auto;
-    min-height: 480px;
-    min-height: 100vh;
-    min-height: max(100vh, 480px);
-    min-height: max(100dvh, 100vh, 480px);
+    min-height: 480px !important;
+    min-height: max(100vh, 480px) !important;
+    min-height: max(100dvh, 100vh, 480px) !important;
     width: 100%;
+    overflow: auto;
     visibility: visible;
     opacity: 1;
     background: var(--bg);
     color: var(--text);
+    z-index: 1;
   }
   body:not(.jh-booted) .ops-shell {
     /* Until JS paints, never collapse below the static fallback band. */
@@ -123,6 +130,8 @@
     line-height: 1.4;
   }
   body.jh-booted .jh-static-fallback { display: none; }
+  /* Keep loading band visible until the real header has non-zero height. */
+  body:not(.jh-header-visible) .jh-static-fallback { display: block !important; }
   /* Explicit dark controls — Chrome --app= / Safari otherwise paint light UA chrome. */
   button, input, select, textarea {
     font: inherit;
@@ -1994,7 +2003,7 @@
   <strong>JOB HUNT · OPS</strong> — loading dashboard… If this line stays visible, hard-refresh or restart the server.
 </div>
 
-<div class="ops-shell" id="ops-shell" style="min-height:480px">
+<div class="ops-shell" id="ops-shell" style="position:fixed;inset:0;min-height:480px;display:flex;flex-direction:column">
 
 <header class="ops-header">
   <div class="brand">

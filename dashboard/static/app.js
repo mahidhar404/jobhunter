@@ -4823,6 +4823,8 @@ function isEmbeddedDashboardView() {
     if (window.self !== window.top) return true;
     const p = String(window.location?.protocol || "");
     if (p === "vscode-webview:" || p === "cursor:") return true;
+    const ua = String(navigator.userAgent || "");
+    if (/Cursor|vscode|Simple Browser/i.test(ua)) return true;
   } catch (_) { /* cross-origin parent */ return true; }
   return false;
 }
@@ -4831,6 +4833,11 @@ function isEmbeddedDashboardView() {
 function markDashboardPainted() {
   if (document.body?.classList.contains("jh-booted")) return;
   const paint = () => {
+    const header = document.querySelector(".ops-header");
+    const headerVisible = header && header.offsetHeight > 0;
+    if (headerVisible) {
+      document.body?.classList.add("jh-header-visible");
+    }
     document.body?.classList.add("jh-booted");
     document.getElementById("ops-shell")?.classList.add("jh-booted");
   };
