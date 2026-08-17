@@ -98,6 +98,46 @@
       "street": "4321 Riverside Avenue",
       "unit": "Apt 12F",
       "generated": true
+    },
+    {
+      "city": "Jersey City",
+      "state": "NJ",
+      "zip": "07378",
+      "street": "8466 Riverside Avenue",
+      "unit": "Unit 6C",
+      "generated": true
+    },
+    {
+      "city": "Aurora",
+      "state": "CO",
+      "zip": "80553",
+      "street": "2448 Parkview Drive",
+      "unit": "Unit 17D",
+      "generated": true
+    },
+    {
+      "city": "San Jose",
+      "state": "CA",
+      "zip": "90871",
+      "street": "7124 Oak Lane",
+      "unit": "Unit 2E",
+      "generated": true
+    },
+    {
+      "city": "Arlington",
+      "state": "VA",
+      "zip": "22504",
+      "street": "6493 Cedar Street",
+      "unit": "Apt 10E",
+      "generated": true
+    },
+    {
+      "city": "Plano",
+      "state": "TX",
+      "zip": "75804",
+      "street": "4074 Market Street",
+      "unit": "Apt 5F",
+      "generated": true
     }
   ]
 }
