@@ -509,6 +509,31 @@ def test_app_js_surfaces_applied_after_mark_submitted():
     assert "seq !== _pollSeq" in poll_chunk
 
 
+def test_launch_script_reloads_focused_ui_on_reuse():
+    """Blank CfT --app= tabs after server downtime must reload on focus."""
+    src = (HERE / "launch_dashboard.sh").read_text(encoding="utf-8")
+    assert 'grep -q \'class="ops-header"\'' in src
+    assert "reload_dashboard_ui_window" in src
+    open_chunk = src.split("open_dashboard_ui() {", 1)[1].split("\n}\n", 1)[0]
+    assert "focus_dashboard_ui" in open_chunk
+    assert "reload_dashboard_ui_window" in open_chunk
+
+
+def test_app_js_connection_error_banner():
+    """Poll failures surface a visible reconnect banner (not a silent blank shell)."""
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "showConnectionBanner" in src
+    assert "connection-error-bar" in src
+    assert 'addEventListener("online"' in src
+
+
+def test_app_js_job_sort_fallbacks():
+    """A failed job_sort.js load must not brick list render."""
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "typeof compareByPosted !== \"function\"" in src
+    assert "job_sort.js missing" in src
+
+
 def test_cancel_bumps_fill_gen():
     """Cancel must invalidate in-flight fill/tailor threads (fill_gen bump)."""
     srv = _load_server()

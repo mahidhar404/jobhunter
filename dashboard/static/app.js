@@ -838,7 +838,10 @@ const MISSION_REDUNDANT_STATUSES = new Set([
   "discovered", "stuck", "ready_for_review", "applied",
 ]);
 const TL_KEY = "ops-timeline-collapsed";
-let timelineCollapsed = localStorage.getItem(TL_KEY) === "1";
+let timelineCollapsed = false;
+try {
+  timelineCollapsed = localStorage.getItem(TL_KEY) === "1";
+} catch (_) { /* private mode / storage blocked */ }
 
 function migrateExtrasFromLegacy(s) {
   if (typeof s.extras === "string" && s.extras) return s.extras;
@@ -1073,24 +1076,32 @@ const LEGACY_SKIPPED_STATUSES = new Set([
   "skipped_manual", "skipped_duplicate", "skipped_contract", "skipped_easy_apply",
 ]);
 
+function storageGet(key, storage = localStorage) {
+  try { return storage.getItem(key); } catch (_) { return null; }
+}
+
+function storageSet(key, value, storage = localStorage) {
+  try { storage.setItem(key, value); } catch (_) { /* quota / blocked */ }
+}
+
 function loadTestModeSetting() {
-  const raw = localStorage.getItem(TEST_MODE_STORAGE_KEY);
+  const raw = storageGet(TEST_MODE_STORAGE_KEY);
   if (raw === null) return true;
   return raw !== "0" && raw !== "false";
 }
 
 function saveTestModeSetting(on) {
-  localStorage.setItem(TEST_MODE_STORAGE_KEY, on ? "1" : "0");
+  storageSet(TEST_MODE_STORAGE_KEY, on ? "1" : "0");
 }
 
 function loadPartyRockSetting() {
-  const raw = localStorage.getItem(PARTYROCK_STORAGE_KEY);
+  const raw = storageGet(PARTYROCK_STORAGE_KEY);
   if (raw === null) return true;
   return raw !== "0" && raw !== "false";
 }
 
 function savePartyRockSetting(on) {
-  localStorage.setItem(PARTYROCK_STORAGE_KEY, on ? "1" : "0");
+  storageSet(PARTYROCK_STORAGE_KEY, on ? "1" : "0");
 }
 
 function defaultDiscoverySourceMap() {
@@ -1814,6 +1825,45 @@ function setSyncState(state) {
   dot.classList.toggle("warn", state === "stale");
   dot.classList.toggle("err", state === "error");
   dot.title = state === "error" ? "Sync error" : state === "stale" ? "Sync stale" : "Sync live";
+  showConnectionBanner(state === "error");
+}
+
+/** Visible when /api/jobs is unreachable (server down or stale CfT error tab). */
+function showConnectionBanner(visible) {
+  let bar = document.getElementById("connection-error-bar");
+  if (!visible) {
+    bar?.remove();
+    return;
+  }
+  if (bar) return;
+  bar = document.createElement("div");
+  bar.id = "connection-error-bar";
+  bar.setAttribute("role", "alert");
+  bar.style.cssText = [
+    "flex-shrink:0",
+    "display:flex",
+    "align-items:center",
+    "justify-content:space-between",
+    "gap:12px",
+    "padding:8px 14px",
+    "border-bottom:1px solid #5a2020",
+    "background:#1a0808",
+    "color:#e05555",
+    "font-size:11px",
+    "letter-spacing:0.03em",
+  ].join(";");
+  bar.innerHTML = `<span>Dashboard can’t reach the server at <code style="font-family:var(--mono)">127.0.0.1:8787</code>. Retrying…</span>`
+    + `<button type="button" class="act" id="connection-retry-btn">Retry</button>`;
+  const header = document.querySelector(".ops-header");
+  if (header && header.parentNode) {
+    header.parentNode.insertBefore(bar, header.nextSibling);
+  } else {
+    document.body.prepend(bar);
+  }
+  document.getElementById("connection-retry-btn")?.addEventListener("click", () => {
+    poll();
+    pollStatus();
+  });
 }
 
 function renderSiblingPanel(job) {
@@ -4641,6 +4691,44 @@ async function saveCronSchedule() {
 
 
 bindOpsChrome();
+// job_sort.js should load first; fall back so a failed script tag doesn't brick render().
+if (typeof compareByPosted !== "function") {
+  console.error("job_sort.js missing — using posted-date sort fallbacks");
+  globalThis.compareByPosted = (a, b) => {
+    const at = Date.parse((a && (a.date_posted || a.date_posted_fallback)) || "") || 0;
+    const bt = Date.parse((b && (b.date_posted || b.date_posted_fallback)) || "") || 0;
+    return bt - at;
+  };
+}
+if (typeof datePostedSortKey !== "function") {
+  globalThis.datePostedSortKey = (job) => {
+    const t = Date.parse((job && (job.date_posted || job.date_posted_fallback)) || "");
+    return Number.isNaN(t) ? -Infinity : t;
+  };
+}
+if (typeof jobPostedDisplay !== "function") {
+  globalThis.jobPostedDisplay = (job) => {
+    const exact = job && job.date_posted;
+    if (exact != null && exact !== "") {
+      const t = Date.parse(exact);
+      if (!Number.isNaN(t)) return { time: t, iso: exact, approx: false };
+    }
+    const fb = job && job.date_posted_fallback;
+    if (fb != null && fb !== "") {
+      const t = Date.parse(fb);
+      if (!Number.isNaN(t)) return { time: t, iso: fb, approx: true };
+    }
+    return { time: null, iso: null, approx: false };
+  };
+}
+if (typeof postedAgeLabel !== "function") {
+  globalThis.postedAgeLabel = (job) => {
+    const { time, approx } = jobPostedDisplay(job);
+    if (time == null) return "—";
+    const days = Math.max(0, Math.floor((Date.now() - time) / 86400000));
+    return (approx ? "~" : "") + days + "d";
+  };
+}
 setTimelineCollapsed(timelineCollapsed);
 poll();
 pollStatus();
@@ -4653,6 +4741,10 @@ setInterval(poll, 3000);
 setInterval(pollStatus, 1500);
 setInterval(pollFillMetrics, 15000);
 setInterval(loadCron, 15000);
+window.addEventListener("online", () => {
+  poll();
+  pollStatus();
+});
 
 
 // ---------------------------------------------------------- UI lifecycle

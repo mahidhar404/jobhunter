@@ -96,7 +96,8 @@ listener_pid() {
 }
 
 server_up() {
-  curl -s -o /dev/null -w "%{http_code}" "$URL" 2>/dev/null | grep -q "200"
+  # Require the real ops shell — a bare TCP listener or proxy 200 is not enough.
+  curl -sf "$URL" 2>/dev/null | grep -q 'class="ops-header"'
 }
 
 wait_for_port_free() {
@@ -206,6 +207,33 @@ focus_dashboard_ui() {
       >/dev/null 2>&1 || true
   fi
   echo "focused dashboard UI pid=${pid}"
+  return 0
+}
+
+# Reload an existing dashboard --app window (e.g. after server restart or a prior
+# connection-error blank). Uses System Events on the main CfT PID — never
+# `tell application "Google Chrome for Testing"` (that spawns blank windows).
+reload_dashboard_ui_window() {
+  local pid="${1:-}"
+  if [[ -z "${pid}" ]]; then
+    pid="$(dashboard_chrome_main_pids | head -1 || true)"
+  fi
+  [[ -z "${pid}" ]] && return 0
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    return 0
+  fi
+  if ! server_up; then
+    echo "warn: skip dashboard UI reload — server not serving ops HTML" >&2
+    return 1
+  fi
+  /usr/bin/osascript -e \
+    "tell application \"System Events\"
+      set frontmost of first process whose unix id is ${pid} to true
+      delay 0.12
+      keystroke \"r\" using command down
+    end tell" \
+    >/dev/null 2>&1 || true
+  echo "reloaded dashboard UI pid=${pid}"
   return 0
 }
 
@@ -409,8 +437,11 @@ open_dashboard_ui() {
   # Single-instance: if the dedicated-profile --app window is alive, focus it
   # and return. Never re-exec the binary against the same user-data-dir — that
   # hits Chromium's singleton handoff and often opens a blank extra window.
-  # Refresh relies on the same reuse path (JS reloads in place).
+  # Refresh relies on the same reuse path (JS reloads in place). If the tab
+  # previously loaded while :8787 was down, CfT --app= shows a blank/dark error
+  # shell — reload after focus so a live server actually paints the ops UI.
   if focus_dashboard_ui; then
+    reload_dashboard_ui_window "$(cat "$UI_PID_FILE" 2>/dev/null || true)"
     return 0
   fi
 
@@ -446,7 +477,7 @@ open_dashboard_ui() {
     --disable-infobars \
     --hide-crash-restore-bubble \
     --disable-session-crashed-bubble \
-    --app="$URL/" \
+    --app="${URL}/?jh_boot=$(date +%s)" \
     >/dev/null 2>&1 &
   # The browser may fork; prefer pgrep over $! for the stable pid file.
   local existing _
