@@ -439,9 +439,12 @@ open_dashboard_ui() {
   # hits Chromium's singleton handoff and often opens a blank extra window.
   # Refresh relies on the same reuse path (JS reloads in place). If the tab
   # previously loaded while :8787 was down, CfT --app= shows a blank/dark error
-  # shell — reload after focus so a live server actually paints the ops UI.
+  # shell — hard-reload after focus so a live server paints the ops UI.
+  # app.js ignores beforeunload shutdown during Cmd+Shift+R (Desktop focus path).
   if focus_dashboard_ui; then
-    reload_dashboard_ui_window "$(cat "$UI_PID_FILE" 2>/dev/null || true)"
+    if server_up; then
+      reload_dashboard_ui_window "$(cat "$UI_PID_FILE" 2>/dev/null || true)"
+    fi
     return 0
   fi
 
@@ -454,11 +457,12 @@ open_dashboard_ui() {
   # CHR2-007: never fall back to Google Chrome.app — that hijacks Dock/Spotlight
   # daily Chrome (com.google.Chrome). Prefer CfT/Chromium only; fail loud.
   if [[ -z "${ui_bin}" ]] || [[ ! -x "${ui_bin}" ]]; then
-    echo "error: no Chrome-for-Testing/Chromium found for dashboard UI." >&2
-    echo "error: refusing Google Chrome.app fallback (Dock hijack class)." >&2
+    echo "warn: no Chrome-for-Testing/Chromium found for dashboard UI." >&2
+    echo "warn: falling back to default browser tab at ${URL}" >&2
     echo "Fix: python3 -m playwright install chromium" >&2
     echo "Or:  JOB_HUNTER_UI_BROWSER=/path/to/Chrome-for-Testing-or-Chromium" >&2
-    return 1
+    /usr/bin/open "${URL}/?jh_boot=$(date +%s)" >/dev/null 2>&1 || true
+    return 0
   fi
 
   # Direct binary + dedicated user-data-dir: separate process tree we can
@@ -522,6 +526,13 @@ acquire_launcher_lock() {
       echo "stale launcher lock (pid=${stale_pid}) — reclaiming"
       rm -rf "$LOCK_DIR" 2>/dev/null || true
       continue
+    fi
+    if [[ -n "${stale_pid}" ]] && kill -0 "${stale_pid}" 2>/dev/null; then
+      if ! /bin/ps -p "${stale_pid}" -o command= 2>/dev/null | /usr/bin/grep -q "launch_dashboard.sh"; then
+        echo "stale launcher lock (pid=${stale_pid} not launch_dashboard) — reclaiming"
+        rm -rf "$LOCK_DIR" 2>/dev/null || true
+        continue
+      fi
     fi
     # Another live launcher owns the stack.
     if [[ "$MODE" == "--restart" ]]; then
@@ -647,14 +658,32 @@ trap on_signal INT TERM HUP
 
 # Dock icon click while applet is already running (AppleScript `on reopen`):
 # focus/create the UI only — never take the launcher lock or tear down browsers.
+# If the server died but the Dock applet is still alive, upgrade to a full launch
+# so double-click always works (do not fail silently with exit 1).
 if [[ "$MODE" == "--focus-ui" ]]; then
   if server_up; then
     open_dashboard_ui
-  else
-    echo "dashboard server not up — start via Desktop app (full launch)" >&2
-    exit 1
+    exit 0
   fi
-  exit 0
+  # Server down: a primary launcher may still be exiting after crash/quit.
+  # Wait for lock release or server recovery before full launch.
+  echo "focus-ui: server not up — waiting for launcher lock, then full launch" >&2
+  for _ in $(seq 1 40); do
+    if server_up; then
+      open_dashboard_ui
+      exit 0
+    fi
+    stale_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+    if [[ -z "${stale_pid}" ]] || ! kill -0 "${stale_pid}" 2>/dev/null; then
+      break
+    fi
+    if [[ -n "${stale_pid}" ]] && ! /bin/ps -p "${stale_pid}" -o command= 2>/dev/null | /usr/bin/grep -q "launch_dashboard.sh"; then
+      rm -rf "$LOCK_DIR" 2>/dev/null || true
+      break
+    fi
+    sleep 0.25
+  done
+  exec "$0"
 fi
 
 # CHR3-005: raise fill CfT by PID (operator helper; never UI / PartyRock).

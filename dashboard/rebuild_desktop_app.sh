@@ -7,7 +7,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-APP_PATH="${1:-${HOME}/Desktop/Job Hunter Dashboard.app}"
+APP_PATH="${1:-${HOME}/Desktop/HxH.app}"
+APP_DISPLAY_NAME="${JOB_HUNTER_APP_NAME:-HxH}"
 APPLESCRIPT_SRC="${SCRIPT_DIR}/JobHunterDashboard.applescript"
 ICON="${SCRIPT_DIR}/JobHunterDashboard.icns"
 APP_ICON="${APP_PATH}/Contents/Resources/applet.icns"
@@ -42,6 +43,8 @@ fi
 # CFBundleIconName at it. That key wins over CFBundleIconFile, so applet.icns is
 # ignored until both the key and the catalog are gone.
 /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Set :CFBundleName ${APP_DISPLAY_NAME}" "${APP_PATH}/Contents/Info.plist" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :CFBundleName string ${APP_DISPLAY_NAME}" "${APP_PATH}/Contents/Info.plist"
 /bin/rm -f "${APP_PATH}/Contents/Resources/Assets.car"
 
 # Editing Resources breaks the ad-hoc seal osacompile applies.

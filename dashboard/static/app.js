@@ -4816,6 +4816,13 @@ const UI_CLIENT_STORAGE_KEY = "jobHunterDashboardClientId";
 const UI_HEARTBEAT_MS = 5000;
 let _dashboardRestartInFlight = false;
 let _dashboardQuitInFlight = false;
+// launch_dashboard.sh hard-reloads via Cmd+Shift+R; beforeunload must not kill the stack.
+let _dashboardHardReloadInFlight = false;
+window.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && String(e.key || "").toLowerCase() === "r") {
+    _dashboardHardReloadInFlight = true;
+  }
+}, true);
 
 /** Cursor Simple Browser / vscode webview previews — not a real dashboard quit target. */
 function isEmbeddedDashboardView() {
@@ -4885,7 +4892,8 @@ function beaconUiShutdown() {
   // must not POST /api/shutdown and kill the stack for the real Desktop window.
   if (!shouldRunUiLifecycle()) return;
   // Refresh owns cleanup via /api/restart; Quit already POSTed /api/shutdown.
-  if (_dashboardRestartInFlight || _dashboardQuitInFlight) return;
+  // Hard reload (Desktop focus path) must not tear down the server mid-refresh.
+  if (_dashboardRestartInFlight || _dashboardQuitInFlight || _dashboardHardReloadInFlight) return;
   const body = JSON.stringify({ client_id: dashboardClientId() });
   try {
     if (navigator.sendBeacon) {

@@ -32,7 +32,7 @@ on run
 		-- do shell script: exit status → errNum 1..255; signal kill → other codes
 		-- (often 1000+) with message "terminated due to receipt of a signal".
 		if errNum ≥ 1 and errNum ≤ 255 then
-			display alert "Job Hunter Dashboard failed" message errMsg as critical buttons {"OK"} default button "OK"
+			display alert "HxH Dashboard failed" message errMsg as critical buttons {"OK"} default button "OK"
 		end if
 		-- errNum 0 / signal / cancel: intentional quit — exit silently
 	end try
@@ -41,12 +41,12 @@ end run
 on reopen
 	-- Fired when the Dock icon is clicked while this applet is already running
 	-- (on run is blocked on the launcher). Focus/create the dashboard UI only.
-	-- CHR2-010: surface --focus-ui failures (do not swallow silently).
+	-- --focus-ui upgrades to a full launch when the server is down (CHR2-011).
 	try
 		do shell script "__JOB_HUNTER_ROOT__/dashboard/launch_dashboard.sh --focus-ui >> __JOB_HUNTER_ROOT__/logs/dashboard_launcher.out 2>&1"
 	on error errMsg number errNum
 		if errNum ≥ 1 and errNum ≤ 255 then
-			display alert "Job Hunter Dashboard focus failed" message errMsg as critical buttons {"OK"} default button "OK"
+			display alert "HxH Dashboard failed" message errMsg as critical buttons {"OK"} default button "OK"
 		end if
 	end try
 end reopen
