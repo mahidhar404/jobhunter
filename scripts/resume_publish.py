@@ -38,6 +38,15 @@ def ensure_file_id(job: dict, existing_ids: set[str] | None = None) -> str:
     existing = job.get("file_id")
     if existing:
         return str(existing)
+    published_name = Path(
+        str(job.get("resume_by_company_path") or "")
+    ).name
+    published_match = re.fullmatch(r".+_resume_(\d{5})\.pdf", published_name)
+    if published_match:
+        recovered = published_match.group(1)
+        if recovered not in set(existing_ids or ()):
+            job["file_id"] = recovered
+            return recovered
     taken = set(existing_ids or ())
     max_n = 10 ** FILE_ID_DIGITS
     for _ in range(200):
@@ -57,6 +66,29 @@ def by_company_resume_path(
     """Canonical dest: ``<Company>_resume_<ID>.pdf``."""
     dest_dir = Path(by_company_dir) if by_company_dir is not None else BY_COMPANY_DIR
     return dest_dir / f"{sanitize_filename(company)}_resume_{file_id}.pdf"
+
+
+def conventional_resume_filename(job: dict | None) -> str:
+    """Return the shared ``Company_resume_12345.pdf`` display/upload name.
+
+    Prefer the persisted published path because it is the exact stable filename
+    shown in Command Center. Fall back to deriving it only when the job already
+    has its persistent file id; this helper never allocates ids.
+    """
+    if not isinstance(job, dict):
+        return ""
+    published = str(job.get("resume_by_company_path") or "").strip()
+    if published:
+        name = Path(published).name
+        if re.fullmatch(r".+_resume_\d{5}\.pdf", name):
+            return name
+    file_id = str(job.get("file_id") or "").strip()
+    if not file_id:
+        return ""
+    return by_company_resume_path(
+        str(job.get("company") or "company"),
+        file_id,
+    ).name
 
 
 def _resolve_existing_dest(
@@ -108,16 +140,18 @@ def publish_resume_to_by_company(
     dest_dir.mkdir(parents=True, exist_ok=True)
     repo_root = Path(root) if root is not None else ROOT
 
+    file_id = ensure_file_id(job, existing_file_ids)
     dest = _resolve_existing_dest(job, dest_dir, root=repo_root)
-    if dest is None:
-        file_id = ensure_file_id(job, existing_file_ids)
+    conventional = bool(
+        dest is not None
+        and re.fullmatch(rf".+_resume_{re.escape(file_id)}\.pdf", dest.name)
+    )
+    if not conventional:
         co = company if company is not None else (job.get("company") or "company")
         dest = by_company_resume_path(co, file_id, by_company_dir=dest_dir)
-    else:
-        # Keep file_id in sync if missing but path encodes one.
-        ensure_file_id(job, existing_file_ids)
 
-    shutil.copyfile(src, dest)
+    if src.resolve() != dest.resolve():
+        shutil.copyfile(src, dest)
 
     try:
         rel = str(dest.resolve().relative_to(repo_root.resolve()))

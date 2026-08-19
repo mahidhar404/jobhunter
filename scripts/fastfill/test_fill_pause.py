@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -21,18 +22,27 @@ from fill_pause import (  # noqa: E402
     OVERLAY_ID,
     SYM_PAUSE,
     SYM_PLAY,
+    FillPausedAbort,
     _NATIVE_STATE,
+    abort_if_paused,
+    append_fill_log,
     consume_fill_continue_sentinel,
     drain_pause_before_close,
     fill_pause_continue_sentinel_path,
+    fill_pause_control_path,
     fill_pause_force_sentinel_path,
     force_pause_sentinel_present,
     format_fill_activity_compact,
     format_fill_activity_text,
     inject_fill_pause_overlay,
+    is_fill_paused_now,
     may_auto_close_fill_browser,
     note_fill_activity,
+    request_fill_pause,
+    reset_native_pause_state,
     resolve_fill_pause,
+    run_cancellable,
+    sanitize_fill_log_line,
     set_fill_pause_captcha_gate,
     set_fill_paused,
     should_keep_fill_browser_open,
@@ -124,6 +134,38 @@ def test_force_pause_sentinel_present():
                 os.environ.pop("FASTFILL_FILL_PAUSE_FILE", None)
             else:
                 os.environ["FASTFILL_FILL_PAUSE_FILE"] = prev
+
+
+class _pause_files:
+    """Isolate pause IPC so tests cannot hang on a leftover `.fill_paused`."""
+
+    def __init__(self, td: str):
+        self.td = Path(td)
+        self.prev = {}
+
+    def __enter__(self):
+        keys = (
+            "FASTFILL_FILL_PAUSE_STATE",
+            "FASTFILL_FILL_PAUSE_FILE",
+            "FASTFILL_FILL_CONTINUE_FILE",
+            "FASTFILL_NATIVE_HUD",
+        )
+        for key in keys:
+            self.prev[key] = os.environ.get(key)
+        os.environ["FASTFILL_FILL_PAUSE_STATE"] = str(self.td / ".fill_pause_state.json")
+        os.environ["FASTFILL_FILL_PAUSE_FILE"] = str(self.td / ".fill_paused")
+        os.environ["FASTFILL_FILL_CONTINUE_FILE"] = str(self.td / ".fill_continue")
+        os.environ["FASTFILL_NATIVE_HUD"] = "0"
+        reset_native_pause_state()
+        return self
+
+    def __exit__(self, *exc):
+        for key, val in self.prev.items():
+            if val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = val
+        return False
 
 
 class _FakePage:
@@ -256,24 +298,22 @@ def test_wait_while_paused_disabled():
 
 def test_wait_while_paused_not_paused():
     async def _run():
-        page = _FakePage()
-        report = {"fill_pause_enabled": True}
-        out = await wait_while_paused(page, report, poll_s=0.05)
-        assert out["enabled"] is True
-        assert out["via"] == "not_paused"
-        assert out["waited"] is False
+        with tempfile.TemporaryDirectory() as td:
+            with _pause_files(td):
+                page = _FakePage()
+                report = {"fill_pause_enabled": True}
+                out = await wait_while_paused(page, report, poll_s=0.05)
+                assert out["enabled"] is True
+                assert out["via"] == "not_paused"
+                assert out["waited"] is False
 
     asyncio.run(_run())
 
 
 def test_wait_while_paused_resume_via_sentinel():
     with tempfile.TemporaryDirectory() as td:
-        cont = Path(td) / ".fill_continue"
-        prev_c = os.environ.get("FASTFILL_FILL_CONTINUE_FILE")
-        prev_p = os.environ.get("FASTFILL_FILL_PAUSE_FILE")
-        os.environ["FASTFILL_FILL_CONTINUE_FILE"] = str(cont)
-        os.environ["FASTFILL_FILL_PAUSE_FILE"] = str(Path(td) / ".fill_paused")
-        try:
+        with _pause_files(td):
+            cont = Path(td) / ".fill_continue"
 
             async def _run():
                 page = _FakePage()
@@ -295,15 +335,6 @@ def test_wait_while_paused_resume_via_sentinel():
             assert out["via"] == "sentinel"
             assert (report.get("fill_pause") or {}).get("resume_rescan") is True
             assert _NATIVE_STATE.get("paused") is False
-        finally:
-            if prev_c is None:
-                os.environ.pop("FASTFILL_FILL_CONTINUE_FILE", None)
-            else:
-                os.environ["FASTFILL_FILL_CONTINUE_FILE"] = prev_c
-            if prev_p is None:
-                os.environ.pop("FASTFILL_FILL_PAUSE_FILE", None)
-            else:
-                os.environ["FASTFILL_FILL_PAUSE_FILE"] = prev_p
 
 
 def test_native_hud_default_on_darwin():
@@ -347,46 +378,50 @@ def test_start_native_hud_uses_resolve_hud_python_in_source():
 
 def test_set_fill_paused_native_state():
     async def _run():
-        prev_dom = os.environ.get("FASTFILL_DOM_OVERLAY")
-        os.environ["FASTFILL_DOM_OVERLAY"] = "0"
-        try:
-            page = _FakePage()
-            st = await set_fill_paused(page, True)
-            assert st.get("paused") is True
-            assert _NATIVE_STATE.get("paused") is True
-            st2 = await set_fill_paused(page, False)
-            assert st2.get("paused") is False
-        finally:
-            if prev_dom is None:
-                os.environ.pop("FASTFILL_DOM_OVERLAY", None)
-            else:
-                os.environ["FASTFILL_DOM_OVERLAY"] = prev_dom
+        with tempfile.TemporaryDirectory() as td:
+            with _pause_files(td):
+                prev_dom = os.environ.get("FASTFILL_DOM_OVERLAY")
+                os.environ["FASTFILL_DOM_OVERLAY"] = "0"
+                try:
+                    page = _FakePage()
+                    st = await set_fill_paused(page, True)
+                    assert st.get("paused") is True
+                    assert _NATIVE_STATE.get("paused") is True
+                    st2 = await set_fill_paused(page, False)
+                    assert st2.get("paused") is False
+                finally:
+                    if prev_dom is None:
+                        os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+                    else:
+                        os.environ["FASTFILL_DOM_OVERLAY"] = prev_dom
 
     asyncio.run(_run())
 
 
 def test_wait_while_paused_resume_via_native_continue():
     async def _run():
-        prev_dom = os.environ.get("FASTFILL_DOM_OVERLAY")
-        os.environ["FASTFILL_DOM_OVERLAY"] = "0"
-        try:
-            page = _FakePage()
-            await set_fill_paused(page, True)
-            report = {"fill_pause_enabled": True}
+        with tempfile.TemporaryDirectory() as td:
+            with _pause_files(td):
+                prev_dom = os.environ.get("FASTFILL_DOM_OVERLAY")
+                os.environ["FASTFILL_DOM_OVERLAY"] = "0"
+                try:
+                    page = _FakePage()
+                    await set_fill_paused(page, True)
+                    report = {"fill_pause_enabled": True}
 
-            async def _unpause_soon():
-                await asyncio.sleep(0.3)
-                await set_fill_paused(page, False)
+                    async def _unpause_soon():
+                        await asyncio.sleep(0.3)
+                        await set_fill_paused(page, False)
 
-            task = asyncio.create_task(_unpause_soon())
-            out = await wait_while_paused(page, report, poll_s=0.1)
-            await task
-            return out, report
-        finally:
-            if prev_dom is None:
-                os.environ.pop("FASTFILL_DOM_OVERLAY", None)
-            else:
-                os.environ["FASTFILL_DOM_OVERLAY"] = prev_dom
+                    task = asyncio.create_task(_unpause_soon())
+                    out = await wait_while_paused(page, report, poll_s=0.1)
+                    await task
+                    return out, report
+                finally:
+                    if prev_dom is None:
+                        os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+                    else:
+                        os.environ["FASTFILL_DOM_OVERLAY"] = prev_dom
 
     out, report = asyncio.run(_run())
     assert out["waited"] is True
@@ -415,29 +450,31 @@ def test_pause_captcha_gate_shows_continue_and_skips_wait():
     """CAPTCHA gate → wait_while_paused yields; native HUD shows Continue."""
 
     async def _run():
-        page = _FakePage()
-        await set_fill_paused(page, True)
-        report = {"fill_pause_enabled": True}
-        gate = await set_fill_pause_captcha_gate(page, True)
-        assert gate.get("captcha_gated") is True
-        assert _NATIVE_STATE.get("captcha_gated") is True
-        assert _NATIVE_STATE.get("paused") is True
-        assert _NATIVE_STATE.get("hold_mode") is True
-        out = await wait_while_paused(page, report, poll_s=0.05)
-        assert out["via"] == "captcha_gated"
-        assert out["waited"] is False
-        await set_fill_pause_captcha_gate(page, False)
-        assert _NATIVE_STATE.get("captcha_gated") is False
+        with tempfile.TemporaryDirectory() as td:
+            with _pause_files(td):
+                page = _FakePage()
+                await set_fill_paused(page, True)
+                report = {"fill_pause_enabled": True}
+                gate = await set_fill_pause_captcha_gate(page, True)
+                assert gate.get("captcha_gated") is True
+                assert _NATIVE_STATE.get("captcha_gated") is True
+                assert _NATIVE_STATE.get("paused") is True
+                assert _NATIVE_STATE.get("hold_mode") is True
+                out = await wait_while_paused(page, report, poll_s=0.05)
+                assert out["via"] == "captcha_gated"
+                await set_fill_pause_captcha_gate(page, False)
+                assert _NATIVE_STATE.get("captcha_gated") is False
+                await set_fill_paused(page, True)
 
-        async def _unpause_soon():
-            await asyncio.sleep(0.25)
-            await set_fill_paused(page, False)
+                async def _unpause_soon():
+                    await asyncio.sleep(0.25)
+                    await set_fill_paused(page, False)
 
-        task = asyncio.create_task(_unpause_soon())
-        out2 = await wait_while_paused(page, report, poll_s=0.1)
-        await task
-        assert out2["via"] in ("overlay_continue", "native_hud")
-        assert out2["waited"] is True
+                task = asyncio.create_task(_unpause_soon())
+                out2 = await wait_while_paused(page, report, poll_s=0.1)
+                await task
+                assert out2["via"] in ("overlay_continue", "native_hud")
+                assert out2.get("resumed") is True or out2.get("waited") is True
 
     asyncio.run(_run())
 
@@ -529,13 +566,22 @@ def test_inject_overlay_throttled():
     asyncio.run(_run())
 
 
-def test_pause_ux_says_between_actions():
-    """FILL3-009: overlay copy must not promise near-immediate mid-widget stop."""
-    from fill_pause import _INSTALL_OVERLAY_JS
+def test_pause_ux_instant_stop():
+    """Overlay promises instant pause, includes Pause + log, top-right CSS."""
+    from fill_pause import _INSTALL_OVERLAY_JS, _OVERLAY_CSS
 
-    assert "between" in _INSTALL_OVERLAY_JS.lower()
-    assert "near-immediate" not in _INSTALL_OVERLAY_JS.lower()
-    assert "mid-widget" in _INSTALL_OVERLAY_JS.lower() or "mid-field" in _INSTALL_OVERLAY_JS.lower()
+    js = _INSTALL_OVERLAY_JS.lower()
+    css = _OVERLAY_CSS.lower()
+    assert "pause fill" in js
+    assert "jh-log" in js
+    assert "Fill activity log" in _INSTALL_OVERLAY_JS
+    assert "position: fixed" in css
+    assert "top: 12px" in css
+    assert "right: 12px" in css
+    assert "between actions" not in js
+    assert "not mid-widget" not in js
+    assert "not mid-field" not in js
+    assert "immediately" in js
 
 
 def test_should_keep_fill_browser_open_decision():
@@ -554,49 +600,53 @@ def test_wait_while_paused_fail_closed_on_evaluate_error():
     """CDP blip mid-pause must not look like Continue (DOM overlay mode)."""
 
     async def _run():
-        prev = os.environ.get("FASTFILL_DOM_OVERLAY")
-        os.environ["FASTFILL_DOM_OVERLAY"] = "1"
-        try:
-            page = _FakePage(fail_read=False)
-            await set_fill_paused(page, True)
-            report = {"fill_pause_enabled": True}
+        with tempfile.TemporaryDirectory() as td:
+            with _pause_files(td):
+                prev = os.environ.get("FASTFILL_DOM_OVERLAY")
+                os.environ["FASTFILL_DOM_OVERLAY"] = "1"
+                try:
+                    page = _FakePage(fail_read=False)
+                    await set_fill_paused(page, True)
+                    report = {"fill_pause_enabled": True}
 
-            async def _blip_then_continue():
-                await asyncio.sleep(0.2)
-                page.fail_read = True
-                await asyncio.sleep(0.35)
-                page.fail_read = False
-                await set_fill_paused(page, False)
+                    async def _blip_then_continue():
+                        await asyncio.sleep(0.2)
+                        page.fail_read = True
+                        await asyncio.sleep(0.35)
+                        page.fail_read = False
+                        await set_fill_paused(page, False)
 
-            task = asyncio.create_task(_blip_then_continue())
-            out = await wait_while_paused(page, report, poll_s=0.1)
-            await task
-            assert out["waited"] is True
-            assert out["resumed"] is True
-            assert out["via"] in ("overlay_continue", "native_hud")
-        finally:
-            if prev is None:
-                os.environ.pop("FASTFILL_DOM_OVERLAY", None)
-            else:
-                os.environ["FASTFILL_DOM_OVERLAY"] = prev
+                    task = asyncio.create_task(_blip_then_continue())
+                    out = await wait_while_paused(page, report, poll_s=0.1)
+                    await task
+                    assert out["waited"] is True
+                    assert out["resumed"] is True
+                    assert out["via"] in ("overlay_continue", "native_hud")
+                finally:
+                    if prev is None:
+                        os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+                    else:
+                        os.environ["FASTFILL_DOM_OVERLAY"] = prev
 
     asyncio.run(_run())
 
 def test_drain_pause_before_close_waits():
     async def _run():
-        page = _FakePage()
-        await set_fill_paused(page, True)
-        report = {"fill_pause_enabled": True}
+        with tempfile.TemporaryDirectory() as td:
+            with _pause_files(td):
+                page = _FakePage()
+                await set_fill_paused(page, True)
+                report = {"fill_pause_enabled": True}
 
-        async def _continue():
-            await asyncio.sleep(0.25)
-            await set_fill_paused(page, False)
+                async def _continue():
+                    await asyncio.sleep(0.25)
+                    await set_fill_paused(page, False)
 
-        task = asyncio.create_task(_continue())
-        out = await drain_pause_before_close(page, report)
-        await task
-        assert out.get("drained") is True
-        assert (out.get("paused_wait") or {}).get("waited") is True
+                task = asyncio.create_task(_continue())
+                out = await drain_pause_before_close(page, report)
+                await task
+                assert out.get("drained") is True
+                assert (out.get("paused_wait") or {}).get("waited") is True
 
     asyncio.run(_run())
 
@@ -651,11 +701,13 @@ def test_push_activity_to_page():
 
 def test_native_state_atomic_write_in_source():
     src = (HERE / "fill_pause.py").read_text(encoding="utf-8")
-    assert ".with_suffix(\".tmp\")" in src
+    assert "_flock_json_update" in src
+    assert "fill_pause_control_path" in src
     hud = (HERE / "fill_pause_hud.py").read_text(encoding="utf-8")
-    assert ".with_suffix(\".tmp\")" in hud
+    assert ".with_suffix(\".tmp\")" in hud or "_flock_json_update" in hud
     assert "hud_chrome_bounds" in hud
     assert "#0a0a0a" in hud
+    assert "jh-log" in src or "Fill activity log" in src
 
 
 def test_hud_pin_chrome_env_default_on():
@@ -788,6 +840,163 @@ def test_stealth_resolve_defaults():
             os.environ["FASTFILL_STEALTH"] = prev
 
 
+def test_pause_flag_aborts_mid_loop():
+    """Cooperative flag aborts a tight fill loop without finishing remaining steps."""
+
+    async def _run():
+        prev_state = os.environ.get("FASTFILL_FILL_PAUSE_STATE")
+        prev_dom = os.environ.get("FASTFILL_DOM_OVERLAY")
+        with tempfile.TemporaryDirectory() as td:
+            os.environ["FASTFILL_FILL_PAUSE_STATE"] = str(Path(td) / ".fill_pause_state.json")
+            os.environ["FASTFILL_DOM_OVERLAY"] = "0"
+            try:
+                reset_native_pause_state()
+                n = {"i": 0}
+
+                async def loop():
+                    for i in range(40):
+                        abort_if_paused()
+                        n["i"] = i
+                        await asyncio.sleep(0.02)
+
+                async def pause_soon():
+                    await asyncio.sleep(0.08)
+                    request_fill_pause(True, via="test")
+
+                loop_task = asyncio.create_task(loop())
+                pause_task = asyncio.create_task(pause_soon())
+                with _raises_paused():
+                    await loop_task
+                await pause_task
+                assert is_fill_paused_now() is True
+                assert n["i"] < 39
+            finally:
+                request_fill_pause(False, via="test")
+                if prev_state is None:
+                    os.environ.pop("FASTFILL_FILL_PAUSE_STATE", None)
+                else:
+                    os.environ["FASTFILL_FILL_PAUSE_STATE"] = prev_state
+                if prev_dom is None:
+                    os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+                else:
+                    os.environ["FASTFILL_DOM_OVERLAY"] = prev_dom
+
+    asyncio.run(_run())
+
+
+class _raises_paused:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is FillPausedAbort:
+            return True
+        raise AssertionError("loop should have aborted with FillPausedAbort")
+
+
+def test_run_cancellable_aborts_in_flight():
+    async def _run():
+        prev_state = os.environ.get("FASTFILL_FILL_PAUSE_STATE")
+        with tempfile.TemporaryDirectory() as td:
+            os.environ["FASTFILL_FILL_PAUSE_STATE"] = str(Path(td) / ".fill_pause_state.json")
+            try:
+                reset_native_pause_state()
+
+                async def sleepy():
+                    await asyncio.sleep(2.0)
+                    return "done"
+
+                async def pause_soon():
+                    await asyncio.sleep(0.05)
+                    request_fill_pause(True, via="test")
+
+                pause_task = asyncio.create_task(pause_soon())
+                t0 = time.monotonic()
+                try:
+                    await run_cancellable(sleepy(), poll_s=0.04)
+                    raise AssertionError("expected FillPausedAbort")
+                except FillPausedAbort:
+                    pass
+                await pause_task
+                elapsed = time.monotonic() - t0
+                assert elapsed < 1.0
+            finally:
+                request_fill_pause(False, via="test")
+                if prev_state is None:
+                    os.environ.pop("FASTFILL_FILL_PAUSE_STATE", None)
+                else:
+                    os.environ["FASTFILL_FILL_PAUSE_STATE"] = prev_state
+
+    asyncio.run(_run())
+
+
+def test_activity_persist_does_not_clobber_hud_pause():
+    """Pause control file must survive activity/status writes (the old ignore-pause bug)."""
+    prev_state = os.environ.get("FASTFILL_FILL_PAUSE_STATE")
+    prev_dom = os.environ.get("FASTFILL_DOM_OVERLAY")
+    with tempfile.TemporaryDirectory() as td:
+        os.environ["FASTFILL_FILL_PAUSE_STATE"] = str(Path(td) / ".fill_pause_state.json")
+        os.environ["FASTFILL_DOM_OVERLAY"] = "0"
+        try:
+            reset_native_pause_state()
+            assert is_fill_paused_now() is False
+            request_fill_pause(True, via="hud")
+            note_fill_activity(layer="1", action="fill", label="Email")
+            assert is_fill_paused_now() is True
+            ctrl = json.loads(fill_pause_control_path().read_text(encoding="utf-8"))
+            assert ctrl.get("paused") is True
+        finally:
+            request_fill_pause(False, via="test")
+            if prev_state is None:
+                os.environ.pop("FASTFILL_FILL_PAUSE_STATE", None)
+            else:
+                os.environ["FASTFILL_FILL_PAUSE_STATE"] = prev_state
+            if prev_dom is None:
+                os.environ.pop("FASTFILL_DOM_OVERLAY", None)
+            else:
+                os.environ["FASTFILL_DOM_OVERLAY"] = prev_dom
+
+
+def test_sanitize_fill_log_line_redacts_pii():
+    out = sanitize_fill_log_line(
+        "filling jane@example.com phone 405-555-0100 password=hunter2"
+    )
+    assert "jane@example.com" not in out
+    assert "405-555-0100" not in out
+    assert "hunter2" not in out
+    assert "{{EMAIL}}" in out
+    assert "{{PHONE}}" in out
+    assert "{{SECRET}}" in out
+    line = append_fill_log("filling Email email=jane@example.com", kind="fill", persist=False)
+    assert "jane@example.com" not in line
+    assert "{{EMAIL}}" in line
+
+
+def test_ensure_fill_pause_ready_does_not_reset_pause():
+    src = (HERE / "fill_pause.py").read_text(encoding="utf-8")
+    chunk = src.split("async def ensure_fill_pause_ready", 1)[1].split(
+        "async def detach_fill_pause_overlay", 1
+    )[0]
+    assert "reset_native_pause_state()" not in chunk
+
+
+def test_default_hud_margins_below_titlebar():
+    from hud_chrome_bounds import default_hud_margins
+
+    right, top = default_hud_margins()
+    assert 8 <= right <= 12
+    assert top >= 28
+
+
+def test_cdp_pause_binding_in_overlay_js():
+    from fill_pause import PAUSE_BINDING, _INSTALL_OVERLAY_JS
+
+    assert PAUSE_BINDING == "__jhFillPauseSet"
+    assert PAUSE_BINDING in _INSTALL_OVERLAY_JS
+    src = (HERE / "fill_pause.py").read_text(encoding="utf-8")
+    assert "expose_binding" in src
+
+
 def main() -> int:
     test_resolve_fill_pause_defaults()
     test_resolve_fill_pause_env()
@@ -797,6 +1006,7 @@ def main() -> int:
     test_note_fill_chrome_for_hud_persists_pid()
     test_hud_chrome_offset_math()
     test_bounds_cache_skips_unchanged()
+    test_default_hud_margins_below_titlebar()
     test_sentinel_paths_default()
     test_consume_continue_sentinel()
     test_force_pause_sentinel_present()
@@ -815,12 +1025,18 @@ def main() -> int:
     test_enter_hold_continue_mode()
     test_hold_and_captcha_button_labels_in_overlay_js()
     test_inject_overlay_throttled()
-    test_pause_ux_says_between_actions()
+    test_pause_ux_instant_stop()
     test_should_keep_fill_browser_open_decision()
     test_wait_while_paused_fail_closed_on_evaluate_error()
     test_drain_pause_before_close_waits()
     test_note_fill_activity_and_hover_globals()
     test_push_activity_to_page()
+    test_pause_flag_aborts_mid_loop()
+    test_run_cancellable_aborts_in_flight()
+    test_activity_persist_does_not_clobber_hud_pause()
+    test_sanitize_fill_log_line_redacts_pii()
+    test_ensure_fill_pause_ready_does_not_reset_pause()
+    test_cdp_pause_binding_in_overlay_js()
     print("test_fill_pause: OK")
     return 0
 

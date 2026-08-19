@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -28,6 +29,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).parent.parent
+DASHBOARD_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(DASHBOARD_DIR))
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts" / "fastfill"))
 from partyrock_config import (  # noqa: E402
@@ -35,7 +38,10 @@ from partyrock_config import (  # noqa: E402
     partyrock_mode_label,
     partyrock_url,
 )
-from partyrock_tabs import close_job_partyrock_tab  # noqa: E402
+from partyrock_tabs import (  # noqa: E402
+    close_idle_partyrock_tabs,
+    close_job_partyrock_tab,
+)
 from chrome_for_testing import (  # noqa: E402
     ensure_partyrock_browser_direct,
 )
@@ -49,6 +55,8 @@ import agent_runner  # noqa: E402
 import approvals_store  # noqa: E402
 import run_guard  # noqa: E402
 import scheduler as scheduler_mod  # noqa: E402
+from stats_aggregate import aggregate_stats  # noqa: E402
+from copy_kit import build_copy_kit  # noqa: E402
 from apply_urls import normalize_url  # noqa: E402
 from blocked_urls import (  # noqa: E402
     block_deleted_job,
@@ -56,8 +64,20 @@ from blocked_urls import (  # noqa: E402
     is_url_blocked,
     unblock_job,
 )
-from resume_publish import publish_resume_to_by_company  # noqa: E402
-from jobs_lock import backup_jobs_file  # noqa: E402
+from resume_publish import (  # noqa: E402
+    conventional_resume_filename,
+    publish_resume_to_by_company,
+)
+from jobs_lock import (  # noqa: E402
+    JobsWriteRefused,
+    backup_jobs_file,
+    jobs_list_count,
+    locked_jobs_for_write as _jl_locked_jobs_for_write,
+    refuse_jobs_collapse,
+)
+import jobs_lock as _jobs_lock_mod  # noqa: E402
+from text_normalize import stamp_company_key, backfill_company_keys  # noqa: E402
+
 JOBS_FILE = ROOT / "jobs.json"
 # Same lock file scripts/jobs_lock.py uses - update_job.py and
 # write_discovered_jobs.py run as separate OS processes with no visibility
@@ -66,6 +86,9 @@ JOBS_FILE = ROOT / "jobs.json"
 # vice versa). _lock still serializes this process's own threads; this
 # additionally guards against every other process that touches the file.
 JOBS_LOCK_FILE = JOBS_FILE.with_suffix(".json.lock")
+# Keep module paths aligned so flock + RMW hit the same files as scripts/.
+_jobs_lock_mod.JOBS_FILE = JOBS_FILE
+_jobs_lock_mod.LOCK_FILE = JOBS_LOCK_FILE
 PROFILE_FILE = ROOT / "profile.json"
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -106,7 +129,9 @@ PRUNE_REASON_CODES = (
     "clearance_or_intel",
     "excessive_yoe",
     "citizenship_or_greencard",
+    "stale_listing",
 )
+STALE_LISTING_MAX_AGE_DAYS = 10
 PRUNE_INTERVALS_S = (0, 300, 900, 3600, 86400)
 # Per-source progress for crash/quit resume (under logs/ — gitignored).
 DISCOVERY_CHECKPOINT_FILE = ROOT / "logs" / "discovery_checkpoint.json"
@@ -114,6 +139,32 @@ SCOUT_TIMEOUT_S = 1500  # raised alongside SEARCH_TERMS growing from 6 to 14 ter
 TAILOR_SCRIPT = ROOT / "scripts" / "tailor_resume.py"
 RESUMES_DIR = ROOT / "resumes"
 TAILOR_TIMEOUT_S = 700
+RESUME_LATEX_MAX_CHARS = 1_000_000
+RESUME_LATEX_SAMPLE = r"""\documentclass[10pt]{article}
+\usepackage[margin=0.75in]{geometry}
+\usepackage{setspace}
+\setstretch{1.10}
+\pagestyle{empty}
+
+\begin{document}
+\section*{Candidate Name}
+City, ST \textbar{} candidate@example.com \textbar{} (555) 010-0000
+
+\section*{Summary}
+Data and machine learning professional focused on reliable, measurable systems.
+
+\section*{Experience}
+\textbf{Sample Company} \hfill 2023--Present\\
+\textit{Data Scientist}
+\begin{itemize}
+  \item Built a production analytics workflow and documented measurable results.
+  \item Partnered with engineering and product teams to improve data quality.
+\end{itemize}
+
+\section*{Skills}
+Python, SQL, machine learning, data pipelines, cloud platforms
+\end{document}
+"""
 INBOUND_MEDIA_DIR = Path.home() / ".openclaw" / "media" / "inbound"
 INBOUND_RESUME_MAX_AGE_S = 7 * 24 * 3600
 ATS_NOTES_DIR = ROOT / "ats_notes"
@@ -128,7 +179,8 @@ DUMMY_FILL_HYBRID_TIMEOUT_S = 1800
 # After hold_review begins, wait this long before treating as abandoned.
 DUMMY_FILL_HOLD_GRACE_S = 7 * 24 * 3600  # effectively until Cancel / browser close
 # User/terminal decisions the Start/fill daemon must never clobber.
-# `cancelled` is only a brief abort signal during Cancel→Open reset.
+# `cancelled` is a legacy holding-pen status (migrated to Open). Live Cancel
+# parks in-queue via fill_gen + ``_park_job_after_cancel`` (not this set).
 # Legacy skipped_* remain until triage migration maps them to deleted.
 FILL_ABORT_STATUSES = frozenset({
     "cancelled",
@@ -140,8 +192,8 @@ FILL_ABORT_STATUSES = frozenset({
     "applied",
 })
 # Per-job fill generation: bumped on Start and on Cancel/Delete/Skip/Mark-applied
-# so a pipeline thread that captured an older gen cannot clobber discovered
-# after Cancel→Open (discovered is not in FILL_ABORT_STATUSES).
+# so a pipeline thread that captured an older gen cannot clobber the parked
+# status after Cancel (parked statuses are not in FILL_ABORT_STATUSES).
 _fill_run_ctx: contextvars.ContextVar[tuple[str, int] | None] = contextvars.ContextVar(
     "_fill_run_ctx", default=None
 )
@@ -165,12 +217,72 @@ def _bump_job_fill_gen_locked(job: dict) -> int:
     return job["fill_gen"]
 
 
-def _fill_run_stale(job_id: str) -> bool:
-    """True when the current thread's captured fill_gen no longer matches the job."""
+def _fill_run_stale(job_id: str, *, fill_gen: int | None = None) -> bool:
+    """True when the current thread's captured fill_gen no longer matches the job.
+
+    Pass ``fill_gen`` when the caller already holds ``_lock`` / the jobs write
+    flock and has the job dict loaded — ``_job_fill_gen`` re-acquires ``_lock``
+    and takes a shared flock on a second fd, which deadlocks (observed live
+    after tectonic: status stuck at "Converting resume to PDF…", PDF on disk,
+    fill never starts).
+    """
     ctx = _fill_run_ctx.get()
     if ctx is None or ctx[0] != job_id:
         return False
-    return _job_fill_gen(job_id) != ctx[1]
+    live = int(fill_gen) if fill_gen is not None else _job_fill_gen(job_id)
+    return live != ctx[1]
+
+
+def _persist_compiled_resume_after_tectonic(
+    job_id: str,
+    *,
+    resume_pdf: Path,
+    compile_ok: bool,
+    compile_exit: int = 0,
+    compile_log: Path | str | None = None,
+    resume_only: bool = False,
+) -> None:
+    """Post-tectonic jobs.json handoff under ``_lock`` + EX flock.
+
+    Intended lock order: ``_lock`` then ``locked_jobs_for_write``. Stale-gen
+    checks MUST pass ``fill_gen=`` from the in-lock job dict — never call bare
+    ``_fill_run_stale(job_id)`` here (non-reentrant ``_lock`` self-deadlock).
+    """
+    log_name = Path(compile_log).name if compile_log else "tectonic.log"
+    with _lock:
+        with locked_jobs_for_write() as data:
+            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+            if job is None or job.get("status") in FILL_ABORT_STATUSES:
+                return
+            # fill_gen from locked job — never bare _fill_run_stale(job_id).
+            if _fill_run_stale(job_id, fill_gen=int(job.get("fill_gen") or 0)):
+                return
+            if compile_ok and resume_pdf.exists():
+                job["resume_path"] = str(resume_pdf.relative_to(ROOT))
+                sync_job_resume_on_disk(job)
+                job["question"] = None
+                if resume_only:
+                    # Stay in tailoring until the pipeline parks on resume_ready.
+                    job["status_detail"] = (
+                        "Resume tailored and compiled."
+                        if compile_exit == 0
+                        else "Resume PDF fixed after tectonic failure."
+                    )
+                else:
+                    job["status"] = "navigating"
+                    job["status_detail"] = (
+                        "Resume tailored and compiled. Preparing fill…"
+                        if compile_exit == 0
+                        else "Resume PDF fixed after tectonic failure. Preparing fill…"
+                    )
+            else:
+                job["status"] = "stuck"
+                job["question"] = (
+                    f"resume.tex was produced but tectonic failed to "
+                    f"compile it (exit {compile_exit}, see {log_name}). The LaTeX likely has "
+                    "a real syntax error - can you check it, or should I have the agent fix it?"
+                )
+            job["updated_at"] = now_iso()
 
 
 def _claim_fill_job(job_id: str) -> bool:
@@ -180,6 +292,28 @@ def _claim_fill_job(job_id: str) -> bool:
             return False
         _active_fill_jobs.add(job_id)
         return True
+
+
+# Prior Cancel/Start threads may still hold the claim while exiting; wait briefly
+# so a newer Start with the live fill_gen can take over instead of demoting to stuck.
+_FILL_CLAIM_WAIT_S = 15.0
+
+
+def _claim_fill_job_for_run(job_id: str, run_gen: int) -> bool:
+    """Claim the pipeline slot for ``run_gen``, waiting out a prior thread's exit.
+
+    Returns False when superseded (stale gen), hard-aborted, or the wait expires
+    while another thread still holds the claim.
+    """
+    deadline = time.monotonic() + float(_FILL_CLAIM_WAIT_S)
+    while True:
+        if _job_fill_gen(job_id) != run_gen:
+            return False
+        if _claim_fill_job(job_id):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
 
 
 def _release_fill_job(job_id: str) -> None:
@@ -240,6 +374,17 @@ ATS_URL_PATTERNS = {
 
 _lock = threading.Lock()
 _running_procs: dict[str, subprocess.Popen] = {}
+# Last job-list metadata keyed by session key. /api/status uses this in-memory
+# snapshot instead of reparsing the multi-megabyte jobs.json on every poll.
+_runtime_job_snapshots: dict[str, dict] = {}
+# Serialized /api/jobs response. mtime catches writes from sibling processes;
+# write_jobs invalidates eagerly for writes made by this server.
+_jobs_list_cache = {
+    "mtime": None,
+    "body_bytes": None,
+    "etag": None,
+    "fill_hold": None,
+}
 _prune_settings_lock = threading.Lock()
 _discovery_settings_lock = threading.Lock()
 _prune_schedule_wakeup = threading.Event()
@@ -277,8 +422,8 @@ PARTYROCK_CHROME_PROFILE = ROOT / "partyrock_chrome_profile"
 OPENCLAW_BROWSER_USER_DATA = Path.home() / ".openclaw" / "browser" / "openclaw" / "user-data"
 OPENCLAW_BROWSER_CDP_PORT = 18800
 # Each job gets its **own** PartyRock CDP tab via /json/new (see partyrock_tabs.py).
-# Tabs stay open after tailor until Mark as applied / Cancel closes that job's
-# target only. Parallel tailor + fill across jobs is allowed.
+# Tabs close after the resume is collected; Cancel/stuck closes that job's
+# target early. Parallel tailor + fill across jobs is allowed.
 
 # Discovery progress for the dashboard status bar. Separate from
 # _running_procs so the UI still shows a phase during the brief gap
@@ -1310,7 +1455,7 @@ def enabled_discovery_regions() -> list[str]:
     return regions or ["us"]
 
 
-def discovery_status() -> dict:
+def _discovery_status_in_memory() -> dict:
     with _discovery_lock:
         state = dict(_discovery_state)
         state["sources"] = [dict(s) for s in (_discovery_state.get("sources") or [])]
@@ -1330,8 +1475,13 @@ def discovery_status() -> dict:
             state["last_finished_at"] = state["finished_at"]
         state["resume_available"] = bool(state.get("resume_available"))
         state["resumed"] = bool(state.get("resumed"))
-        state.update(load_discovery_settings())
         return state
+
+
+def discovery_status() -> dict:
+    state = _discovery_status_in_memory()
+    state.update(load_discovery_settings())
+    return state
 
 
 def _kill_process_tree(proc: subprocess.Popen | None) -> None:
@@ -1561,6 +1711,20 @@ def _ensure_openclaw_managed_browser(*, required: bool = False) -> dict:
                 if required:
                     raise RuntimeError(msg)
                 print(f"warn: {msg}")
+            if result.get("ok"):
+                # Cold start restores leftover PartyRock tabs; an already-running
+                # CfT also accumulates idle app tabs from failed closes / prior
+                # runs. Sweep on every tailor-path ensure (not cold-start only).
+                # Live concurrent tailors are protected via in_use + live pid.
+                try:
+                    swept = close_idle_partyrock_tabs(resumes_dir=RESUMES_DIR)
+                    if swept.get("closed"):
+                        print(
+                            "PartyRock cleanup closed "
+                            f"{len(swept['closed'])} idle tab(s)"
+                        )
+                except Exception as e:
+                    print(f"warn: PartyRock idle-tab cleanup failed: {e}")
             return result if isinstance(result, dict) else {"ok": bool(result)}
         except (FileNotFoundError, OSError, RuntimeError) as e:
             if required:
@@ -2644,19 +2808,28 @@ def runtime_status() -> dict:
     """Dashboard status bar payload: discovery phase + what's actively
     running. Deliberately excludes profile/PII — ids, company, title,
     status only."""
-    running_keys = _running_session_keys()
-    data = read_jobs()
+    local_keys = {k for k, p in _running_procs.items() if p.poll() is None}
+    try:
+        turn_keys = agent_runner.active_turn_keys()
+    except Exception as e:
+        print(f"warn: active_turn_keys failed: {e}")
+        turn_keys = set()
+    running_keys = local_keys | turn_keys
     running_jobs = []
-    for job in data["jobs"]:
-        sk = job.get("session_key")
-        if sk and sk in running_keys:
-            running_jobs.append({
-                "id": job["id"],
-                "company": job.get("company") or "",
-                "title": job.get("title") or "",
-                "status": job.get("status") or "",
-            })
-    disc = discovery_status()
+    job_prefix = "agent:job-hunter:job-"
+    for session_key in sorted(running_keys):
+        if session_key == DISCOVERY_SESSION_KEY or not session_key.startswith(job_prefix):
+            continue
+        snap = _runtime_job_snapshots.get(session_key)
+        if snap is None:
+            snap = {
+                "id": session_key[len(job_prefix):],
+                "company": "",
+                "title": "",
+                "status": "running",
+            }
+        running_jobs.append(dict(snap))
+    disc = _discovery_status_in_memory()
     discovery_running = disc.get("running") or (DISCOVERY_SESSION_KEY in running_keys)
     aj = None
     if running_jobs:
@@ -2846,36 +3019,160 @@ def slim_job_for_list(job: dict) -> dict:
     # Hint only (no per-poll filesystem scan). Description endpoint still
     # prefers resumes/<id>/jd_full.txt when the user expands a job.
     out["has_description"] = bool((job.get("job_description") or "").strip())
-    # Disk truth for resume (UI-005 / DASH2-005): do not trust stale resume_path.
-    disk = resolve_job_resume_file(job)
-    out["resume_on_disk"] = disk is not None
-    if disk is None:
-        out["resume_path"] = None
+    # Re-resolve when flag claims on-disk resume so a missing file cannot
+    # leave a stale True. Explicit False is trusted on the list hot path;
+    # Start / fill paths call sync_job_resume_on_disk to clear false flags.
+    if job.get("resume_on_disk"):
+        disk = resolve_job_resume_file(job)
+        resume_on_disk = disk is not None
+    elif "resume_on_disk" not in job:
+        disk = resolve_job_resume_file(job)
+        resume_on_disk = disk is not None
     else:
+        disk = None
+        resume_on_disk = False
+    out["resume_on_disk"] = resume_on_disk
+    out["resume_display_name"] = (
+        conventional_resume_filename(job) if resume_on_disk else None
+    )
+    if not resume_on_disk:
+        out["resume_path"] = None
+    elif disk is not None:
         try:
             out["resume_path"] = str(disk.relative_to(ROOT))
         except ValueError:
             out["resume_path"] = str(disk)
+    elif job.get("resume_path"):
+        out["resume_path"] = job.get("resume_path")
     return out
 
 
-def jobs_list_response(data: dict) -> dict:
-    return {
-        "jobs": [slim_job_for_list(j) for j in data.get("jobs") or []],
-        # UI-008: multi-job busy gate needs hold signal without gateway round-trip.
-        "fill_hold_active": _fill_hold_browser_active(),
+def sync_job_resume_on_disk(job: dict) -> bool:
+    """Set resume_on_disk True only when resolve_job_resume_file succeeds."""
+    disk = resolve_job_resume_file(job)
+    if disk is None:
+        job["resume_on_disk"] = False
+        return False
+    job["resume_on_disk"] = True
+    try:
+        job["resume_path"] = str(disk.relative_to(ROOT))
+    except ValueError:
+        job["resume_path"] = str(disk)
+    return True
+
+
+def _remember_runtime_job(job: dict) -> None:
+    session_key = job.get("session_key")
+    if not session_key:
+        job_id = job.get("id")
+        if not job_id:
+            return
+        session_key = f"agent:job-hunter:job-{job_id}"
+    _runtime_job_snapshots[session_key] = {
+        "id": job.get("id") or session_key.rsplit("job-", 1)[-1],
+        "company": job.get("company") or "",
+        "title": job.get("title") or "",
+        "status": job.get("status") or "",
     }
 
 
-def write_jobs(data: dict) -> None:
+def jobs_list_response(data: dict, *, fill_hold: bool | None = None) -> dict:
+    jobs = data.get("jobs") or []
+    for job in jobs:
+        _remember_runtime_job(job)
+    return {
+        "jobs": [slim_job_for_list(j) for j in jobs],
+        # UI-008: multi-job busy gate needs hold signal without gateway round-trip.
+        "fill_hold_active": (
+            _fill_hold_browser_active() if fill_hold is None else fill_hold
+        ),
+    }
+
+
+def _invalidate_jobs_list_cache() -> None:
+    _jobs_list_cache.update(
+        {"mtime": None, "body_bytes": None, "etag": None, "fill_hold": None}
+    )
+
+
+def _cached_jobs_list_response() -> tuple[bytes, str]:
+    try:
+        mtime = JOBS_FILE.stat().st_mtime_ns
+    except OSError:
+        mtime = -1
+    fill_hold = _fill_hold_browser_active()
+    cached_body = _jobs_list_cache.get("body_bytes")
+    if (
+        cached_body is not None
+        and _jobs_list_cache.get("mtime") == mtime
+        and _jobs_list_cache.get("fill_hold") == fill_hold
+    ):
+        return cached_body, str(_jobs_list_cache["etag"])
+
+    data = read_jobs()
+    try:
+        mtime = JOBS_FILE.stat().st_mtime_ns
+    except OSError:
+        mtime = -1
+    revision = int(data.get("revision") or 0)
+    body = json.dumps(
+        jobs_list_response(data, fill_hold=fill_hold), separators=(",", ":")
+    ).encode()
+    etag = f'"{mtime:x}-{revision:x}-{1 if fill_hold else 0}"'
+    _jobs_list_cache.update(
+        {"mtime": mtime, "body_bytes": body, "etag": etag, "fill_hold": fill_hold}
+    )
+    return body, etag
+
+
+def write_jobs(data: dict, *, allow_purge: bool = False) -> None:
+    """Write jobs.json under EX flock with collapse protection.
+
+    Prefer ``locked_jobs_for_write()`` for read-modify-write so discovery
+    adds cannot be wiped by a stale snapshot. This helper remains for
+    callers that already hold a fresh locked dict; it still refuses empty
+    or dramatic collapses unless ``allow_purge=True`` (empty-deleted).
+    """
     JOBS_LOCK_FILE.touch(exist_ok=True)
     with open(JOBS_LOCK_FILE, "r+") as lockfile:
         fcntl.flock(lockfile, fcntl.LOCK_EX)
         try:
+            on_disk_n = 0
+            if JOBS_FILE.exists():
+                try:
+                    on_disk_n = jobs_list_count(
+                        _parse_jobs_payload(JOBS_FILE.read_text(encoding="utf-8"))
+                    )
+                except json.JSONDecodeError as e:
+                    raise JobsWriteRefused(
+                        f"refusing to write over unreadable jobs.json ({e})"
+                    ) from e
+            refuse_jobs_collapse(
+                on_disk_n, jobs_list_count(data), allow_purge=allow_purge
+            )
             backup_jobs_file()
-            JOBS_FILE.write_text(json.dumps(data, indent=2))
+            data["revision"] = int(data.get("revision") or 0) + 1
+            JOBS_FILE.write_text(
+                json.dumps(data, separators=(",", ":")), encoding="utf-8"
+            )
+            _invalidate_jobs_list_cache()
         finally:
             fcntl.flock(lockfile, fcntl.LOCK_UN)
+
+
+@contextmanager
+def locked_jobs_for_write(*, allow_purge: bool = False):
+    """Hold EX flock for an entire read-mutate-write (scripts/jobs_lock).
+
+    Mutate the yielded dict in place; it is written on clean exit. Always
+    prefer this over ``read_jobs()`` → mutate → ``write_jobs(snapshot)``.
+    """
+    # Keep jobs_lock paths synced when tests patch dashboard JOBS_FILE.
+    _jobs_lock_mod.JOBS_FILE = JOBS_FILE
+    _jobs_lock_mod.LOCK_FILE = JOBS_LOCK_FILE
+    with _jl_locked_jobs_for_write(allow_purge=allow_purge) as data:
+        yield data
+    _invalidate_jobs_list_cache()
 
 
 def now_iso() -> str:
@@ -2895,18 +3192,17 @@ def submit_job_answer(job_id: str, answer: str) -> bool:
     agent turn with the answer as its new message. Returns False if the
     job doesn't exist."""
     with _lock:
-        data = read_jobs()
-        job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-        if job is None:
-            return False
-        job.setdefault("qa_log", []).append(
-            {"question": job.get("question"), "answer": answer, "ts": now_iso()}
-        )
-        job["question"] = None
-        job["status"] = "resuming"
-        job["updated_at"] = now_iso()
-        write_jobs(data)
-        session_key = job["session_key"]
+        with locked_jobs_for_write() as data:
+            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+            if job is None:
+                return False
+            job.setdefault("qa_log", []).append(
+                {"question": job.get("question"), "answer": answer, "ts": now_iso()}
+            )
+            job["question"] = None
+            job["status"] = "resuming"
+            job["updated_at"] = now_iso()
+            session_key = job["session_key"]
     threading.Thread(target=run_agent_message, args=(session_key, answer), daemon=True).start()
     return True
 
@@ -2949,7 +3245,7 @@ def _cleanup_old_inbound_resumes() -> None:
     if not INBOUND_MEDIA_DIR.exists():
         return
     cutoff = time.time() - INBOUND_RESUME_MAX_AGE_S
-    for f in INBOUND_MEDIA_DIR.glob("*-resume.pdf"):
+    for f in INBOUND_MEDIA_DIR.glob("*.pdf"):
         try:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
@@ -2996,50 +3292,50 @@ def _try_extract_manual_job_details(job_id: str, url: str) -> None:
         description[:description.rfind(" ", 0, 500)] + " … [full text in resumes/<id>/jd_full.txt]")
 
     with _lock:
-        data = read_jobs()
-        job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-        if job is None:
-            return
-        if result.get("company"):
-            job["company"] = result["company"].strip()
-        if result.get("title"):
-            job["title"] = result["title"].strip()
-        if result.get("location"):
-            job["location"] = result["location"].strip()
-        job["job_description"] = preview
-        try:
-            from multi_opening import detect_multi_opening
+        with locked_jobs_for_write() as data:
+            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+            if job is None:
+                return
+            if result.get("company"):
+                job["company"] = result["company"].strip()
+                stamp_company_key(job)
+            if result.get("title"):
+                job["title"] = result["title"].strip()
+            if result.get("location"):
+                job["location"] = result["location"].strip()
+            job["job_description"] = preview
+            try:
+                from multi_opening import detect_multi_opening
 
-            job["multi_opening"] = detect_multi_opening(
-                title=job.get("title") or "",
-                description=description,
-            )
-        except Exception as e:
-            print(f"warn: multi_opening detect failed for manual job {job_id}: {e}")
-        # Prefer company/ATS apply_url from extract; keep pasted aggregator as
-        # job_url / source_url. On failure to resolve, leave aggregator apply.
-        try:
-            from apply_urls import enrich_listing_urls, is_aggregator_url, prefer_apply_url
+                job["multi_opening"] = detect_multi_opening(
+                    title=job.get("title") or "",
+                    description=description,
+                )
+            except Exception as e:
+                print(f"warn: multi_opening detect failed for manual job {job_id}: {e}")
+            # Prefer company/ATS apply_url from extract; keep pasted aggregator as
+            # job_url / source_url. On failure to resolve, leave aggregator apply.
+            try:
+                from apply_urls import enrich_listing_urls, is_aggregator_url, prefer_apply_url
 
-            enriched = enrich_listing_urls({
-                "job_url": url,
-                "apply_url": result.get("apply_url") or url,
-                "description": description,
-                "alternate_urls": job.get("alternate_urls") or [],
-            })
-            best = prefer_apply_url(job.get("apply_url"), enriched.get("apply_url"), result.get("apply_url"))
-            if best:
-                if is_aggregator_url(url) and not is_aggregator_url(best):
-                    job["source_url"] = job.get("source_url") or url
-                    job["job_url"] = url
-                job["apply_url"] = best
-            if enriched.get("alternate_urls"):
-                job["alternate_urls"] = enriched["alternate_urls"]
-        except Exception as e:
-            print(f"warn: apply_url enrich failed for manual job {job_id}: {e}")
-        job["status_detail"] = "Added manually via dashboard - details fetched automatically."
-        job["updated_at"] = now_iso()
-        write_jobs(data)
+                enriched = enrich_listing_urls({
+                    "job_url": url,
+                    "apply_url": result.get("apply_url") or url,
+                    "description": description,
+                    "alternate_urls": job.get("alternate_urls") or [],
+                })
+                best = prefer_apply_url(job.get("apply_url"), enriched.get("apply_url"), result.get("apply_url"))
+                if best:
+                    if is_aggregator_url(url) and not is_aggregator_url(best):
+                        job["source_url"] = job.get("source_url") or url
+                        job["job_url"] = url
+                    job["apply_url"] = best
+                if enriched.get("alternate_urls"):
+                    job["alternate_urls"] = enriched["alternate_urls"]
+            except Exception as e:
+                print(f"warn: apply_url enrich failed for manual job {job_id}: {e}")
+            job["status_detail"] = "Added manually via dashboard - details fetched automatically."
+            job["updated_at"] = now_iso()
 
 
 _TIMELINE_MAX = 200
@@ -3113,12 +3409,11 @@ def append_job_timeline(
         event=event, detail=detail, at=at, time_s=time_s
     )
     with _lock:
-        data = read_jobs()
-        job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-        if job is None:
-            return
-        _append_timeline_locked(job, entry)
-        write_jobs(data)
+        with locked_jobs_for_write() as data:
+            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+            if job is None:
+                return
+            _append_timeline_locked(job, entry)
 
 
 def synthesize_job_timeline(job: dict) -> list[dict]:
@@ -3335,22 +3630,8 @@ def _pipeline_stop_if_aborted(job_id: str, stage: str) -> bool:
     )
     append_fill_activity(job_id, event="abort", detail=detail, persist=True)
     print(f"[fill] {job_id} handoff abort at {stage}: {reason}")
-    # Stale-gen stop while still in-progress: surface stuck (parallel restart /
-    # superseded run) instead of leaving navigating/tailoring forever.
-    if reason.startswith("fill_gen stale"):
-        with _lock:
-            data = read_jobs()
-            job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
-            if (
-                job is not None
-                and job.get("status") in IN_PROGRESS_STATUSES
-                and job.get("status") not in FILL_ABORT_STATUSES
-            ):
-                job["status"] = "stuck"
-                job["status_detail"] = detail[:500]
-                job["question"] = detail[:500]
-                job["updated_at"] = now_iso()
-                write_jobs(data)
+    # Stale gen: a newer Start owns the job. Exit silently — never demote the
+    # newer run's in-progress status to stuck.
     return True
 
 
@@ -3359,52 +3640,65 @@ def _patch_job(job_id: str, **fields) -> None:
 
     Refuses to overwrite FILL_ABORT_STATUSES via status=… so Cancel / Delete /
     Mark-as-applied / Skip win over a still-running Start/fill daemon.
+    Holds EX flock for the full read-mutate-write.
     """
     if _fill_run_stale(job_id):
         return
+    close_pr = False
     with _lock:
-        data = read_jobs()
-        job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-        if job is None:
-            return
-        old_status = job.get("status")
-        if old_status in FILL_ABORT_STATUSES:
-            if "status" in fields and fields.get("status") != old_status:
-                # Pipeline / fill-end must never undelete or un-cancel.
+        with locked_jobs_for_write() as data:
+            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+            if job is None:
                 return
-            if "status" not in fields and fields:
-                # Hold/pause stdout must not clobber applied/cancelled detail.
-                return
-        job.update(fields)
-        job["updated_at"] = now_iso()
-        new_status = job.get("status")
-        # Leaving Ready re-arms the spoken announcement, so a genuinely new
-        # ready_for_review event announces again (once) on the next run.
-        if (
-            "status" in fields
-            and new_status != "ready_for_review"
-            and job.get("ready_announced")
-        ):
-            job.pop("ready_announced", None)
-        if (
-            "status" in fields
-            and new_status
-            and new_status != old_status
-        ):
-            det = (
-                fields.get("status_detail")
-                if fields.get("status_detail") is not None
-                else job.get("status_detail")
-            ) or f"Status → {new_status}"
-            _append_timeline_locked(
-                job,
-                _timeline_entry(
-                    event=str(new_status),
-                    detail=str(det)[:500],
-                    at=job["updated_at"],
-                ),
-            )
-        write_jobs(data)
+            old_status = job.get("status")
+            if old_status in FILL_ABORT_STATUSES:
+                if "status" in fields and fields.get("status") != old_status:
+                    # Pipeline / fill-end must never undelete or un-cancel.
+                    return
+                if "status" not in fields and fields:
+                    # Hold/pause stdout must not clobber applied/cancelled detail.
+                    return
+            job.update(fields)
+            if "resume_path" in fields:
+                if fields.get("resume_path"):
+                    sync_job_resume_on_disk(job)
+                else:
+                    job["resume_on_disk"] = False
+            _remember_runtime_job(job)
+            job["updated_at"] = now_iso()
+            new_status = job.get("status")
+            # Leaving Ready re-arms the spoken announcement, so a genuinely new
+            # ready_for_review event announces again (once) on the next run.
+            if (
+                "status" in fields
+                and new_status != "ready_for_review"
+                and job.get("ready_announced")
+            ):
+                job.pop("ready_announced", None)
+            if (
+                "status" in fields
+                and new_status
+                and new_status != old_status
+            ):
+                det = (
+                    fields.get("status_detail")
+                    if fields.get("status_detail") is not None
+                    else job.get("status_detail")
+                ) or f"Status → {new_status}"
+                _append_timeline_locked(
+                    job,
+                    _timeline_entry(
+                        event=str(new_status),
+                        detail=str(det)[:500],
+                        at=job["updated_at"],
+                    ),
+                )
+            close_pr = new_status == "stuck"
+    if close_pr:
+        try:
+            close_job_partyrock_tab(job_id, RESUMES_DIR / job_id)
+        except Exception as e:
+            print(f"warn: PartyRock tab close on stuck for {job_id}: {e}")
 
 
 def clear_fill_activity(job_id: str) -> None:
@@ -3599,29 +3893,27 @@ def ingest_fill_stdout_line(job_id: str, line: str) -> None:
         event == "hold" or low.startswith("keeping browser open")
     ):
         with _lock:
-            data = read_jobs()
-            job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
-            if job is None:
-                return
-            # UI-027 / DASH2-014: honor full FILL_ABORT_STATUSES (not a subset).
-            if job.get("status") in FILL_ABORT_STATUSES:
-                return
-            # Already Ready (from honest report) — keep; else only update detail.
-            if job.get("status") == "ready_for_review":
+            with locked_jobs_for_write() as data:
+                job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
+                if job is None:
+                    return
+                # UI-027 / DASH2-014: honor full FILL_ABORT_STATUSES (not a subset).
+                if job.get("status") in FILL_ABORT_STATUSES:
+                    return
+                # Already Ready (from honest report) — keep; else only update detail.
+                if job.get("status") == "ready_for_review":
+                    job["status_detail"] = (
+                        "Ready for review — browser held open (never submitted). "
+                        "Mark as applied after you submit on the employer site, "
+                        "or close the browser when done reviewing."
+                    )
+                    job["updated_at"] = now_iso()
+                    return
                 job["status_detail"] = (
-                    "Ready for review — browser held open (never submitted). "
-                    "Mark as applied after you submit on the employer site, "
-                    "or close the browser when done reviewing."
+                    "Browser held open for review (never submitted) — "
+                    "waiting for honest Ready signal from fill report."
                 )
                 job["updated_at"] = now_iso()
-                write_jobs(data)
-                return
-            job["status_detail"] = (
-                "Browser held open for review (never submitted) — "
-                "waiting for honest Ready signal from fill report."
-            )
-            job["updated_at"] = now_iso()
-            write_jobs(data)
         return
     # Pause engaged: surface in status_detail so kill-deadline suspends.
     if event == "fill_pause" and (
@@ -3630,18 +3922,17 @@ def ingest_fill_stdout_line(job_id: str, line: str) -> None:
         if "continu" in low or "resum" in low:
             return
         with _lock:
-            data = read_jobs()
-            job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
-            if job is None or job.get("status") in FILL_ABORT_STATUSES:
-                return
-            if job.get("status") == "ready_for_review":
-                return
-            job["status_detail"] = (
-                "Fill paused — browser stays open until you Continue fill "
-                "or close the window (never auto-closes while paused)."
-            )
-            job["updated_at"] = now_iso()
-            write_jobs(data)
+            with locked_jobs_for_write() as data:
+                job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
+                if job is None or job.get("status") in FILL_ABORT_STATUSES:
+                    return
+                if job.get("status") == "ready_for_review":
+                    return
+                job["status_detail"] = (
+                    "Fill paused — browser stays open until you Continue fill "
+                    "or close the window (never auto-closes while paused)."
+                )
+                job["updated_at"] = now_iso()
 
 
 def _classify_pipeline_stdout_line(line: str) -> tuple[str, str] | None:
@@ -3939,7 +4230,14 @@ def _dummy_fill_headed_requested(payload: dict | None = None, query: dict | None
 
 def _dummy_restore_status(status: str | None) -> str:
     """Status to restore after a dummy fill finishes (never leave stuck on filling)."""
-    if status in ("discovered", "stuck", "blocked_captcha", "cancelled", "ready_for_review"):
+    if status in (
+        "discovered",
+        "stuck",
+        "blocked_captcha",
+        "cancelled",
+        "ready_for_review",
+        "resume_ready",
+    ):
         return status
     return "discovered"
 
@@ -3974,6 +4272,22 @@ def resolve_job_resume_file(job: dict | None) -> Path | None:
         except OSError:
             continue
     return None
+
+
+def resolve_job_resume_upload_file(job: dict | None) -> Path | None:
+    """Prefer the conventionally named published PDF when filling an ATS."""
+    if isinstance(job, dict):
+        published = str(job.get("resume_by_company_path") or "").strip()
+        if published:
+            candidate = Path(published)
+            if not candidate.is_absolute():
+                candidate = ROOT / candidate
+            try:
+                if candidate.is_file() and candidate.suffix.lower() == ".pdf":
+                    return candidate
+            except OSError:
+                pass
+    return resolve_job_resume_file(job)
 
 
 def _find_in_progress_job(
@@ -4051,11 +4365,36 @@ def _publish_resume_by_company(
             existing_file_ids=existing,
             root=ROOT,
         )
+        tex_src = src.with_suffix(".tex")
+        if not tex_src.is_file():
+            jid = str(job.get("id") or "").strip()
+            if jid:
+                alt = RESUMES_DIR / jid / "resume.tex"
+                if alt.is_file():
+                    tex_src = alt
+        _copy_tex_beside_pdf(dest, tex_path=tex_src)
         return dest
     except Exception as e:
         jid = (job.get("id") or "?")[:80]
         print(f"warn: by_company publish failed for job={jid}: {e}")
         return None
+
+
+def _ensure_conventional_resume_pdf(job_id: str) -> Path | None:
+    """Publish and return the job's actual conventionally named resume PDF."""
+    with _lock:
+        with locked_jobs_for_write() as data:
+            job = next((j for j in data["jobs"] if j.get("id") == job_id), None)
+            if job is None:
+                return None
+            source = resolve_job_resume_file(job)
+            if source is None or source.suffix.lower() != ".pdf":
+                return None
+            published = _publish_resume_by_company(job, source, data)
+            if published is None:
+                return None
+            job["updated_at"] = now_iso()
+            return published
 
 
 def _parse_multipart_file(body: bytes, content_type: str) -> tuple[str, bytes]:
@@ -4089,6 +4428,288 @@ def _parse_multipart_file(body: bytes, content_type: str) -> tuple[str, bytes]:
         data = data.rstrip(b"\r\n")
         return name, data
     raise ValueError("no file part in multipart body")
+
+
+def _resume_latex_source(job_dir: Path) -> tuple[str, bool]:
+    """Return a job's editable LaTeX or a clearly synthetic starter sample."""
+    tex_path = job_dir / "resume.tex"
+    if tex_path.is_file():
+        try:
+            source = tex_path.read_text(encoding="utf-8")
+            if source.strip():
+                return source, False
+        except (OSError, UnicodeError):
+            pass
+    return RESUME_LATEX_SAMPLE, True
+
+
+def _read_resume_tex_file(path: Path) -> str | None:
+    """Return non-empty LaTeX from ``path``, or None."""
+    try:
+        if not path.is_file():
+            return None
+        if path.name.startswith(".resume-edit-"):
+            return None
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    return source if source.strip() else None
+
+
+def _rel_resume_label(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(ROOT.resolve()))
+    except ValueError:
+        return path.name
+
+
+def _copy_tex_beside_pdf(pdf_path: Path, *, tex_path: Path | None = None) -> Path | None:
+    """Keep a matching .tex next to a saved resume PDF (job dir or by_company)."""
+    pdf_path = Path(pdf_path)
+    if not pdf_path.is_file() or pdf_path.suffix.lower() != ".pdf":
+        return None
+    src = Path(tex_path) if tex_path is not None else pdf_path.with_suffix(".tex")
+    if not src.is_file():
+        return None
+    dest = pdf_path.with_suffix(".tex")
+    try:
+        if dest.resolve() != src.resolve():
+            shutil.copyfile(src, dest)
+        return dest
+    except OSError as e:
+        print(f"warn: could not copy resume tex beside {pdf_path.name}: {e}")
+        return None
+
+
+def _job_resume_tex_candidates(job: dict, pdf: Path | None) -> list[Path]:
+    """Job-specific compile inputs, never the dummy sample or scratch files."""
+    out: list[Path] = []
+    job_id = str(job.get("id") or "").strip()
+    job_dir = RESUMES_DIR / job_id if job_id else None
+    if job_dir is not None:
+        out.append(job_dir / "resume.tex")
+        out.append(job_dir / "tailored.tex")
+    if pdf is not None:
+        out.append(pdf.with_suffix(".tex"))
+        out.append(pdf.parent / "resume.tex")
+    if job_dir is not None:
+        try:
+            if job_dir.is_dir():
+                extras = sorted(
+                    p
+                    for p in job_dir.glob("*.tex")
+                    if not p.name.startswith(".resume-edit-")
+                )
+                out.extend(extras)
+        except OSError:
+            pass
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in out:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def _resume_latex_for_job(job: dict) -> dict:
+    """LaTeX that produced this job's saved PDF — never an empty success.
+
+    Prefers ``resumes/<id>/resume.tex`` and other job-folder / PDF-sibling
+    ``.tex`` files. Workspace ``resume.tex`` is a labeled last resort when a
+    PDF exists. A PDF with no source is an explicit error, not the dummy
+    sample.
+    """
+    pdf = resolve_job_resume_file(job)
+    has_pdf = pdf is not None
+    for path in _job_resume_tex_candidates(job, pdf):
+        source = _read_resume_tex_file(path)
+        if source is None:
+            continue
+        label = _rel_resume_label(path)
+        return {
+            "ok": True,
+            "latex": source,
+            "is_sample": False,
+            "is_workspace_master": False,
+            "missing_tex": False,
+            "has_pdf": has_pdf,
+            "path": label,
+            "source_label": label,
+        }
+    master = ROOT / "resume.tex"
+    if has_pdf:
+        master_src = _read_resume_tex_file(master)
+        if master_src is not None:
+            label = _rel_resume_label(master)
+            return {
+                "ok": True,
+                "latex": master_src,
+                "is_sample": False,
+                "is_workspace_master": True,
+                "missing_tex": False,
+                "has_pdf": True,
+                "path": label,
+                "source_label": label,
+            }
+        pdf_label = _rel_resume_label(pdf) if pdf is not None else "resume.pdf"
+        return {
+            "ok": False,
+            "latex": "",
+            "is_sample": False,
+            "is_workspace_master": False,
+            "missing_tex": True,
+            "has_pdf": True,
+            "path": None,
+            "source_label": None,
+            "error": (
+                f"No LaTeX source found for the saved resume PDF ({pdf_label}). "
+                "Expected resume.tex in the job folder, or a matching .tex next "
+                "to the PDF."
+            ),
+        }
+    job_id = str(job.get("id") or "").strip()
+    source, is_sample = _resume_latex_source(RESUMES_DIR / job_id)
+    return {
+        "ok": True,
+        "latex": source,
+        "is_sample": is_sample,
+        "is_workspace_master": False,
+        "missing_tex": False,
+        "has_pdf": False,
+        "path": None if is_sample else _rel_resume_label(RESUMES_DIR / job_id / "resume.tex"),
+        "source_label": None if is_sample else f"resumes/{job_id}/resume.tex",
+    }
+
+
+def _copy_kit_for_job(job: dict, *, test_mode: bool) -> dict:
+    """Build Fast-copy kit. File I/O happens here — callers must not hold ``_lock``."""
+    job_id = str(job.get("id") or "")
+    tex = None
+    if job_id:
+        pdf = resolve_job_resume_file(job)
+        for tex_path in _job_resume_tex_candidates(job, pdf):
+            tex = _read_resume_tex_file(tex_path)
+            if tex:
+                break
+    snap = {
+        "id": job.get("id"),
+        "company": job.get("company"),
+        "title": job.get("title"),
+        "file_id": job.get("file_id"),
+        "applied_address": job.get("applied_address"),
+        "location": job.get("location"),
+        "resume_by_company_path": job.get("resume_by_company_path"),
+    }
+    if not str(snap.get("applied_address") or "").strip():
+        snap["applied_address"] = resolve_applied_address_for_job(job) or ""
+    profile_loader = None
+    if not test_mode:
+        def profile_loader():
+            if PROFILE_FILE.is_file():
+                return json.loads(PROFILE_FILE.read_text(encoding="utf-8"))
+            return {}
+    return build_copy_kit(
+        snap,
+        test_mode=bool(test_mode),
+        tex=tex,
+        profile_loader=profile_loader,
+    )
+
+
+def _resume_compile_error(label: str, output: str) -> dict:
+    lines = (output or "").strip().splitlines()
+    snippet = "\n".join(lines[-40:])[-6000:]
+    detail = f"{label} failed."
+    if snippet:
+        detail += f"\n\n{snippet}"
+    return {"ok": False, "error": detail}
+
+
+def _compile_resume_latex(job_dir: Path, latex_source: str) -> dict:
+    """Compile + two-page-fit in scratch files, then atomically publish.
+
+    The current resume remains untouched unless both tectonic and the existing
+    fit_resume_pages.py pass. No jobs lock is acquired here; callers update the
+    job record separately after this potentially slow subprocess work.
+    """
+    job_dir.mkdir(parents=True, exist_ok=True)
+    token = f".resume-edit-{uuid.uuid4().hex}"
+    temp_tex = job_dir / f"{token}.tex"
+    temp_pdf = temp_tex.with_suffix(".pdf")
+    temp_tex.write_text(latex_source, encoding="utf-8")
+    try:
+        try:
+            compile_proc = subprocess.run(
+                [TECTONIC_BIN, temp_tex.name],
+                capture_output=True,
+                text=True,
+                timeout=90,
+                cwd=str(job_dir),
+            )
+        except subprocess.TimeoutExpired as exc:
+            return _resume_compile_error("Tectonic compile timed out", str(exc))
+        except OSError as exc:
+            return _resume_compile_error("Tectonic could not start", str(exc))
+        compile_output = (compile_proc.stdout or "") + (compile_proc.stderr or "")
+        if compile_proc.returncode != 0 or not temp_pdf.is_file():
+            return _resume_compile_error("Tectonic compile", compile_output)
+
+        fit_env = os.environ.copy()
+        fit_env["JOBHUNTER_TECTONIC_BIN"] = TECTONIC_BIN
+        try:
+            fit_proc = subprocess.run(
+                [
+                    PYTHON_BIN,
+                    "-u",
+                    str(ROOT / "scripts" / "fit_resume_pages.py"),
+                    str(temp_tex),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=str(job_dir),
+                env=fit_env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return _resume_compile_error("Two-page fit timed out", str(exc))
+        except OSError as exc:
+            return _resume_compile_error("Two-page fit could not start", str(exc))
+        fit_output = (fit_proc.stdout or "") + (fit_proc.stderr or "")
+        # Match the Start/tailor pipeline: fit is best-effort. A nonzero exit
+        # usually means "still >2 pages at the tightest layout" after the
+        # script already left its best attempt on disk — still publish that.
+        if not temp_pdf.is_file():
+            return _resume_compile_error("Two-page fit", fit_output)
+        warning = None
+        if fit_proc.returncode != 0:
+            lines = fit_output.strip().splitlines()
+            warning = (
+                "Compiled and saved, but the two-page fit did not fully succeed. "
+                "Best-effort layout was kept."
+            )
+            if lines:
+                warning += "\n\n" + "\n".join(lines[-20:])[-3000:]
+
+        os.replace(temp_tex, job_dir / "resume.tex")
+        os.replace(temp_pdf, job_dir / "resume.pdf")
+        _copy_tex_beside_pdf(job_dir / "resume.pdf", tex_path=job_dir / "resume.tex")
+        out = {
+            "ok": True,
+            "compile_log": compile_output[-2000:],
+            "fit_log": fit_output[-2000:],
+        }
+        if warning:
+            out["warning"] = warning
+        return out
+    finally:
+        for artifact in job_dir.glob(f"{token}*"):
+            try:
+                artifact.unlink()
+            except OSError:
+                pass
 
 
 def _parse_test_mode(payload: dict | None) -> bool:
@@ -4135,6 +4756,26 @@ def _parse_skip_partyrock(payload: dict | None) -> bool:
     return False
 
 
+def _parse_resume_only(payload: dict | None) -> bool:
+    """True when Start should tailor/compile then stop (no form fill).
+
+    Accepts ``resume_only: true`` or ``skip_fill: true``. Default False.
+    ``resume_only`` takes precedence when both keys are present.
+    """
+    payload = payload or {}
+    key = "resume_only" if "resume_only" in payload else (
+        "skip_fill" if "skip_fill" in payload else None
+    )
+    if key is None:
+        return False
+    raw = payload.get(key)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
+
+
 def _fill_mode_prefix(test_mode: bool) -> str:
     return "[DUMMY/TEST]" if test_mode else "[REAL]"
 
@@ -4148,6 +4789,91 @@ def _format_address_pick(pick: dict) -> str | None:
     if not all((line1, city, state, zip_code)):
         return None
     return f"{line1}, {city}, {state} {zip_code}"
+
+
+def _find_resume_for_address(job: dict) -> Path | None:
+    """Locate resume.tex or resume.pdf for address resolution (prefer .tex)."""
+    dirs: list[Path] = []
+    resume_path = job.get("resume_path")
+    if resume_path:
+        rp = Path(str(resume_path))
+        dirs.append(ROOT / rp.parent if not rp.is_absolute() else rp.parent)
+    job_id = job.get("id")
+    if job_id:
+        dirs.append(RESUMES_DIR / str(job_id))
+    seen: set[Path] = set()
+    for directory in dirs:
+        if directory in seen:
+            continue
+        seen.add(directory)
+        tex = directory / "resume.tex"
+        pdf = directory / "resume.pdf"
+        if tex.is_file():
+            return tex
+        if pdf.is_file():
+            return pdf
+    return None
+
+
+def resolve_applied_address_for_job(job: dict) -> str | None:
+    """Resolve synthetic mailing address from resume city → fixture bank.
+
+    Same path as scripts/backfill_applied_addresses.py / pick_address.py.
+    Never reads profile.json. Returns a formatted line or None.
+    Deterministic apartment pick seeded by job id (or sorted-first).
+    """
+    existing = str(job.get("applied_address") or "").strip()
+    if existing:
+        return existing
+    loc = str(job.get("location") or "").strip()
+    if loc:
+        try:
+            from discovery_filters import is_clearly_non_us_location
+        except Exception:
+            is_clearly_non_us_location = None
+        if is_clearly_non_us_location and is_clearly_non_us_location(loc):
+            return None
+    resume = _find_resume_for_address(job)
+    if not resume:
+        return None
+    try:
+        from address_resolver import resolve_address_for_resume
+        from field_map import format_address_line
+        from pick_address import address_rng_for_job
+
+        pick = resolve_address_for_resume(
+            resume,
+            fallback_location=str(job.get("location") or ""),
+            rng=address_rng_for_job(str(job.get("id") or "") or None),
+        )
+        return format_address_line(pick) or None
+    except Exception as e:
+        print(f"warn: applied_address resolve failed for {job.get('id')}: {e}")
+        return None
+
+
+def _ensure_fill_address(job_id: str, *, job_location: str = "") -> str | None:
+    """Resolve once, persist applied_address, return formatted line for fill."""
+    with _lock:
+        data = read_jobs()
+        job = next((j for j in data.get("jobs") or [] if j.get("id") == job_id), None)
+        if job is None:
+            return None
+        existing = str(job.get("applied_address") or "").strip()
+        if existing:
+            return existing
+        if job_location and not (job.get("location") or "").strip():
+            job = dict(job)
+            job["location"] = job_location
+    resolved = resolve_applied_address_for_job(job)
+    if resolved:
+        _patch_job(job_id, applied_address=resolved)
+        append_fill_activity(
+            job_id,
+            event="address",
+            detail=f"Mailing address for fill: {resolved}",
+        )
+    return resolved
 
 
 def _validated_applied_edit(payload: dict) -> dict:
@@ -4341,6 +5067,9 @@ def _run_hybrid_fill_dummy_body(
 ) -> None:
     if flash_leftovers is None:
         flash_leftovers = True
+    conventional_resume = (
+        None if test_mode else _ensure_conventional_resume_pdf(job_id)
+    )
     with _lock:
         data = read_jobs()
         job = next((j for j in data["jobs"] if j["id"] == job_id), None)
@@ -4351,7 +5080,9 @@ def _run_hybrid_fill_dummy_body(
         fill_job_location = (job.get("location") or "").strip()
         fill_job_title = (job.get("title") or "").strip()
         prev_status = job.get("status") or "discovered"
-        resume_file = resolve_job_resume_file(job)
+        resume_file = (
+            resolve_job_resume_upload_file(job) if test_mode else conventional_resume
+        )
 
     if restore_status is None:
         restore_status = _dummy_restore_status(prev_status)
@@ -4372,19 +5103,13 @@ def _run_hybrid_fill_dummy_body(
         return
 
     if not test_mode:
-        resume_candidates = [
-            resume_file,
-            ROOT / "resumes" / job_id / "resume.pdf",
-            ROOT / "skyvern_runtime" / "trusted_uploads" / "resume.pdf",
-        ]
-        if not any(p is not None and Path(p).is_file() for p in resume_candidates):
+        if resume_file is None or not Path(resume_file).is_file():
             _patch_job(
                 job_id,
                 status=restore_status,
                 status_detail=(
-                    f"{prefix} Fast fill aborted: no resume PDF found. "
-                    "Upload a resume on the dossier, tailor via Start, or place "
-                    "resume at skyvern_runtime/trusted_uploads/resume.pdf."
+                    f"{prefix} Fast fill aborted: no conventionally named resume "
+                    "PDF could be published. Upload or tailor a PDF first."
                 ),
             )
             return
@@ -4656,6 +5381,7 @@ def run_tailor_then_fill(
     restore_status: str | None = None,
     fill_options: dict | None = None,
     fill_run_gen: int | None = None,
+    resume_only: bool = False,
 ) -> None:
     """Resume tailoring is "paste text, wait for a web app, copy the
     result" - no judgment calls, so it runs as a plain script
@@ -4688,37 +5414,74 @@ def run_tailor_then_fill(
     restore to discovered and drop stuck / blocked_captcha.
     """
     run_gen = fill_run_gen if fill_run_gen is not None else _job_fill_gen(job_id)
-    if not _claim_fill_job(job_id):
-        detail = (
-            "Fill pipeline could not start: another tailor/fill thread is already "
-            "registered for this job. Cancel and Retry if nothing is running."
-        )
-        print(f"warn: tailor/fill already active for {job_id} — skipping duplicate thread")
-        append_fill_activity(job_id, event="error", detail=detail, persist=True)
-        if not _job_fill_aborted(job_id):
+    # Bind fill_gen before claim-failure checks so stale runs never demote a
+    # newer Start (``_job_fill_aborted`` / ``_patch_job`` need the ctx).
+    claimed = False
+    ctx_token = _bind_fill_run_ctx(job_id, run_gen)
+    try:
+        if not _claim_fill_job_for_run(job_id, run_gen):
+            if _job_fill_aborted(job_id):
+                print(
+                    f"warn: tailor/fill claim skipped for {job_id} — "
+                    "stale gen or terminal abort (not demoting)"
+                )
+                return
+            detail = (
+                "Fill pipeline could not start: another tailor/fill thread is already "
+                "registered for this job. Cancel and Retry if nothing is running."
+            )
+            print(
+                f"warn: tailor/fill already active for {job_id} — "
+                "skipping duplicate thread"
+            )
+            append_fill_activity(job_id, event="error", detail=detail, persist=True)
             _patch_job(
                 job_id,
                 status="stuck",
                 status_detail=detail,
                 question=detail,
             )
-        return
-    ctx_token = _bind_fill_run_ctx(job_id, run_gen)
-    try:
-        _run_tailor_then_fill_body(
-            job_id,
-            test_mode=test_mode,
-            skip_partyrock=skip_partyrock,
-            force_partyrock=force_partyrock,
-            restore_status=restore_status,
-            fill_options=fill_options,
-            fill_run_gen=run_gen,
-        )
-    except Exception as e:
-        _mark_fill_thread_stuck(job_id, e, where="run_tailor_then_fill")
+            return
+        claimed = True
+        try:
+            _run_tailor_then_fill_body(
+                job_id,
+                test_mode=test_mode,
+                skip_partyrock=skip_partyrock,
+                force_partyrock=force_partyrock,
+                restore_status=restore_status,
+                fill_options=fill_options,
+                fill_run_gen=run_gen,
+                resume_only=resume_only,
+            )
+        except Exception as e:
+            _mark_fill_thread_stuck(job_id, e, where="run_tailor_then_fill")
     finally:
         _fill_run_ctx.reset(ctx_token)
-        _release_fill_job(job_id)
+        # Only the thread that owns the claim may release it — a losing Start
+        # must not clear the active pipeline's slot.
+        if claimed:
+            _release_fill_job(job_id)
+
+
+def _complete_resume_only(
+    job_id: str,
+    *,
+    test_mode: bool,
+    resume_label: str | None = None,
+) -> None:
+    """Park generate-only in IN PROGRESS after compile/publish. Never starts fill."""
+    prefix = _fill_mode_prefix(test_mode)
+    name_bit = f" ({resume_label})" if resume_label else ""
+    pipeline_milestone(
+        job_id,
+        event="resume",
+        detail=f"Resume generated{name_bit} — fill skipped.",
+        status="resume_ready",
+        status_detail=(
+            f"{prefix} Resume ready{name_bit}. Fill when you want."
+        ),
+    )
 
 
 def _fill_skipping_partyrock(
@@ -4730,6 +5493,7 @@ def _fill_skipping_partyrock(
     fill_restore: str,
     fill_options: dict | None = None,
     fill_run_gen: int | None = None,
+    resume_only: bool = False,
 ) -> None:
     """PartyRock-bypass fast path shared by "resume already on disk" and the
     Test-Mode "skip PartyRock" toggle: publish any on-disk resume, then hand
@@ -4740,6 +5504,28 @@ def _fill_skipping_partyrock(
     after invoking this. Behavior is characterized in test_server_refactor.py.
     """
     clear_fill_activity(job_id)
+    display_resume_name = None
+    if existing_resume is not None:
+        display_resume_name = existing_resume.name
+        try:
+            rel = str(existing_resume.relative_to(ROOT))
+        except ValueError:
+            rel = str(existing_resume)
+        with _lock:
+            with locked_jobs_for_write() as data:
+                job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+                if job is not None:
+                    job["resume_path"] = rel
+                    sync_job_resume_on_disk(job)
+                    job["updated_at"] = now_iso()
+                    published = _publish_resume_by_company(job, existing_resume, data)
+                    if published is not None:
+                        display_resume_name = published.name
+    if resume_only:
+        _complete_resume_only(
+            job_id, test_mode=test_mode, resume_label=display_resume_name
+        )
+        return
     if not apply_url0:
         pipeline_milestone(
             job_id,
@@ -4752,22 +5538,16 @@ def _fill_skipping_partyrock(
         )
         return
     if existing_resume is not None:
-        try:
-            rel = str(existing_resume.relative_to(ROOT))
-        except ValueError:
-            rel = str(existing_resume)
-        with _lock:
-            data = read_jobs()
-            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-            if job is not None:
-                job["resume_path"] = rel
-                job["updated_at"] = now_iso()
-                _publish_resume_by_company(job, existing_resume, data)
-                write_jobs(data)
-        detail = (
-            f"Using uploaded resume ({existing_resume.name}) — "
-            "skipping PartyRock / tailor."
-        )
+        if test_mode:
+            detail = (
+                f"Test Mode: using dummy fixture resume ({display_resume_name}) — "
+                "PartyRock skipped."
+            )
+        else:
+            detail = (
+                f"Using on-disk resume ({display_resume_name}) — "
+                "PartyRock / tailor skipped."
+            )
         pipeline_milestone(
             job_id,
             event="resume",
@@ -4793,10 +5573,13 @@ def _fill_skipping_partyrock(
         job_id,
         event="fill",
         detail=(
-            f"{'Using on-disk resume; ' if existing_resume else 'PartyRock skipped. '}"
+            f"{'On-disk/dummy resume; ' if existing_resume else 'PartyRock skipped. '}"
             f"Opening apply URL for fast_fill: {apply_url0[:120]}"
         ),
     )
+    address_text = None
+    if not test_mode:
+        address_text = _ensure_fill_address(job_id)
     if _pipeline_stop_if_aborted(job_id, "fast_fill launch"):
         return
     run_hybrid_fill_dummy(
@@ -4806,6 +5589,7 @@ def _fill_skipping_partyrock(
         flash_leftovers=_dummy_fill_flash_requested(fill_options),
         restore_status=fill_restore,
         preserve_activity=True,
+        address_text=address_text,
         fill_run_gen=fill_run_gen,
     )
 
@@ -4818,11 +5602,13 @@ def _run_tailor_then_fill_body(
     restore_status: str | None = None,
     fill_options: dict | None = None,
     fill_run_gen: int | None = None,
+    resume_only: bool = False,
 ) -> None:
     fill_restore = _dummy_restore_status(restore_status or "discovered")
+    resume_only = bool(resume_only) or _parse_resume_only(fill_options)
     # Skip PartyRock when a resume is already on disk (upload or prior tailor),
     # or when Test Mode explicitly bypasses PartyRock — unless the dashboard
-    # requested force_partyrock (Tailor + fill / regenerate).
+    # requested force_partyrock (Tailor + fill / regenerate / generate-only).
     with _lock:
         data = read_jobs()
         job0 = next((j for j in data["jobs"] if j["id"] == job_id), None)
@@ -4841,6 +5627,7 @@ def _run_tailor_then_fill_body(
             fill_restore=fill_restore,
             fill_options=fill_options,
             fill_run_gen=fill_run_gen,
+            resume_only=resume_only,
         )
         return
 
@@ -4849,16 +5636,24 @@ def _run_tailor_then_fill_body(
     if _pipeline_stop_if_aborted(job_id, "PartyRock start"):
         return
     clear_fill_activity(job_id)
+    after_bit = (
+        "generate resume only (no fill)."
+        if resume_only
+        else (
+            "then fast_fill (dummy)." if test_mode else "then fast_fill (real profile)."
+        )
+    )
     pipeline_milestone(
         job_id,
         event="start",
         detail=(
             f"Start ({'Test Mode' if test_mode else 'Real'}): PartyRock {pr_mode}, "
-            f"then {'fast_fill (dummy)' if test_mode else 'fast_fill (real profile)'}."
+            f"{after_bit}"
         ),
         status="tailoring",
         status_detail=(
             f"Started. Opening PartyRock ({pr_mode}): {pr_url}"
+            + (" — fill will not start." if resume_only else "")
         ),
     )
     with _lock:
@@ -4872,42 +5667,97 @@ def _run_tailor_then_fill_body(
         # PartyRock actually needs to tailor against lives in its own file.
         full_jd_file = RESUMES_DIR / job_id / "jd_full.txt"
         job_description = full_jd_file.read_text() if full_jd_file.exists() else (job.get("job_description") or "")
+        job_title = (job.get("title") or "").strip()
+        job_company = (job.get("company") or "").strip()
         job_location = (job.get("location") or "").strip()
         apply_url = job.get("apply_url") or job.get("job_url") or ""
 
     if not job_description.strip():
-        # Manually-added jobs start with no description fetched yet - the
-        # agent has to get that (and everything else) from the real apply
-        # page first, so automated tailoring can't run yet this turn.
-        # No JD yet — agent must fetch posting first; automated tailor cannot run.
+        # Deterministic extract once — do not open-end an agent fetch loop.
         if _pipeline_stop_if_aborted(job_id, "JD fetch (no description yet)"):
             return
-        pipeline_milestone(
-            job_id,
-            event="agent",
-            detail="No job description yet — agent will fetch posting then tailor/fill.",
-            status_detail="No JD on file; agent fetching apply page then continuing pipeline.",
-        )
-        _ensure_openclaw_managed_browser()
-        run_agent_message(
-            session_key,
-            playbook_preamble() +
-            "Follow PLAYBOOK.md above for this job. Here is its current full "
-            f"record (do NOT read jobs.json yourself - it has 800+ entries "
-            f"and reading the whole file wastes a huge number of tokens for "
-            f"one record; use scripts/get_job.py {job_id} if you ever need "
-            f"it again, and scripts/update_job.py {job_id} [--field value ...] "
-            f"to write changes, never a direct read/write of the file):"
-            f"\n\n{json.dumps(job, indent=2)}\n\n"
-            f"PartyRock app for this run ({pr_mode}): {pr_url}\n\n"
-            "It has no job_description yet - fetch the real posting details "
-            "from apply_url first (then save them with update_job.py's "
-            "--company/--title/--location/--job-description flags), then "
-            "continue the full pipeline (tailor resume, fill the "
-            "application) and stop at ready_for_review. Never submit.",
-            timeout_s=1800,
-        )
-        return
+        extract_url = (apply_url or "").strip()
+        if extract_url:
+            pipeline_milestone(
+                job_id,
+                event="jd",
+                detail="No JD on file — running extract_job_posting once…",
+                status_detail="No JD on file; extracting posting once…",
+            )
+            try:
+                proc = subprocess.run(
+                    [
+                        PYTHON_BIN,
+                        "-u",
+                        str(ROOT / "scripts" / "extract_job_posting.py"),
+                        extract_url,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    result = json.loads(proc.stdout)
+                    description = (result.get("description") or "").strip()
+                    if description:
+                        job_dir = RESUMES_DIR / job_id
+                        job_dir.mkdir(parents=True, exist_ok=True)
+                        (job_dir / "jd_full.txt").write_text(description)
+                        preview = description if len(description) <= 500 else (
+                            description[: description.rfind(" ", 0, 500)]
+                            + " … [full text in resumes/<id>/jd_full.txt]"
+                        )
+                        with _lock:
+                            with locked_jobs_for_write() as data:
+                                job_u = next(
+                                    (j for j in data["jobs"] if j["id"] == job_id),
+                                    None,
+                                )
+                                if job_u is not None:
+                                    if result.get("company"):
+                                        job_u["company"] = result["company"].strip()
+                                        stamp_company_key(job_u)
+                                        job_company = job_u["company"]
+                                    if result.get("title"):
+                                        job_u["title"] = result["title"].strip()
+                                        job_title = job_u["title"]
+                                    if result.get("location"):
+                                        job_u["location"] = result["location"].strip()
+                                        job_location = job_u["location"]
+                                    job_u["job_description"] = preview
+                                    job_u["updated_at"] = now_iso()
+                        job_description = description
+            except Exception as e:
+                print(f"warn: extract_job_posting for {job_id} failed: {e}")
+        if not job_description.strip():
+            detail = (
+                "No job description after extract_job_posting — cannot tailor. "
+                "Paste a JD or fix the apply URL, then Retry."
+            )
+            pipeline_milestone(
+                job_id,
+                event="error",
+                detail=detail,
+                status="stuck",
+                status_detail=detail,
+            )
+            try:
+                close_job_partyrock_tab(job_id, RESUMES_DIR / job_id)
+            except Exception as e:
+                print(f"warn: PartyRock tab close on empty JD for {job_id}: {e}")
+            return
+        # Extract succeeded — refresh local job snapshot for later steps.
+        with _lock:
+            data = read_jobs()
+            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+            if job is None:
+                return
+            session_key = job["session_key"]
+            job_title = (job.get("title") or job_title or "").strip()
+            job_company = (job.get("company") or job_company or "").strip()
+            job_location = (job.get("location") or job_location or "").strip()
+            apply_url = job.get("apply_url") or job.get("job_url") or apply_url
+
 
     job_dir = RESUMES_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -4937,15 +5787,15 @@ def _run_tailor_then_fill_body(
             status_detail="Reusing previously tailored resume (already on disk). Navigating to apply URL.",
         )
         with _lock:
-            data = read_jobs()
-            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-            if job is not None:
-                job["resume_path"] = str(resume_pdf.relative_to(ROOT))
-                job["updated_at"] = now_iso()
-                write_jobs(data)
+            with locked_jobs_for_write() as data:
+                job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+                if job is not None:
+                    job["resume_path"] = str(resume_pdf.relative_to(ROOT))
+                    sync_job_resume_on_disk(job)
+                    job["updated_at"] = now_iso()
     else:
         # Each run opens its own PartyRock CDP tab (partyrock_tabs.py); parallel
-        # tailor across jobs is allowed. Tab stays open until Mark as applied.
+        # tailor across jobs is allowed. The tab closes after resume collection.
         pipeline_milestone(
             job_id,
             event="partyrock",
@@ -4995,11 +5845,12 @@ def _run_tailor_then_fill_body(
             [
                 PYTHON_BIN, "-u", str(TAILOR_SCRIPT),
                 "--jd-file", str(jd_file),
+                "--title", job_title,
+                "--company", job_company,
                 "--location", job_location,
                 "--out", str(resume_tex),
                 "--timeout", str(TAILOR_TIMEOUT_S - 100),
                 "--job-id", job_id,
-                "--keep-open",
                 tailor_flag,
             ],
             f"tailor_{job_id}.log", TAILOR_TIMEOUT_S, track_key=session_key,
@@ -5047,8 +5898,10 @@ def _run_tailor_then_fill_body(
                 "manual PartyRock steps instead: run `./open_partyrock.sh` "
                 f"(OpenClaw Chrome-for-Testing, CDP :18800, shared login — "
                 f"NOT a generic IDE/browser tool) for mode {pr_mode}, open "
-                f"{pr_url}, paste the job description with a leading "
-                f"`Location: {job_location or 'Unknown'}` line, wait for it "
+                f"{pr_url}, paste the job description with leading "
+                f"`Role Title: {job_title or 'Unknown'}`, "
+                f"`Company: {job_company or 'Unknown'}`, and "
+                f"`Location: {job_location or 'Unknown'}` lines, wait for it "
                 "to finish, and "
                 f"save the resulting LaTeX to {resume_tex}. Do NOT compile it "
                 "yourself, do NOT pick a mailing address, do NOT proceed to "
@@ -5115,29 +5968,17 @@ def _run_tailor_then_fill_body(
             activity_job_id=job_id,
         )
 
-        with _lock:
-            data = read_jobs()
-            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-            if (
-                job is not None
-                and job.get("status") not in FILL_ABORT_STATUSES
-                and not _fill_run_stale(job_id)
-            ):
-                if compile_exit == 0 and resume_pdf.exists():
-                    job["resume_path"] = str(resume_pdf.relative_to(ROOT))
-                    job["status"] = "navigating"
-                    job["status_detail"] = "Resume tailored and compiled. Preparing fill…"
-                else:
-                    job["status"] = "stuck"
-                    job["question"] = (
-                        f"{resume_tex} was produced but tectonic failed to "
-                        f"compile it (exit {compile_exit}, see {compile_log}). The LaTeX likely has "
-                        "a real syntax error - can you check it, or should I have the agent fix it?"
-                    )
-                job["updated_at"] = now_iso()
-                write_jobs(data)
+        compile_ok = compile_exit == 0 and resume_pdf.exists()
+        _persist_compiled_resume_after_tectonic(
+            job_id,
+            resume_pdf=resume_pdf,
+            compile_ok=compile_ok,
+            compile_exit=compile_exit,
+            compile_log=compile_log,
+            resume_only=resume_only,
+        )
 
-        if compile_exit != 0 or not resume_pdf.exists():
+        if not compile_ok:
             if _pipeline_stop_if_aborted(job_id, "PDF compile failure"):
                 return
             append_fill_activity(
@@ -5149,12 +5990,42 @@ def _run_tailor_then_fill_body(
                 session_key,
                 (playbook_preamble() if not playbook_already_sent else "") +
                 f"{resume_tex} was produced but tectonic failed to compile it "
-                f"(see {compile_log}). Read the .tex file, fix the LaTeX error, recompile with "
-                f"tectonic, then continue the pipeline (fill the application, stop at "
-                "ready_for_review, never submit).",
+                f"(see {compile_log}). Read the .tex file, fix the LaTeX error, and "
+                f"recompile with tectonic so {resume_pdf} exists. "
+                "Do NOT fill the application, do NOT pick an address, and do NOT "
+                "set ready_for_review — only fix tex→pdf, then end your turn. "
+                "The server resumes the pipeline after compile succeeds.",
                 timeout_s=1800,
             )
-            return
+            # Resume pipeline only if agent produced a PDF; else stay stuck.
+            if resume_pdf.exists() and not _job_fill_aborted(job_id):
+                _persist_compiled_resume_after_tectonic(
+                    job_id,
+                    resume_pdf=resume_pdf,
+                    compile_ok=True,
+                    compile_exit=0,
+                    compile_log=compile_log,
+                    resume_only=resume_only,
+                )
+                append_fill_activity(
+                    job_id,
+                    event="pdf",
+                    detail="PDF compile recovered after agent tex fix — resuming pipeline.",
+                )
+            else:
+                if not _job_fill_aborted(job_id):
+                    _patch_job(
+                        job_id,
+                        status="stuck",
+                        status_detail=(
+                            f"Tectonic still failing after agent fix attempt "
+                            f"(see {compile_log.name})."
+                        ),
+                        question=(
+                            f"Could not compile {resume_tex}. Check the log, fix LaTeX, Retry."
+                        ),
+                    )
+                return
 
         # Best-effort: shrink layout (margin/line-spacing only, never content -
         # see scripts/fit_resume_pages.py) if the resume ran past 2 pages. A
@@ -5189,20 +6060,42 @@ def _run_tailor_then_fill_body(
 
     # Permanent user-facing copy for Command Center Documents/Resumes
     # (symlink → resumes/by_company/). After fit so the published PDF is final.
+    published_name = None
     if resume_pdf.exists():
         with _lock:
-            data = read_jobs()
-            job = next((j for j in data["jobs"] if j["id"] == job_id), None)
-            if job is not None:
-                pub = _publish_resume_by_company(job, resume_pdf, data)
-                job["updated_at"] = now_iso()
-                write_jobs(data)
-                if pub is not None:
-                    append_fill_activity(
-                        job_id,
-                        event="resume",
-                        detail=f"Published resume → {pub.name}",
-                    )
+            with locked_jobs_for_write() as data:
+                job = next((j for j in data["jobs"] if j["id"] == job_id), None)
+                if job is not None:
+                    pub = _publish_resume_by_company(job, resume_pdf, data)
+                    job["updated_at"] = now_iso()
+                    if pub is not None:
+                        published_name = pub.name
+                    else:
+                        published_name = conventional_resume_filename(job) or None
+        if published_name is not None:
+            append_fill_activity(
+                job_id,
+                event="resume",
+                detail=f"Published resume → {published_name}",
+            )
+
+    if resume_only:
+        if resume_pdf.exists():
+            _complete_resume_only(
+                job_id, test_mode=test_mode, resume_label=published_name
+            )
+        else:
+            pipeline_milestone(
+                job_id,
+                event="error",
+                detail="Generate resume only: no PDF produced.",
+                status="stuck",
+                status_detail=(
+                    f"{_fill_mode_prefix(test_mode)} Generate resume only failed — "
+                    "no PDF on disk."
+                ),
+            )
+        return
 
     # The browser tool's file-upload only accepts paths under
     # ~/.openclaw/media/inbound - observed live, the agent tried uploading
@@ -5211,8 +6104,9 @@ def _run_tailor_then_fill_body(
     # itself before every single fill turn. Doing that copy here instead
     # means the agent is never handed a path it can't actually use.
     INBOUND_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-    inbound_resume = INBOUND_MEDIA_DIR / f"{job_id}-resume.pdf"
-    shutil.copyfile(resume_pdf, inbound_resume)
+    if published_name:
+        inbound_resume = INBOUND_MEDIA_DIR / published_name
+        shutil.copyfile(resume_pdf, inbound_resume)
     _cleanup_old_inbound_resumes()
 
     # -----------------------------------------------------------------
@@ -5238,45 +6132,46 @@ def _run_tailor_then_fill_body(
         )
         return
 
-    # Real mode: pick mailing address once and hand it to fast_fill via
-    # FASTFILL_ADDRESS_TEXT — avoids a second random suburb pick inside
-    # prepare_real_run that would disagree with Live activity.
+    # Real mode (incl. skip-PartyRock): pick mailing address once and hand it
+    # to fast_fill via FASTFILL_ADDRESS_TEXT — deterministic by job_id.
     address_text: str | None = None
     if not test_mode:
-        addr_exit, addr_log = _run_subprocess_step(
-            [
-                PYTHON_BIN,
-                "-u",
-                str(ROOT / "scripts" / "pick_address.py"),
-                str(resume_tex),
-                "--location",
-                job_location,
-            ],
-            f"pick_address_{job_id}.log", 15, track_key=session_key,
-            activity_job_id=job_id,
-        )
-        if addr_exit != 0:
-            print(
-                f"warn: pick_address.py exit={addr_exit} for {job_id} - "
-                f"see {addr_log}; prepare_real_run will retry"
+        address_text = _ensure_fill_address(job_id, job_location=job_location)
+        if address_text is None:
+            # Fall back to pick_address.py subprocess with --job-id seed.
+            addr_exit, addr_log = _run_subprocess_step(
+                [
+                    PYTHON_BIN,
+                    "-u",
+                    str(ROOT / "scripts" / "pick_address.py"),
+                    str(resume_tex if resume_tex.exists() else resume_pdf),
+                    "--location",
+                    job_location,
+                    "--job-id",
+                    job_id,
+                ],
+                f"pick_address_{job_id}.log", 15, track_key=session_key,
+                activity_job_id=job_id,
             )
-        else:
-            try:
-                pick = json.loads(Path(addr_log).read_text(encoding="utf-8"))
-                address_text = _format_address_pick(pick)
-                if address_text:
-                    # Persist the exact fill-time pick so Applied tracking does
-                    # not need to infer it later from profile data or activity.
-                    _patch_job(job_id, applied_address=address_text)
-                    append_fill_activity(
-                        job_id,
-                        event="address",
-                        detail=f"Mailing address for fill: {address_text}",
+            if addr_exit == 0:
+                try:
+                    pick = json.loads(Path(addr_log).read_text(encoding="utf-8"))
+                    address_text = _format_address_pick(pick)
+                    if address_text:
+                        _patch_job(job_id, applied_address=address_text)
+                        append_fill_activity(
+                            job_id,
+                            event="address",
+                            detail=f"Mailing address for fill: {address_text}",
+                        )
+                except Exception as e:
+                    print(
+                        f"warn: could not parse pick_address output for {job_id}: {e}"
                     )
-            except Exception as e:
+            else:
                 print(
-                    f"warn: could not parse pick_address output for {job_id}: {e}; "
-                    "prepare_real_run will resolve address itself"
+                    f"warn: pick_address.py exit={addr_exit} for {job_id} - "
+                    f"see {addr_log}; prepare_real_run will retry"
                 )
 
     mode_bit = "dummy" if test_mode else "real profile"
@@ -5294,8 +6189,8 @@ def _run_tailor_then_fill_body(
             f"{apply_url_s[:160]}"
         ),
     )
-    # headed=True so the form is visible for review. PartyRock tab for this
-    # job stays open until Mark as applied (separate CDP target).
+    # headed=True so the form is visible for review. The separate PartyRock
+    # target has already closed after resume collection.
     # Flash / captcha-wait / hold-open / refill identical for dummy and real.
     if _pipeline_stop_if_aborted(job_id, "fast_fill launch"):
         return
@@ -5369,18 +6264,17 @@ def run_agent_message(session_key: str, message: str, timeout_s: int = 1200,
                     detail=detail,
                 )
                 with _lock:
-                    data = read_jobs()
-                    job = next(
-                        (j for j in data["jobs"] if j["id"] == job_id_guess), None
-                    )
-                    if job is not None and job.get("status") in IN_PROGRESS_STATUSES:
-                        job["status"] = "stuck"
-                        job["status_detail"] = (
-                            f"Agent fill aborted (exit {exit_code}). "
-                            "Never submitted. Retry Start or use Fast fill."
-                        )[:500]
-                        job["updated_at"] = now_iso()
-                        write_jobs(data)
+                    with locked_jobs_for_write() as data:
+                        job = next(
+                            (j for j in data["jobs"] if j["id"] == job_id_guess), None
+                        )
+                        if job is not None and job.get("status") in IN_PROGRESS_STATUSES:
+                            job["status"] = "stuck"
+                            job["status_detail"] = (
+                                f"Agent fill aborted (exit {exit_code}). "
+                                "Never submitted. Retry Start or use Fast fill."
+                            )[:500]
+                            job["updated_at"] = now_iso()
         except Exception:
             pass
 
@@ -5633,50 +6527,54 @@ def _force_stuck_orphaned_in_progress(*, ignore_age: bool = False) -> list[str]:
     """
     forced: list[str] = []
     with _lock:
-        data = read_jobs()
-        changed = False
-        for job in data.get("jobs") or []:
-            if job.get("status") not in IN_PROGRESS_STATUSES:
-                continue
-            if job.get("status") in FILL_ABORT_STATUSES:
-                continue
-            session_key = job.get("session_key")
-            proc = _running_procs.get(session_key) if session_key else None
-            if proc is not None and proc.poll() is None:
-                continue
-            if not ignore_age:
-                try:
-                    updated_ts = datetime.fromisoformat(
-                        str(job.get("updated_at") or "").replace("Z", "+00:00")
-                    )
-                except Exception:
-                    updated_ts = None
-                age_s = (now_dt() - updated_ts).total_seconds() if updated_ts else 9999
-                if age_s < STALE_AFTER_S:
+        with locked_jobs_for_write() as data:
+            for job in data.get("jobs") or []:
+                if job.get("status") not in IN_PROGRESS_STATUSES:
                     continue
-            jid = job.get("id") or "?"
-            job["status"] = "stuck"
-            job["status_detail"] = (
-                "No running fill/tailor process — in-progress status was orphaned "
-                "(server restart or crashed worker). Use Retry or Skip."
-            )
-            job["question"] = (
-                "This job was left in-progress with nothing running. "
-                "Check Live Activity, then Retry or Skip."
-            )
-            job["updated_at"] = now_iso()
-            _append_timeline_locked(
-                job,
-                _timeline_entry(
-                    event="stuck",
-                    detail=job["status_detail"],
-                    at=job["updated_at"],
-                ),
-            )
-            forced.append(str(jid))
-            changed = True
-        if changed:
-            write_jobs(data)
+                if job.get("status") in FILL_ABORT_STATUSES:
+                    continue
+                session_key = job.get("session_key")
+                proc = _running_procs.get(session_key) if session_key else None
+                if proc is not None and proc.poll() is None:
+                    continue
+                if not ignore_age:
+                    try:
+                        updated_ts = datetime.fromisoformat(
+                            str(job.get("updated_at") or "").replace("Z", "+00:00")
+                        )
+                    except Exception:
+                        updated_ts = None
+                    age_s = (now_dt() - updated_ts).total_seconds() if updated_ts else 9999
+                    if age_s < STALE_AFTER_S:
+                        continue
+                jid = job.get("id") or "?"
+                job["status"] = "stuck"
+                job["status_detail"] = (
+                    "No running fill/tailor process — in-progress status was orphaned "
+                    "(server restart or crashed worker). Use Retry or Skip."
+                )
+                job["question"] = (
+                    "This job was left in-progress with nothing running. "
+                    "Check Live Activity, then Retry or Skip."
+                )
+                job["updated_at"] = now_iso()
+                _append_timeline_locked(
+                    job,
+                    _timeline_entry(
+                        event="stuck",
+                        detail=job["status_detail"],
+                        at=job["updated_at"],
+                    ),
+                )
+                forced.append(str(jid))
+    # CDP close is intentionally outside the jobs lock: a restart/dead worker
+    # must not leave its tracked PartyRock page idle, and network I/O must not
+    # block unrelated dashboard reads/writes.
+    for jid in forced:
+        try:
+            close_job_partyrock_tab(jid, RESUMES_DIR / jid)
+        except Exception as e:
+            print(f"warn: PartyRock tab close on orphan reconcile for {jid}: {e}")
     return forced
 
 
@@ -5774,62 +6672,61 @@ def reconcile_loop():
             # jobs.json fresh in case something else wrote to it during
             # phase 2's unlocked window.
             with _lock:
-                data = read_jobs()
-                by_id = {j["id"]: j for j in data["jobs"]}
-                for job_id, session_key, detail in to_retry:
-                    job = by_id.get(job_id)
-                    if job is None:
-                        continue
-                    if job.get("status") not in IN_PROGRESS_STATUSES:
-                        continue
-                    job["status_detail"] = (
-                        f"Previous run ended ({detail}) without finishing - "
-                        "automatically retrying once before asking for help."
-                    )
-                    job["updated_at"] = now_iso()
-                for job_id, detail in to_stuck:
-                    job = by_id.get(job_id)
-                    if job is None:
-                        continue
-                    if job.get("status") not in IN_PROGRESS_STATUSES:
-                        continue
-                    job["status"] = "stuck"
-                    job["status_detail"] = (
-                        f"Session ended ({detail}) and nothing is currently running - an "
-                        "automatic retry was already attempted once and also didn't finish."
-                    )
-                    job["question"] = (
-                        f"The last two runs ended ({detail}) without reaching a stopping "
-                        "point, including one automatic retry. Check Live Activity for "
-                        "details. Reply here to give guidance, or use Start to retry "
-                        "manually / Skip to give up on this one."
-                    )
-                    job["updated_at"] = now_iso()
-                for job_id, detail in to_orphan_stuck:
-                    job = by_id.get(job_id)
-                    if job is None:
-                        continue
-                    if job.get("status") not in IN_PROGRESS_STATUSES:
-                        continue
-                    job["status"] = "stuck"
-                    job["status_detail"] = (
-                        "No running fill/tailor process — in-progress status was orphaned "
-                        "(server restart or crashed worker). Use Retry or Skip."
-                    )
-                    job["question"] = (
-                        "This job was left in-progress with nothing running. "
-                        "Check Live Activity, then Retry or Skip."
-                    )
-                    job["updated_at"] = now_iso()
-                    _append_timeline_locked(
-                        job,
-                        _timeline_entry(
-                            event="stuck",
-                            detail=job["status_detail"],
-                            at=job["updated_at"],
-                        ),
-                    )
-                write_jobs(data)
+                with locked_jobs_for_write() as data:
+                    by_id = {j["id"]: j for j in data["jobs"]}
+                    for job_id, session_key, detail in to_retry:
+                        job = by_id.get(job_id)
+                        if job is None:
+                            continue
+                        if job.get("status") not in IN_PROGRESS_STATUSES:
+                            continue
+                        job["status_detail"] = (
+                            f"Previous run ended ({detail}) without finishing - "
+                            "automatically retrying once before asking for help."
+                        )
+                        job["updated_at"] = now_iso()
+                    for job_id, detail in to_stuck:
+                        job = by_id.get(job_id)
+                        if job is None:
+                            continue
+                        if job.get("status") not in IN_PROGRESS_STATUSES:
+                            continue
+                        job["status"] = "stuck"
+                        job["status_detail"] = (
+                            f"Session ended ({detail}) and nothing is currently running - an "
+                            "automatic retry was already attempted once and also didn't finish."
+                        )
+                        job["question"] = (
+                            f"The last two runs ended ({detail}) without reaching a stopping "
+                            "point, including one automatic retry. Check Live Activity for "
+                            "details. Reply here to give guidance, or use Start to retry "
+                            "manually / Skip to give up on this one."
+                        )
+                        job["updated_at"] = now_iso()
+                    for job_id, detail in to_orphan_stuck:
+                        job = by_id.get(job_id)
+                        if job is None:
+                            continue
+                        if job.get("status") not in IN_PROGRESS_STATUSES:
+                            continue
+                        job["status"] = "stuck"
+                        job["status_detail"] = (
+                            "No running fill/tailor process — in-progress status was orphaned "
+                            "(server restart or crashed worker). Use Retry or Skip."
+                        )
+                        job["question"] = (
+                            "This job was left in-progress with nothing running. "
+                            "Check Live Activity, then Retry or Skip."
+                        )
+                        job["updated_at"] = now_iso()
+                        _append_timeline_locked(
+                            job,
+                            _timeline_entry(
+                                event="stuck",
+                                detail=job["status_detail"],
+                                at=job["updated_at"],
+                            ),
+                        )
 
             # Fire retry turns after releasing the lock - each spawns its
             # own thread anyway, no reason to hold the lock for it.
@@ -5856,6 +6753,7 @@ def now_dt():
 
 
 def _append_deleted_timeline(job: dict, *, detail: str, at: str | None = None) -> None:
+    """Caller must already hold ``_lock`` (uses ``_append_timeline_locked``)."""
     _append_timeline_locked(
         job,
         _timeline_entry(
@@ -5873,7 +6771,7 @@ def _mark_job_soft_deleted(
     status_detail: str,
     duplicate_of: str | None = None,
 ) -> None:
-    """In-lock soft-delete fields (Deleted trash). Caller writes jobs.json."""
+    """In-lock soft-delete fields (Deleted trash). Caller must hold ``_lock``."""
     now = now_iso()
     job["status"] = "deleted"
     job["deleted_at"] = now
@@ -5885,16 +6783,73 @@ def _mark_job_soft_deleted(
     _append_deleted_timeline(job, detail=status_detail, at=now)
 
 
+_PROGRESS_CANCEL_ORIGINS = frozenset(
+    {"tailoring", "navigating", "filling", "resuming", "resume_ready"}
+)
+_STUCK_CANCEL_ORIGINS = frozenset({"stuck", "blocked_captcha"})
+_READY_CANCEL_ORIGINS = frozenset({"ready_for_review"})
+
+
+def _clear_job_run_markers_locked(job: dict) -> None:
+    """Drop live-run fields; keep resume_path. Caller must hold ``_lock``."""
+    job["question"] = None
+    job["pending_command"] = None
+    job.pop("ready_announced", None)
+
+
+def _park_job_after_cancel(job: dict, *, origin_status: str | None = None) -> None:
+    """Abort the run but keep the job in its OmniDex queue bucket.
+
+    In Progress → ``resume_ready`` (parked, not a live thread).
+    Stuck / CAPTCHA → stay stuck / blocked_captcha.
+    Ready → stay ``ready_for_review``.
+    Never demotes to Open (``discovered``).
+
+    Caller must already hold ``_lock``.
+    """
+    origin = (origin_status or job.get("status") or "").strip()
+    resume_path = job.get("resume_path")
+    now = now_iso()
+    if origin in _STUCK_CANCEL_ORIGINS:
+        job["status"] = origin
+        if origin == "blocked_captcha":
+            job["status_detail"] = "Run cancelled by user — still on CAPTCHA hold."
+        else:
+            job["status_detail"] = "Run cancelled by user — still stuck."
+    elif origin in _READY_CANCEL_ORIGINS:
+        job["status"] = "ready_for_review"
+        job["status_detail"] = "Run cancelled by user — still Ready for review."
+    elif origin in _PROGRESS_CANCEL_ORIGINS:
+        job["status"] = "resume_ready"
+        job["status_detail"] = "Cancelled by user — run stopped. Fill when you want."
+    else:
+        job["status_detail"] = "Cancelled by user — run stopped."
+    job["updated_at"] = now
+    _clear_job_run_markers_locked(job)
+    if resume_path:
+        job["resume_path"] = resume_path
+    _append_timeline_locked(
+        job,
+        _timeline_entry(
+            event="cancelled",
+            detail=job["status_detail"],
+            at=now,
+        ),
+    )
+
+
 def _reset_job_to_open_after_cancel(job: dict) -> None:
-    """Cancel → Open: keep resume_path / disk resume; clear in-progress markers."""
+    """Legacy cancelled → Open (migration only). Keep resume_path / disk resume.
+
+    Caller must already hold ``_lock``. Live Cancel clicks use
+    ``_park_job_after_cancel`` instead so In Progress / Stuck / Ready stay put.
+    """
     resume_path = job.get("resume_path")
     now = now_iso()
     job["status"] = "discovered"
     job["status_detail"] = "Cancelled by user — returned to Open."
     job["updated_at"] = now
-    job["question"] = None
-    job["pending_command"] = None
-    job.pop("ready_announced", None)
+    _clear_job_run_markers_locked(job)
     if resume_path:
         job["resume_path"] = resume_path
     _append_timeline_locked(
@@ -5958,34 +6913,29 @@ def migrate_triage_holding_pen_once() -> dict:
     }
     to_block: list[dict] = []
     with _lock:
-        data = read_jobs()
-        changed = False
-        for job in data.get("jobs") or []:
-            st = job.get("status")
-            if st in LEGACY_SKIP_STATUSES:
-                detail = (job.get("status_detail") or "").strip() or (
-                    f"Migrated from {st} (Skipped holding pen removed)."
-                )
-                _mark_job_soft_deleted(
-                    job,
-                    deleted_reason=reason_map.get(st, "skipped_manual"),
-                    status_detail=detail,
-                    duplicate_of=job.get("duplicate_of"),
-                )
-                counts["skipped_to_deleted"] += 1
-                changed = True
-                if st != "skipped_duplicate":
-                    to_block.append(dict(job))
-            elif st == "cancelled":
-                _reset_job_to_open_after_cancel(job)
-                # Migration copy: clarify backlog reset (not a fresh Cancel click).
-                job["status_detail"] = (
-                    "Migrated from cancelled — returned to Open for retry."
-                )
-                counts["cancelled_to_open"] += 1
-                changed = True
-        if changed:
-            write_jobs(data)
+        with locked_jobs_for_write() as data:
+            for job in data.get("jobs") or []:
+                st = job.get("status")
+                if st in LEGACY_SKIP_STATUSES:
+                    detail = (job.get("status_detail") or "").strip() or (
+                        f"Migrated from {st} (Skipped holding pen removed)."
+                    )
+                    _mark_job_soft_deleted(
+                        job,
+                        deleted_reason=reason_map.get(st, "skipped_manual"),
+                        status_detail=detail,
+                        duplicate_of=job.get("duplicate_of"),
+                    )
+                    counts["skipped_to_deleted"] += 1
+                    if st != "skipped_duplicate":
+                        to_block.append(dict(job))
+                elif st == "cancelled":
+                    _reset_job_to_open_after_cancel(job)
+                    # Migration copy: clarify backlog reset (not a fresh Cancel click).
+                    job["status_detail"] = (
+                        "Migrated from cancelled — returned to Open for retry."
+                    )
+                    counts["cancelled_to_open"] += 1
     for snap in to_block:
         try:
             block_deleted_job(snap, keep_tombstone=True)
@@ -6007,6 +6957,17 @@ class Handler(BaseHTTPRequestHandler):
         """HEAD must succeed — some embedded browsers / proxies probe before GET."""
         parsed = urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
+        # Match GET /api/jobs so probes do not 404 while the list endpoint works.
+        if parts == ["api", "jobs"]:
+            with _lock:
+                body, etag = _cached_jobs_list_response()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("ETag", etag)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            return
         if not parts:
             path, ctype = STATIC_DIR / "index.html", "text/html"
         elif parts[0] == "app.js":
@@ -6031,14 +6992,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Expires", "0")
         self.end_headers()
 
-    def _send_json(self, obj, status=200):
-        body = json.dumps(obj).encode()
+    def _send_json(self, obj=None, status=200, *, headers=None, body_bytes=None):
+        body = body_bytes if body_bytes is not None else json.dumps(obj).encode()
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        if status != 304:
+            self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(body)
+        if body:
+            self.wfile.write(body)
 
     def _send_file(self, path: Path, content_type: str, inline_filename: str | None = None):
         if not path.exists():
@@ -6068,18 +7033,16 @@ class Handler(BaseHTTPRequestHandler):
         return next((j for j in data["jobs"] if j["id"] == job_id), None)
 
     @contextmanager
-    def _locked_job(self, job_id):
-        """Hold ``_lock`` while yielding ``(data, job)`` for a job lookup.
+    def _locked_job(self, job_id, *, allow_purge: bool = False):
+        """Hold ``_lock`` + EX flock while yielding ``(data, job)``.
 
-        Consolidates the ``with _lock: data = read_jobs(); job = self._job(...)``
-        prologue repeated across the mutating handlers. The lock is held for the
-        whole ``with`` body — byte-for-byte the same lock scope those handlers
-        used before — and callers still emit their own ``{"error": "not found"}``
-        404 when ``job is None``.
+        Full read-mutate-write under ``locked_jobs_for_write`` so discovery
+        adds cannot be wiped by a stale snapshot. Callers mutate ``data`` in
+        place; it is written on clean exit (do not call ``write_jobs``).
         """
         with _lock:
-            data = read_jobs()
-            yield data, self._job(data, job_id)
+            with locked_jobs_for_write(allow_purge=allow_purge) as data:
+                yield data, self._job(data, job_id)
 
     # POST /api/jobs/<id>/<action> → (handler method name, whether it takes the
     # JSON payload). Data-driven replacement for the hand-unrolled per-action
@@ -6098,7 +7061,9 @@ class Handler(BaseHTTPRequestHandler):
         "edit": ("_handle_edit_applied", True),
         "submitted": ("_handle_mark_submitted", False),
         "claim-ready-announcement": ("_handle_claim_ready_announcement", False),
+        "resume-latex": ("_handle_resume_latex_save", True),
         "start": ("_handle_start", True),
+        "resolve-apply": ("_handle_resolve_apply", True),
     }
 
     # ---------------------------------------------------------------- GET
@@ -6109,11 +7074,28 @@ class Handler(BaseHTTPRequestHandler):
         if not parts:
             self._send_file(STATIC_DIR / "index.html", "text/html")
             return
+        # Classic UI retired — keep bookmark redirects to Ops `/`.
+        if parts[0] in ("classic", "classic.html", "classic.js"):
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
+        # Ops preview merged into `/` — redirect so bookmarks still work.
+        if parts[0] in ("ops-preview", "ops-preview.html"):
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
         if parts[0] == "app.js":
             self._send_file(STATIC_DIR / "app.js", "application/javascript")
             return
         if parts[0] == "job_sort.js":
             self._send_file(STATIC_DIR / "job_sort.js", "application/javascript")
+            return
+        if parts == ["api", "stats"]:
+            with _lock:
+                data = read_jobs()
+            self._send_json(aggregate_stats(data.get("jobs", [])))
             return
         if len(parts) == 2 and parts[0] == "resume":
             with _lock:
@@ -6122,19 +7104,23 @@ class Handler(BaseHTTPRequestHandler):
             if not job:
                 self._send_json({"error": "not found"}, 404)
                 return
-            disk = resolve_job_resume_file(job)
+            disk = _ensure_conventional_resume_pdf(job["id"])
             if disk is None:
                 self._send_json({"error": "not found"}, 404)
                 return
-            filename = f"{job.get('company') or job['id']}_resume.pdf"
+            filename = disk.name
             self._send_file(disk, "application/pdf", inline_filename=filename)
             return
         if parts == ["api", "jobs"]:
             with _lock:
-                data = read_jobs()
+                body, etag = _cached_jobs_list_response()
             # Omit JD bodies from the list poll — full cleaned text is
             # GET /api/jobs/<id>/description on expand.
-            self._send_json(jobs_list_response(data))
+            headers = {"ETag": etag}
+            if self.headers.get("If-None-Match") == etag:
+                self._send_json(status=304, headers=headers, body_bytes=b"")
+            else:
+                self._send_json(headers=headers, body_bytes=body)
             return
         if parts == ["api", "status"]:
             self._send_json(runtime_status())
@@ -6163,6 +7149,45 @@ class Handler(BaseHTTPRequestHandler):
                 "source": source,
                 "chars": len(cleaned),
             })
+            return
+        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "copy-kit":
+            qs = parse_qs(parsed.query)
+            if "test_mode" not in qs:
+                self._send_json(
+                    {
+                        "error": (
+                            "test_mode required (true = dummy identity, "
+                            "false = real profile)"
+                        )
+                    },
+                    400,
+                )
+                return
+            try:
+                test_mode = _parse_test_mode({"test_mode": qs.get("test_mode", [""])[0]})
+            except ValueError as e:
+                self._send_json({"error": str(e)}, 400)
+                return
+            with _lock:
+                data = read_jobs()
+                job = self._job(data, parts[2])
+                job = dict(job) if job else None
+            if not job:
+                self._send_json({"error": "not found"}, 404)
+                return
+            self._send_json(_copy_kit_for_job(job, test_mode=test_mode))
+            return
+        if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "resume-latex":
+            with _lock:
+                data = read_jobs()
+            job = self._job(data, parts[2])
+            if not job:
+                self._send_json({"error": "not found"}, 404)
+                return
+            payload = _resume_latex_for_job(job)
+            payload["id"] = job["id"]
+            status = 409 if payload.get("missing_tex") else 200
+            self._send_json(payload, status)
             return
         if len(parts) == 3 and parts[0:2] == ["api", "jobs"]:
             with _lock:
@@ -6302,24 +7327,23 @@ class Handler(BaseHTTPRequestHandler):
             blocked = []
             session_key = None
             with _lock:
-                data = read_jobs()
-                for j in data["jobs"]:
-                    if j.get("id") == job_id:
-                        removed = j
-                        break
-                if removed is None:
-                    self._send_json({"error": "not found"}, 404)
-                    return
-                session_key = removed.get("session_key")
-                # Soft-delete: keep row for Deleted trash view; block URLs now.
-                if removed.get("status") != "deleted":
-                    _bump_job_fill_gen_locked(removed)
-                    _mark_job_soft_deleted(
-                        removed,
-                        deleted_reason="user",
-                        status_detail="Deleted by user from dashboard.",
-                    )
-                    write_jobs(data)
+                with locked_jobs_for_write() as data:
+                    for j in data["jobs"]:
+                        if j.get("id") == job_id:
+                            removed = j
+                            break
+                    if removed is None:
+                        self._send_json({"error": "not found"}, 404)
+                        return
+                    session_key = removed.get("session_key")
+                    # Soft-delete: keep row for Deleted trash view; block URLs now.
+                    if removed.get("status") != "deleted":
+                        _bump_job_fill_gen_locked(removed)
+                        _mark_job_soft_deleted(
+                            removed,
+                            deleted_reason="user",
+                            status_detail="Deleted by user from dashboard.",
+                        )
             # Kill any in-flight fill/tailor so it cannot undelete at fill-end.
             proc = _running_procs.get(session_key) if session_key else None
             _kill_process_tree(proc)
@@ -6370,7 +7394,6 @@ class Handler(BaseHTTPRequestHandler):
             job["question"] = None
             job["status"] = "resuming"
             job["updated_at"] = now_iso()
-            write_jobs(data)
             session_key = job["session_key"]
 
         def resume_after_command_decision():
@@ -6393,10 +7416,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"ok": True})
 
     def _handle_cancel(self, job_id):
-        """Abort in-flight fill/tailor (or reset stuck/CAPTCHA) and return to Open.
+        """Abort in-flight fill/tailor (or stuck/Ready/CAPTCHA) without leaving the queue.
 
-        Does not leave status=cancelled in a Skipped pile. Keeps resume_path /
-        on-disk resume so Fill can restart cleanly after clearing proc/hold state.
+        Stops subprocesses, wipes fill claim/profiles, and bumps fill_gen so stale
+        pipeline threads cannot clobber the parked status. Keeps the job in
+        In Progress (``resume_ready``), Stuck, or Ready — never demotes to Open.
         """
         with self._locked_job(job_id) as (data, job):
             if job is None:
@@ -6406,9 +7430,12 @@ class Handler(BaseHTTPRequestHandler):
             session_key = job.get("session_key")
             proc = _running_procs.get(session_key) if session_key else None
             proc_alive = proc is not None and proc.poll() is None
-            # UI offers Cancel for in-progress runs and stuck/CAPTCHA jobs; refuse
-            # clobbering applied / ready / deleted / discovered via stale calls.
-            cancellable = status in IN_PROGRESS_STATUSES | NOTIFY_STATUSES or proc_alive
+            # UI offers Cancel for in-progress, stuck/CAPTCHA, resume_ready, and Ready.
+            cancellable = (
+                status in IN_PROGRESS_STATUSES | NOTIFY_STATUSES
+                | {"resume_ready", "ready_for_review"}
+                or proc_alive
+            )
             if not cancellable:
                 self._send_json(
                     {
@@ -6418,12 +7445,9 @@ class Handler(BaseHTTPRequestHandler):
                     409,
                 )
                 return
-            # Brief abort signal so fill daemons stop patching before reset.
-            job["status"] = "cancelled"
-            job["status_detail"] = "Cancelling — returning to Open…"
-            _bump_job_fill_gen_locked(job)
-            job["updated_at"] = now_iso()
-            write_jobs(data)
+            origin_status = status
+            parked_gen = _bump_job_fill_gen_locked(job)
+            _park_job_after_cancel(job, origin_status=origin_status)
             resume_kept = bool(job.get("resume_path"))
         proc = _running_procs.get(session_key) if session_key else None
         _kill_process_tree(proc)
@@ -6450,11 +7474,15 @@ class Handler(BaseHTTPRequestHandler):
             if job is None:
                 self._send_json({"error": "not found"}, 404)
                 return
-            # Only reset if Cancel still owns the abort (or race left cancellable).
             cur = job.get("status")
-            if cur in ("cancelled",) or cur in IN_PROGRESS_STATUSES | NOTIFY_STATUSES:
-                _reset_job_to_open_after_cancel(job)
-                write_jobs(data)
+            # Re-park only if a stale pipeline flipped us back to a live status.
+            # Never clobber applied / deleted / a newer Start (fill_gen moved).
+            if (
+                int(job.get("fill_gen") or 0) == parked_gen
+                and cur not in ({"applied", "deleted"} | set(LEGACY_SKIP_STATUSES))
+                and (cur in IN_PROGRESS_STATUSES or cur == "cancelled")
+            ):
+                _park_job_after_cancel(job, origin_status=origin_status)
             out_status = job.get("status")
             out_detail = job.get("status_detail")
             resume_kept = bool(job.get("resume_path")) or resume_kept
@@ -6544,7 +7572,6 @@ class Handler(BaseHTTPRequestHandler):
                         detail = winner["status_detail"]
                     else:
                         detail = merge_detail
-                    write_jobs(data)
                     removed_snap = dict(loser)
                     block_urls = False
                 else:
@@ -6553,7 +7580,6 @@ class Handler(BaseHTTPRequestHandler):
                         deleted_reason="duplicate",
                         status_detail=detail,
                     )
-                    write_jobs(data)
                     removed_snap = dict(job)
                     block_urls = True
             else:
@@ -6562,13 +7588,16 @@ class Handler(BaseHTTPRequestHandler):
                     deleted_reason=deleted_reason,
                     status_detail=detail,
                 )
-                write_jobs(data)
                 removed_snap = dict(job)
 
         if session_key:
             proc = _running_procs.get(session_key)
             _kill_process_tree(proc)
             abort_gateway_session(session_key)
+        try:
+            close_job_partyrock_tab(job_id, RESUMES_DIR / job_id)
+        except Exception as e:
+            print(f"warn: PartyRock tab close on skip for {job_id}: {e}")
         # Duplicate losers must not tombstone URLs that now live on the winner.
         blocked = []
         if block_urls:
@@ -6634,7 +7663,6 @@ class Handler(BaseHTTPRequestHandler):
                     at=job["updated_at"],
                 ),
             )
-            write_jobs(data)
             job_snapshot = dict(job)
         if was_deleted:
             try:
@@ -6658,6 +7686,12 @@ class Handler(BaseHTTPRequestHandler):
             _bump_job_fill_gen_locked(job)
             job["applied_at"] = applied_at
             job["updated_at"] = applied_at
+            # Phase 5: never leave Applied without a mailing address when the
+            # resume city → fixture bank can resolve one (same as backfill).
+            if not str(job.get("applied_address") or "").strip():
+                resolved = resolve_applied_address_for_job(job)
+                if resolved:
+                    job["applied_address"] = resolved
             _append_timeline_locked(
                 job,
                 _timeline_entry(
@@ -6666,7 +7700,6 @@ class Handler(BaseHTTPRequestHandler):
                     at=job["updated_at"],
                 ),
             )
-            write_jobs(data)
             company, role = job.get("company"), job.get("title")
         # DASH2-006: kill in-flight fill/tailor like Cancel/Delete so Chromium
         # does not keep running after status is already applied.
@@ -6711,7 +7744,8 @@ class Handler(BaseHTTPRequestHandler):
                 subprocess.run(cmd, capture_output=True, timeout=15)
             except Exception as e:
                 print(f"warn: failed to update tracker status for {job_id}: {e}")
-        # Close only this job's held PartyRock tab (other jobs' tabs stay open).
+        # Idempotent cleanup for legacy/manual holds; active tabs for other jobs
+        # are tracked separately and left untouched.
         try:
             pr_close = close_job_partyrock_tab(job_id, RESUMES_DIR / job_id)
             if pr_close.get("target_id"):
@@ -6722,6 +7756,36 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"warn: PartyRock tab close on mark-applied for {job_id}: {e}")
         self._send_json({"ok": True, "status": "applied"})
+
+    def _handle_resolve_apply(self, job_id, payload=None):
+        """Search for a company ATS apply URL when the job is still on LinkedIn.
+
+        High confidence upgrades apply_url (LinkedIn kept on job_url/alts).
+        Medium records a candidate without overwriting. Easy Apply / no ATS
+        host / Workday-iCIMS stay as-is. Default write=True (user clicked);
+        pass ``{"write": false}`` for dry-run.
+        """
+        payload = payload or {}
+        write = True if "write" not in payload else bool(payload.get("write"))
+        try:
+            import resolve_apply_urls as rau
+        except ImportError as e:
+            self._send_json({"error": f"resolver unavailable: {e}"}, 500)
+            return
+        try:
+            out = rau.resolve_job_id(str(job_id), write=write)
+        except Exception as e:
+            self._send_json({"error": str(e)[:300]}, 500)
+            return
+        if not isinstance(out, dict):
+            self._send_json({"error": "resolver returned nothing"}, 500)
+            return
+        if not out.get("ok"):
+            err = str(out.get("error") or "resolve failed")
+            code = 404 if "no job found" in err.lower() else 400
+            self._send_json(out, code)
+            return
+        self._send_json(out)
 
     def _handle_edit_applied(self, job_id, payload):
         try:
@@ -6749,7 +7813,6 @@ class Handler(BaseHTTPRequestHandler):
                     at=job["updated_at"],
                 ),
             )
-            write_jobs(data)
             response_job = slim_job_for_list(job)
         self._send_json({"ok": True, "job": response_job})
 
@@ -6775,7 +7838,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"speak": False, "reason": "already announced"})
                 return
             job["ready_announced"] = True
-            write_jobs(data)
         self._send_json({"speak": True})
 
     def _handle_resume_upload(self, job_id: str, content_length: int) -> None:
@@ -6844,12 +7906,12 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             job["resume_path"] = rel
+            sync_job_resume_on_disk(job)
             job["status_detail"] = f"Resume uploaded ({dest_name})."
             job["updated_at"] = now_iso()
             published = None
             if dest.suffix.lower() == ".pdf":
                 published = _publish_resume_by_company(job, dest, data)
-            write_jobs(data)
         detail = f"Uploaded resume → {rel}"
         if published is not None:
             detail += f"; by_company → {published.name}"
@@ -6867,6 +7929,84 @@ class Handler(BaseHTTPRequestHandler):
         }
         if published is not None:
             payload["resume_by_company_path"] = job.get("resume_by_company_path")
+        self._send_json(payload)
+
+    def _handle_resume_latex_save(self, job_id: str, payload: dict) -> None:
+        """Compile pasted/edited LaTeX, fit to two pages, and set job resume."""
+        latex_source = payload.get("latex")
+        if not isinstance(latex_source, str):
+            self._send_json({"error": "latex must be a string"}, 400)
+            return
+        if not latex_source.strip():
+            self._send_json({"error": "LaTeX source is empty"}, 400)
+            return
+        if len(latex_source) > RESUME_LATEX_MAX_CHARS:
+            self._send_json({"error": "LaTeX source is too large (1 MB max)"}, 413)
+            return
+        if "\\begin{document}" not in latex_source or "\\end{document}" not in latex_source:
+            self._send_json(
+                {"error": "LaTeX must include \\begin{document} and \\end{document}"},
+                400,
+            )
+            return
+        with self._locked_job(job_id) as (data, job):
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            if job.get("status") in IN_PROGRESS_STATUSES:
+                self._send_json(
+                    {"error": "resume editing is blocked while fill/tailor is running. Cancel first."},
+                    409,
+                )
+                return
+
+        job_dir = RESUMES_DIR / job_id
+        result = _compile_resume_latex(job_dir, latex_source)
+        if not result.get("ok"):
+            self._send_json({"error": result.get("error") or "resume compile failed"}, 422)
+            return
+
+        resume_pdf = job_dir / "resume.pdf"
+        rel = str(resume_pdf.relative_to(ROOT))
+        with self._locked_job(job_id) as (data, job):
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            if job.get("status") in IN_PROGRESS_STATUSES:
+                self._send_json(
+                    {
+                        "error": (
+                            "resume compiled, but the job started running before it could "
+                            "be selected. Cancel the run, then save again."
+                        )
+                    },
+                    409,
+                )
+                return
+            job["resume_path"] = rel
+            sync_job_resume_on_disk(job)
+            job["status_detail"] = "LaTeX resume fitted, compiled, and saved."
+            job["updated_at"] = now_iso()
+            published = _publish_resume_by_company(job, resume_pdf, data)
+            response_job = slim_job_for_list(job)
+        append_fill_activity(
+            job_id,
+            event="resume",
+            detail=f"LaTeX resume fitted and compiled → {rel}",
+            persist=True,
+        )
+        payload = {
+            "ok": True,
+            "resume_path": rel,
+            "resume_on_disk": True,
+            "latex": (job_dir / "resume.tex").read_text(encoding="utf-8"),
+            "resume_by_company_path": (
+                response_job.get("resume_by_company_path") if published is not None else None
+            ),
+            "job": response_job,
+        }
+        if result.get("warning"):
+            payload["warning"] = result["warning"]
         self._send_json(payload)
 
     def _handle_resume_clear(self, job_id: str) -> None:
@@ -6888,12 +8028,18 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             job["resume_path"] = None
+            job["resume_on_disk"] = False
             job.pop("resume_by_company_path", None)
             job["status_detail"] = "Resume cleared."
             job["updated_at"] = now_iso()
-            write_jobs(data)
         job_dir = RESUMES_DIR / job_id
-        for name in ("resume.pdf", "uploaded_resume.pdf", "uploaded_resume.doc", "uploaded_resume.docx"):
+        for name in (
+            "resume.tex",
+            "resume.pdf",
+            "uploaded_resume.pdf",
+            "uploaded_resume.doc",
+            "uploaded_resume.docx",
+        ):
             p = job_dir / name
             try:
                 if p.is_file():
@@ -6919,49 +8065,48 @@ class Handler(BaseHTTPRequestHandler):
             }, 409)
             return
         with _lock:
-            data = read_jobs()
-            norm = normalize_url(url) or url
-            for job in data["jobs"]:
-                for f in ("apply_url", "job_url"):
-                    existing = job.get(f)
-                    if not existing:
-                        continue
-                    if existing == url or (normalize_url(existing) or existing) == norm:
-                        self._send_json({"error": "a job with this URL already exists", "id": job["id"]}, 409)
-                        return
-            slug_base = re.sub(r"[^a-z0-9]+", "-", urlparse(url).netloc.lower()).strip("-") or "manual"
-            job_id = f"{slug_base}-{int(time.time())}"
-            job = {
-                "id": job_id,
-                "company": "",
-                "title": "",
-                "location": "",
-                "source": "manual",
-                "date_posted": None,
-                "job_url": url,
-                "apply_url": url,
-                "job_description": "",
-                "status": "discovered",
-                "status_detail": "Added manually via dashboard - fetching job details...",
-                "question": None,
-                "pending_command": None,
-                "session_key": f"agent:job-hunter:job-{job_id}",
-                "resume_path": None,
-                "created_at": now_iso(),
-                "updated_at": now_iso(),
-                "qa_log": [],
-                "timeline": [],
-            }
-            _append_timeline_locked(
-                job,
-                _timeline_entry(
-                    event="added",
-                    detail=job["status_detail"],
-                    at=job["created_at"],
-                ),
-            )
-            data["jobs"].append(job)
-            write_jobs(data)
+            with locked_jobs_for_write() as data:
+                norm = normalize_url(url) or url
+                for job in data["jobs"]:
+                    for f in ("apply_url", "job_url"):
+                        existing = job.get(f)
+                        if not existing:
+                            continue
+                        if existing == url or (normalize_url(existing) or existing) == norm:
+                            self._send_json({"error": "a job with this URL already exists", "id": job["id"]}, 409)
+                            return
+                slug_base = re.sub(r"[^a-z0-9]+", "-", urlparse(url).netloc.lower()).strip("-") or "manual"
+                job_id = f"{slug_base}-{int(time.time())}"
+                job = {
+                    "id": job_id,
+                    "company": "",
+                    "title": "",
+                    "location": "",
+                    "source": "manual",
+                    "date_posted": None,
+                    "job_url": url,
+                    "apply_url": url,
+                    "job_description": "",
+                    "status": "discovered",
+                    "status_detail": "Added manually via dashboard - fetching job details...",
+                    "question": None,
+                    "pending_command": None,
+                    "session_key": f"agent:job-hunter:job-{job_id}",
+                    "resume_path": None,
+                    "created_at": now_iso(),
+                    "updated_at": now_iso(),
+                    "qa_log": [],
+                    "timeline": [],
+                }
+                _append_timeline_locked(
+                    job,
+                    _timeline_entry(
+                        event="added",
+                        detail=job["status_detail"],
+                        at=job["created_at"],
+                    ),
+                )
+                data["jobs"].append(job)
         threading.Thread(target=_try_extract_manual_job_details, args=(job_id, url), daemon=True).start()
         self._send_json({"ok": True, "id": job_id})
 
@@ -7085,13 +8230,12 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"warn: empty-deleted batch block failed: {e}")
         with _lock:
-            data = read_jobs()
-            before = len(data.get("jobs") or [])
-            data["jobs"] = [
-                j for j in (data.get("jobs") or []) if j.get("status") != "deleted"
-            ]
-            purged = before - len(data["jobs"])
-            write_jobs(data)
+            with locked_jobs_for_write(allow_purge=True) as data:
+                before = len(data.get("jobs") or [])
+                data["jobs"] = [
+                    j for j in (data.get("jobs") or []) if j.get("status") != "deleted"
+                ]
+                purged = before - len(data["jobs"])
         self._send_json({"ok": True, "purged": purged, "blocked_keys": blocked_n})
 
     def _handle_start(self, job_id, payload=None):
@@ -7114,6 +8258,11 @@ class Handler(BaseHTTPRequestHandler):
                 force_partyrock = str(raw).strip().lower() not in (
                     "0", "false", "no", "off", "",
                 )
+        resume_only = _parse_resume_only(payload)
+        # Generate-resume-only always re-runs PartyRock even if a PDF exists,
+        # then stops before fill.
+        if resume_only:
+            force_partyrock = True
         job = self._job(read_jobs(), job_id)
         if job is None:
             self._send_json({"error": "not found"}, 404)
@@ -7175,16 +8324,20 @@ class Handler(BaseHTTPRequestHandler):
             prior_restore = _dummy_restore_status(job.get("status") or "discovered")
             if skip_partyrock:
                 job["status"] = "navigating"
+                sync_job_resume_on_disk(job)
                 resume_on_disk = resolve_job_resume_file(job)
                 if resume_on_disk is not None:
+                    display_name = (
+                        conventional_resume_filename(job) or "resume on disk"
+                    )
                     job["status_detail"] = (
                         f"{_fill_mode_prefix(test_mode)} PartyRock bypassed "
-                        f"(resume on disk: {resume_on_disk.name}) — fill only."
+                        f"(resume on disk: {display_name}) — fill only."
                     )
                 elif test_mode:
                     job["status_detail"] = (
                         "[DUMMY/TEST] PartyRock bypassed (test mode) — "
-                        "skipping tailor; starting fast_fill (dummy only)."
+                        "dummy fixture + PartyRock skipped; starting fast_fill."
                     )
                 else:
                     job["status_detail"] = (
@@ -7193,10 +8346,17 @@ class Handler(BaseHTTPRequestHandler):
                     )
             else:
                 job["status"] = "tailoring"
-                job["status_detail"] = (
-                    f"Started by user from dashboard. Tailoring resume via PartyRock "
-                    f"({pr_mode}): {pr_url}"
-                )
+                sync_job_resume_on_disk(job)
+                if resume_only:
+                    job["status_detail"] = (
+                        f"Started by user from dashboard. Generate resume only via "
+                        f"PartyRock ({pr_mode}): {pr_url} — fill will not start."
+                    )
+                else:
+                    job["status_detail"] = (
+                        f"Started by user from dashboard. Tailoring resume via PartyRock "
+                        f"({pr_mode}): {pr_url}"
+                    )
             fill_run_gen = _bump_job_fill_gen_locked(job)
             job["updated_at"] = now_iso()
             _append_timeline_locked(
@@ -7207,7 +8367,6 @@ class Handler(BaseHTTPRequestHandler):
                     at=job["updated_at"],
                 ),
             )
-            write_jobs(data)
         clear_fill_activity(job_id)
         if not skip_partyrock:
             # PartyRock will be used → warm the CDP browser now, concurrently,
@@ -7216,12 +8375,17 @@ class Handler(BaseHTTPRequestHandler):
             _prewarm_openclaw_browser_async()
         if skip_partyrock:
             start_detail = (
-                "Start queued (using uploaded resume — PartyRock skipped)."
-                if has_resume
+                "Start queued (dummy fixture / PartyRock skipped)."
+                if test_mode
                 else (
-                    "Start queued (PartyRock bypassed). "
-                    "Straight to fast_fill dummy (no tailor_resume)."
+                    "Start queued (on-disk resume — PartyRock skipped)."
+                    if has_resume
+                    else "Start queued (PartyRock skipped) — straight to fast_fill."
                 )
+            )
+        elif resume_only:
+            start_detail = (
+                f"Start queued ({pr_mode}) — generate resume only (no fill)."
             )
         else:
             start_detail = (
@@ -7239,6 +8403,7 @@ class Handler(BaseHTTPRequestHandler):
                 "restore_status": prior_restore,
                 "fill_options": payload,
                 "fill_run_gen": fill_run_gen,
+                "resume_only": resume_only,
             },
             daemon=True,
         ).start()
@@ -7248,13 +8413,18 @@ class Handler(BaseHTTPRequestHandler):
             "skip_partyrock": skip_partyrock,
             "force_partyrock": force_partyrock,
             "resume_on_disk": has_resume,
+            "resume_only": resume_only,
             "partyrock": not skip_partyrock,
             "partyrock_mode": pr_mode,
             "partyrock_url": pr_url,
             "fill_after_tailor": (
-                "fast_fill_skip_tailor"
-                if skip_partyrock
-                else ("fast_fill_dummy" if test_mode else "fast_fill_real")
+                "none"
+                if resume_only
+                else (
+                    "fast_fill_skip_tailor"
+                    if skip_partyrock
+                    else ("fast_fill_dummy" if test_mode else "fast_fill_real")
+                )
             ),
         })
 
@@ -7311,6 +8481,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": str(e)}, 500)
 
 
+def _backfill_company_key_loop() -> None:
+    """One-shot: stamp missing/stale company_key from display company.
+
+    Does not rewrite the raw company string. Uses a single jobs.json write
+    lock (no nested locked_jobs_for_write).
+    """
+    try:
+        changed = 0
+        with _lock:
+            with locked_jobs_for_write() as data:
+                changed = backfill_company_keys(data)
+        if changed:
+            print(f"company_key backfill: changed={changed}")
+    except Exception as e:
+        print(f"warn: company_key backfill failed: {e}")
+
+
 def _backfill_missing_jds_loop() -> None:
     """One-shot: fetch missing JDs for SmartRecruiters/Breezy/Rippling/Lever.
 
@@ -7364,18 +8551,16 @@ def _backfill_multi_opening_loop() -> None:
         changed = 0
         true_count = 0
         with _lock:
-            data = read_jobs()
-            needs = any(
-                not isinstance(j.get("multi_opening"), bool)
-                for j in (data.get("jobs") or [])
-            )
-            if not needs:
-                return
-            changed, true_count = backfill_multi_opening_flags(
-                data, only_missing=True
-            )
-            if changed:
-                write_jobs(data)
+            with locked_jobs_for_write() as data:
+                needs = any(
+                    not isinstance(j.get("multi_opening"), bool)
+                    for j in (data.get("jobs") or [])
+                )
+                if not needs:
+                    return
+                changed, true_count = backfill_multi_opening_flags(
+                    data, only_missing=True
+                )
         if changed:
             print(
                 f"multi_opening backfill: changed={changed} "
@@ -7433,59 +8618,57 @@ def _backfill_salary_loop() -> None:
         strict_fixed = 0
         fb_fixed = 0
         with _lock:
-            data = read_jobs()
-            jobs = data.get("jobs") or []
-            needs = force or any(
-                "salary_min" not in j
-                or "salary_max" not in j
-                or "salary_min_fallback" not in j
-                or "salary_max_fallback" not in j
-                for j in jobs
-            )
-            if not needs:
-                return
-            for job in jobs:
-                missing = (
-                    "salary_min" not in job
-                    or "salary_max" not in job
-                    or "salary_min_fallback" not in job
-                    or "salary_max_fallback" not in job
+            with locked_jobs_for_write() as data:
+                jobs = data.get("jobs") or []
+                needs = force or any(
+                    "salary_min" not in j
+                    or "salary_max" not in j
+                    or "salary_min_fallback" not in j
+                    or "salary_max_fallback" not in j
+                    for j in jobs
                 )
-                undetermined = job.get("salary_min") is None
-                refresh = force and undetermined and _has_jd_full_for_backfill(job)
-                if not missing and not refresh:
-                    continue
-                title = job.get("title") or ""
-                desc = _job_desc_for_backfill(job)
-                sal = extract_salary(title=title, description=desc)
-                sal_fb = (
-                    extract_salary_fallback(title=title, description=desc)
-                    if sal is None
-                    else None
-                )
-                new_min = (sal or {}).get("min")
-                new_max = (sal or {}).get("max")
-                new_fb_min = (sal_fb or {}).get("min")
-                new_fb_max = (sal_fb or {}).get("max")
-                prev = (
-                    job.get("salary_min"),
-                    job.get("salary_max"),
-                    job.get("salary_min_fallback"),
-                    job.get("salary_max_fallback"),
-                )
-                job["salary_min"] = new_min
-                job["salary_max"] = new_max
-                job["salary_min_fallback"] = new_fb_min
-                job["salary_max_fallback"] = new_fb_max
-                cur = (new_min, new_max, new_fb_min, new_fb_max)
-                if cur != prev or missing:
-                    changed += 1
-                    if new_min is not None and prev[0] != new_min:
-                        strict_fixed += 1
-                    if new_fb_min is not None and prev[2] != new_fb_min:
-                        fb_fixed += 1
-            if changed:
-                write_jobs(data)
+                if not needs:
+                    return
+                for job in jobs:
+                    missing = (
+                        "salary_min" not in job
+                        or "salary_max" not in job
+                        or "salary_min_fallback" not in job
+                        or "salary_max_fallback" not in job
+                    )
+                    undetermined = job.get("salary_min") is None
+                    refresh = force and undetermined and _has_jd_full_for_backfill(job)
+                    if not missing and not refresh:
+                        continue
+                    title = job.get("title") or ""
+                    desc = _job_desc_for_backfill(job)
+                    sal = extract_salary(title=title, description=desc)
+                    sal_fb = (
+                        extract_salary_fallback(title=title, description=desc)
+                        if sal is None
+                        else None
+                    )
+                    new_min = (sal or {}).get("min")
+                    new_max = (sal or {}).get("max")
+                    new_fb_min = (sal_fb or {}).get("min")
+                    new_fb_max = (sal_fb or {}).get("max")
+                    prev = (
+                        job.get("salary_min"),
+                        job.get("salary_max"),
+                        job.get("salary_min_fallback"),
+                        job.get("salary_max_fallback"),
+                    )
+                    job["salary_min"] = new_min
+                    job["salary_max"] = new_max
+                    job["salary_min_fallback"] = new_fb_min
+                    job["salary_max_fallback"] = new_fb_max
+                    cur = (new_min, new_max, new_fb_min, new_fb_max)
+                    if cur != prev or missing:
+                        changed += 1
+                        if new_min is not None and prev[0] != new_min:
+                            strict_fixed += 1
+                        if new_fb_min is not None and prev[2] != new_fb_min:
+                            fb_fixed += 1
         if force:
             try:
                 _SALARY_BACKFILL_MARKER.parent.mkdir(parents=True, exist_ok=True)
@@ -7534,101 +8717,99 @@ def _backfill_yoe_work_mode_loop() -> None:
         fb_mode_fixed = 0
         fb_changed = 0
         with _lock:
-            data = read_jobs()
-            jobs = data.get("jobs") or []
-            needs_strict = any(
-                "min_yoe" not in j
-                or "work_mode" not in j
-                or (
-                    force_undetermined
-                    and _has_jd_full_for_backfill(j)
-                    and (
-                        j.get("work_mode") in (None, "unknown")
-                        or j.get("min_yoe") is None
+            with locked_jobs_for_write() as data:
+                jobs = data.get("jobs") or []
+                needs_strict = any(
+                    "min_yoe" not in j
+                    or "work_mode" not in j
+                    or (
+                        force_undetermined
+                        and _has_jd_full_for_backfill(j)
+                        and (
+                            j.get("work_mode") in (None, "unknown")
+                            or j.get("min_yoe") is None
+                        )
                     )
+                    for j in jobs
                 )
-                for j in jobs
-            )
-            needs_fallback = force_fallback or any(
-                "min_yoe_fallback" not in j or "work_mode_fallback" not in j
-                for j in jobs
-            )
-            if not needs_strict and not force_undetermined and not needs_fallback:
-                return
-            for job in jobs:
-                title = job.get("title") or ""
-                location = job.get("location") or ""
-                missing_yoe = "min_yoe" not in job
-                missing_mode = "work_mode" not in job
-                undetermined_mode = job.get("work_mode") in (None, "unknown")
-                undetermined_yoe = job.get("min_yoe") is None
-                refresh = force_undetermined and _has_jd_full_for_backfill(job)
-                want_strict = (
-                    missing_yoe
-                    or missing_mode
-                    or (refresh and (undetermined_mode or undetermined_yoe))
+                needs_fallback = force_fallback or any(
+                    "min_yoe_fallback" not in j or "work_mode_fallback" not in j
+                    for j in jobs
                 )
-                missing_yoe_fb = "min_yoe_fallback" not in job
-                missing_mode_fb = "work_mode_fallback" not in job
-                want_fallback = force_fallback or missing_yoe_fb or missing_mode_fb
-                if not want_strict and not want_fallback:
-                    continue
-                desc = _job_desc_for_backfill(job)
-                if want_strict:
-                    if missing_mode or (refresh and undetermined_mode):
-                        mode = detect_work_mode(
-                            title=title, location=location, description=desc
-                        )
-                        prev = job.get("work_mode")
-                        if missing_mode or mode != "unknown" or prev != mode:
-                            if mode != prev:
-                                if mode != "unknown":
-                                    mode_fixed += 1
-                                changed += 1
-                            job["work_mode"] = mode
-                    if missing_yoe or (refresh and undetermined_yoe):
-                        yoe = extract_min_required_yoe(
-                            title=title, description=desc
-                        )
-                        prev_y = job.get("min_yoe")
-                        if missing_yoe or yoe is not None:
-                            if yoe != prev_y:
-                                if yoe is not None:
-                                    yoe_fixed += 1
-                                changed += 1
-                            job["min_yoe"] = yoe
-                if want_fallback:
-                    # Re-read after possible strict stamps in this same pass.
-                    strict_yoe = job.get("min_yoe")
-                    strict_mode = job.get("work_mode")
-                    yoe_fb = None
-                    if strict_yoe is None:
-                        yoe_fb = extract_min_required_yoe_fallback(
-                            title=title, description=desc
-                        )
-                    prev_yfb = job.get("min_yoe_fallback")
-                    if missing_yoe_fb or force_fallback or yoe_fb != prev_yfb:
-                        if yoe_fb != prev_yfb:
-                            if yoe_fb is not None:
-                                fb_yoe_fixed += 1
-                            fb_changed += 1
-                        job["min_yoe_fallback"] = yoe_fb
-                    mode_fb = None
-                    if strict_mode in (None, "unknown"):
-                        wm = detect_work_mode_fallback(
-                            title=title, location=location, description=desc
-                        )
-                        if wm != "unknown":
-                            mode_fb = wm
-                    prev_mfb = job.get("work_mode_fallback")
-                    if missing_mode_fb or force_fallback or mode_fb != prev_mfb:
-                        if mode_fb != prev_mfb:
-                            if mode_fb is not None:
-                                fb_mode_fixed += 1
-                            fb_changed += 1
-                        job["work_mode_fallback"] = mode_fb
-            if changed or fb_changed:
-                write_jobs(data)
+                if not needs_strict and not force_undetermined and not needs_fallback:
+                    return
+                for job in jobs:
+                    title = job.get("title") or ""
+                    location = job.get("location") or ""
+                    missing_yoe = "min_yoe" not in job
+                    missing_mode = "work_mode" not in job
+                    undetermined_mode = job.get("work_mode") in (None, "unknown")
+                    undetermined_yoe = job.get("min_yoe") is None
+                    refresh = force_undetermined and _has_jd_full_for_backfill(job)
+                    want_strict = (
+                        missing_yoe
+                        or missing_mode
+                        or (refresh and (undetermined_mode or undetermined_yoe))
+                    )
+                    missing_yoe_fb = "min_yoe_fallback" not in job
+                    missing_mode_fb = "work_mode_fallback" not in job
+                    want_fallback = force_fallback or missing_yoe_fb or missing_mode_fb
+                    if not want_strict and not want_fallback:
+                        continue
+                    desc = _job_desc_for_backfill(job)
+                    if want_strict:
+                        if missing_mode or (refresh and undetermined_mode):
+                            mode = detect_work_mode(
+                                title=title, location=location, description=desc
+                            )
+                            prev = job.get("work_mode")
+                            if missing_mode or mode != "unknown" or prev != mode:
+                                if mode != prev:
+                                    if mode != "unknown":
+                                        mode_fixed += 1
+                                    changed += 1
+                                job["work_mode"] = mode
+                        if missing_yoe or (refresh and undetermined_yoe):
+                            yoe = extract_min_required_yoe(
+                                title=title, description=desc
+                            )
+                            prev_y = job.get("min_yoe")
+                            if missing_yoe or yoe is not None:
+                                if yoe != prev_y:
+                                    if yoe is not None:
+                                        yoe_fixed += 1
+                                    changed += 1
+                                job["min_yoe"] = yoe
+                    if want_fallback:
+                        # Re-read after possible strict stamps in this same pass.
+                        strict_yoe = job.get("min_yoe")
+                        strict_mode = job.get("work_mode")
+                        yoe_fb = None
+                        if strict_yoe is None:
+                            yoe_fb = extract_min_required_yoe_fallback(
+                                title=title, description=desc
+                            )
+                        prev_yfb = job.get("min_yoe_fallback")
+                        if missing_yoe_fb or force_fallback or yoe_fb != prev_yfb:
+                            if yoe_fb != prev_yfb:
+                                if yoe_fb is not None:
+                                    fb_yoe_fixed += 1
+                                fb_changed += 1
+                            job["min_yoe_fallback"] = yoe_fb
+                        mode_fb = None
+                        if strict_mode in (None, "unknown"):
+                            wm = detect_work_mode_fallback(
+                                title=title, location=location, description=desc
+                            )
+                            if wm != "unknown":
+                                mode_fb = wm
+                        prev_mfb = job.get("work_mode_fallback")
+                        if missing_mode_fb or force_fallback or mode_fb != prev_mfb:
+                            if mode_fb != prev_mfb:
+                                if mode_fb is not None:
+                                    fb_mode_fixed += 1
+                                fb_changed += 1
+                            job["work_mode_fallback"] = mode_fb
         if force_undetermined:
             try:
                 _YOE_WM_BACKFILL_MARKER.parent.mkdir(parents=True, exist_ok=True)
@@ -7728,34 +8909,69 @@ def _auto_delete_sweep_once(reasons: set[str] | None = None) -> int:
         return 0
     try:
         moved = 0
+        to_block: list[dict] = []
         with _lock:
-            data = read_jobs()
-            now = datetime.now(timezone.utc).isoformat()
-            for job in data.get("jobs") or []:
-                if job.get("status") != "discovered":
-                    continue
-                reason = auto_delete_reason(
-                    title=job.get("title"),
-                    location=job.get("location"),
-                    company=job.get("company"),
-                    description=_job_desc_for_backfill(job),
-                    url=job.get("apply_url") or job.get("job_url"),
-                )
-                if not reason or reason not in enabled_reasons:
-                    continue
-                job["status"] = "deleted"
-                job["deleted_at"] = now
-                job["deleted_reason"] = reason
-                job["updated_at"] = now
-                moved += 1
+            with locked_jobs_for_write() as data:
+                now_dt = datetime.now(timezone.utc)
+                now = now_dt.isoformat()
+                regions = enabled_discovery_regions()
+                for job in data.get("jobs") or []:
+                    if job.get("status") != "discovered":
+                        continue
+                    reason = auto_delete_reason(
+                        title=job.get("title"),
+                        location=job.get("location"),
+                        company=job.get("company"),
+                        description=_job_desc_for_backfill(job),
+                        url=job.get("apply_url") or job.get("job_url"),
+                        regions=regions,
+                    )
+                    if reason not in enabled_reasons:
+                        reason = None
+                    if not reason and "stale_listing" in enabled_reasons:
+                        # Exact date_posted, or created_at when undated.
+                        # date_posted_fallback (~) must never trigger prune.
+                        posted = job.get("date_posted")
+                        if not posted:
+                            posted = job.get("created_at")
+                        try:
+                            posted_dt = datetime.fromisoformat(
+                                str(posted or "").replace("Z", "+00:00")
+                            )
+                            if posted_dt.tzinfo is None:
+                                posted_dt = posted_dt.replace(tzinfo=timezone.utc)
+                            if (now_dt - posted_dt.astimezone(timezone.utc)).total_seconds() > (
+                                STALE_LISTING_MAX_AGE_DAYS * 86400
+                            ):
+                                reason = "stale_listing"
+                        except (TypeError, ValueError):
+                            pass
+                    if not reason:
+                        continue
+                    job["status"] = "deleted"
+                    job["deleted_at"] = now
+                    job["deleted_reason"] = reason
+                    job["updated_at"] = now
+                    moved += 1
+                    # Snapshot for tombstones AFTER releasing _lock + jobs EX
+                    # flock — block_deleted_job takes its own blocked_urls flock
+                    # and must not run while we hold the jobs write lock.
+                    to_block.append({
+                        "id": job.get("id"),
+                        "apply_url": job.get("apply_url"),
+                        "job_url": job.get("job_url"),
+                        "alternate_urls": list(job.get("alternate_urls") or []),
+                    })
+        for snap in to_block:
+            try:
+                block_deleted_job(snap, keep_tombstone=True)
+            except TypeError:
                 try:
-                    block_deleted_job(job, keep_tombstone=True)
-                except TypeError:
-                    block_deleted_job(job)
+                    block_deleted_job(snap)
                 except Exception as e:
-                    print(f"warn: block on auto-delete {job.get('id')}: {e}")
-            if moved:
-                write_jobs(data)
+                    print(f"warn: block on auto-delete {snap.get('id')}: {e}")
+            except Exception as e:
+                print(f"warn: block on auto-delete {snap.get('id')}: {e}")
         if moved:
             print(f"auto-delete sweep: moved={moved}")
         return moved
@@ -7775,7 +8991,7 @@ def _backfill_auto_delete_loop() -> None:
     while True:
         _prune_schedule_wakeup.clear()
         settings = load_prune_settings()
-        interval_s = int(settings["interval_s"])
+        interval_s = int(settings.get("interval_s") or 0)
         if interval_s <= 0:
             _prune_schedule_wakeup.wait()
             continue
@@ -7860,6 +9076,11 @@ def main():
     except Exception as e:
         print(f"warn: could not start discovery scheduler: {e}")
     threading.Thread(target=_ui_watchdog_loop, daemon=True, name="ui-lifecycle-watchdog").start()
+    threading.Thread(
+        target=_backfill_company_key_loop,
+        daemon=True,
+        name="company-key-backfill",
+    ).start()
     threading.Thread(
         target=_backfill_missing_jds_loop,
         daemon=True,

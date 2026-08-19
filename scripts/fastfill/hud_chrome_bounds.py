@@ -174,8 +174,8 @@ def chrome_window_bounds(pid: int) -> dict[str, int] | None:
 
 
 def default_hud_margins() -> tuple[int, int]:
-    """Default top-right inset inside Chrome (margin_right, margin_top)."""
-    return (12, 12)
+    """Default inset: 10px from Chrome's right edge, below the macOS titlebar."""
+    return (10, 36)
 
 
 def compute_hud_xy(
@@ -186,10 +186,24 @@ def compute_hud_xy(
     margin_right: int,
     margin_top: int,
 ) -> tuple[int, int]:
-    """Place HUD top-left using margins from Chrome top-right."""
-    x = chrome["x"] + chrome["width"] - hud_width - margin_right
-    y = chrome["y"] + margin_top
-    return (max(chrome["x"], x), max(chrome["y"], y))
+    """Place HUD top-left using margins from Chrome top-right; keep fully inside."""
+    inset_r = max(0, int(margin_right))
+    inset_t = max(0, int(margin_top))
+    x = chrome["x"] + chrome["width"] - hud_width - inset_r
+    y = chrome["y"] + inset_t
+    min_x = chrome["x"] + 8
+    max_x = chrome["x"] + chrome["width"] - hud_width - 8
+    min_y = chrome["y"] + inset_t
+    max_y = chrome["y"] + chrome["height"] - hud_height - 8
+    if max_x < min_x:
+        x = chrome["x"] + max(8, (chrome["width"] - hud_width) // 2)
+    else:
+        x = min(max(min_x, x), max_x)
+    if max_y < min_y:
+        y = chrome["y"] + inset_t
+    else:
+        y = min(max(min_y, y), max_y)
+    return (int(x), int(y))
 
 
 def margins_from_hud_xy(

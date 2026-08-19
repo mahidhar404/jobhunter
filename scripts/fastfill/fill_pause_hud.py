@@ -11,11 +11,17 @@ window top-right and follows move/resize. Draggable — offset saved in state.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import font as tkfont
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 
 from hud_chrome_bounds import (
     BoundsCache,
@@ -41,7 +47,44 @@ BORDER = "#262626"
 BTN_AMBER = "#b45309"
 BTN_AMBER_ACTIVE = "#92400e"
 
-POLL_MS = 200
+POLL_MS = 150
+LOG_MAX = 50
+
+
+def _control_path(state_path: Path) -> Path:
+    return state_path.parent / ".fill_pause_control.json"
+
+
+def _pause_sentinel_path(state_path: Path) -> Path:
+    return state_path.parent / ".fill_paused"
+
+
+def _flock_json_update(path: Path, updater) -> dict:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+", encoding="utf-8") as fh:
+        if fcntl is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                pass
+        fh.seek(0)
+        raw = fh.read()
+        try:
+            data = json.loads(raw) if raw.strip() else {}
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        updater(data)
+        fh.seek(0)
+        fh.truncate()
+        fh.write(json.dumps(data, indent=2))
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except Exception:
+            pass
+        return data
 
 
 def _load_state(path: Path) -> dict:
@@ -55,12 +98,44 @@ def _load_state(path: Path) -> dict:
     return {}
 
 
+def _load_merged(state_path: Path) -> dict:
+    """Activity from state file + Pause flags from the control file."""
+    st = _load_state(state_path)
+    ctrl = _load_state(_control_path(state_path))
+    merged = dict(st)
+    merged.update(ctrl)
+    return merged
+
+
 def _save_state(path: Path, state: dict) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
         tmp.replace(path)
+    except Exception:
+        pass
+
+
+def _save_control(state_path: Path, ctrl: dict) -> None:
+    def _upd(data: dict) -> None:
+        data.update(ctrl)
+        data["updated_at"] = time.time()
+
+    try:
+        _flock_json_update(_control_path(state_path), _upd)
+    except Exception:
+        pass
+
+
+def _write_pause_sentinel(state_path: Path, paused: bool) -> None:
+    path = _pause_sentinel_path(state_path)
+    try:
+        if paused:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("paused\n", encoding="utf-8")
+        else:
+            path.unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -139,15 +214,30 @@ class FillPauseHUD:
         self.hint.pack(fill="x", **pad)
         self.detail = tk.Label(
             self.frame,
-            text="Pause takes effect between fill actions (not mid-widget).",
+            text="Pause stops filling immediately. Continue resumes. Never submit.",
             font=self.hint_font,
             fg=FG_HINT,
             bg=BG,
             anchor="w",
             justify="left",
-            wraplength=280,
+            wraplength=300,
         )
         self.detail.pack(fill="x", **pad)
+        self.log = tk.Text(
+            self.frame,
+            height=8,
+            width=42,
+            font=self.status_font,
+            fg=FG,
+            bg=BG_ACCENT,
+            wrap="word",
+            state="disabled",
+            highlightthickness=0,
+            bd=0,
+            padx=4,
+            pady=4,
+        )
+        self.log.pack(fill="both", expand=True, padx=10, pady=(0, 8))
         self._bounds_cache = BoundsCache()
         self._dragging = False
         self._drag_origin_x = 0
@@ -155,6 +245,7 @@ class FillPauseHUD:
         self._drag_hud_x = 0
         self._drag_hud_y = 0
         self._chrome_missing_ticks = 0
+        self._hidden_until_pin = False
         for widget in (self.frame, self.btn, self.status, self.hint, self.detail):
             widget.bind("<ButtonPress-1>", self._drag_start, add="+")
             widget.bind("<B1-Motion>", self._drag_motion, add="+")
@@ -167,6 +258,13 @@ class FillPauseHUD:
         return (self.root.winfo_width() or 300, self.root.winfo_height() or 120)
 
     def _place_screen_top_right(self) -> None:
+        if self._hidden_until_pin:
+            try:
+                self.root.deiconify()
+                self.root.attributes("-topmost", True)
+            except Exception:
+                pass
+            self._hidden_until_pin = False
         w, _h = self._hud_size()
         sw = self.root.winfo_screenwidth()
         self.root.geometry(f"+{max(8, sw - w - 16)}+12")
@@ -174,10 +272,18 @@ class FillPauseHUD:
 
     def _place_initial(self) -> None:
         if pin_chrome_enabled():
-            st = _load_state(self.state_path)
+            st = _load_merged(self.state_path)
             pid = st.get("fill_chrome_pid")
             if pid and self._reposition_to_chrome(st, force=True):
                 return
+            # Stay hidden until Chrome PID/bounds appear — don't jump to a random
+            # screen corner (fill window may be the right 2/3 of the display).
+            self._hidden_until_pin = True
+            try:
+                self.root.withdraw()
+            except Exception:
+                pass
+            return
         self._place_screen_top_right()
 
     def _reposition_to_chrome(self, st: dict, *, force: bool = False) -> bool:
@@ -209,6 +315,13 @@ class FillPauseHUD:
             margin_top=margin_top,
         )
         self.root.geometry(f"+{x}+{y}")
+        if self._hidden_until_pin:
+            try:
+                self.root.deiconify()
+                self.root.attributes("-topmost", True)
+            except Exception:
+                pass
+            self._hidden_until_pin = False
         return True
 
     def _drag_start(self, event: tk.Event) -> None:
@@ -231,7 +344,7 @@ class FillPauseHUD:
         self._dragging = False
         if not pin_chrome_enabled():
             return
-        st = _load_state(self.state_path)
+        st = _load_merged(self.state_path)
         pid = st.get("fill_chrome_pid")
         if not pid:
             return
@@ -249,10 +362,11 @@ class FillPauseHUD:
             hud_width=w,
             hud_height=h,
         )
-        st["hud_margin_right"] = margin_right
-        st["hud_margin_top"] = margin_top
-        st["updated_at"] = time.time()
-        _save_state(self.state_path, st)
+        activity = _load_state(self.state_path)
+        activity["hud_margin_right"] = margin_right
+        activity["hud_margin_top"] = margin_top
+        activity["updated_at"] = time.time()
+        _save_state(self.state_path, activity)
         self._bounds_cache.clear()
 
     def _maybe_reposition(self, st: dict) -> None:
@@ -268,30 +382,38 @@ class FillPauseHUD:
             self._chrome_missing_ticks = 0
             return
         self._chrome_missing_ticks += 1
-        # Chrome gone — fall back to screen corner after a few polls
-        if self._chrome_missing_ticks >= 3:
+        # Keep retrying pin; only fall back to screen corner after ~5s.
+        if self._chrome_missing_ticks >= 30:
             self._place_screen_top_right()
 
     def _on_click(self) -> None:
-        st = _load_state(self.state_path)
+        st = _load_merged(self.state_path)
         paused = bool(st.get("paused"))
         captcha = bool(st.get("captcha_gated"))
         hold = bool(st.get("hold_mode"))
+        ctrl = {
+            "paused": st.get("paused"),
+            "hold_mode": st.get("hold_mode"),
+            "captcha_gated": st.get("captcha_gated"),
+            "pause_count": int(st.get("pause_count") or 0),
+            "continue_count": int(st.get("continue_count") or 0),
+            "hud_action": st.get("hud_action"),
+        }
         if captcha or hold:
-            st["paused"] = False
-            st["hold_mode"] = False
-            st["continue_count"] = int(st.get("continue_count") or 0) + 1
-            st["hud_action"] = "continue"
+            ctrl["paused"] = False
+            ctrl["hold_mode"] = False
+            ctrl["continue_count"] = int(ctrl.get("continue_count") or 0) + 1
+            ctrl["hud_action"] = "continue"
         else:
-            st["paused"] = not paused
-            if st["paused"]:
-                st["pause_count"] = int(st.get("pause_count") or 0) + 1
-                st["hud_action"] = "pause"
+            ctrl["paused"] = not paused
+            if ctrl["paused"]:
+                ctrl["pause_count"] = int(ctrl.get("pause_count") or 0) + 1
+                ctrl["hud_action"] = "pause"
             else:
-                st["continue_count"] = int(st.get("continue_count") or 0) + 1
-                st["hud_action"] = "continue"
-        st["updated_at"] = time.time()
-        _save_state(self.state_path, st)
+                ctrl["continue_count"] = int(ctrl.get("continue_count") or 0) + 1
+                ctrl["hud_action"] = "continue"
+        _save_control(self.state_path, ctrl)
+        _write_pause_sentinel(self.state_path, bool(ctrl["paused"]))
 
     def _sync_ui(self, st: dict) -> None:
         compact = str(st.get("compact") or st.get("text") or "— · idle")
@@ -330,7 +452,7 @@ class FillPauseHUD:
                 activebackground=BTN_AMBER_ACTIVE,
             )
             self.detail.config(
-                text="Paused between actions — edit form in Chrome, then Continue."
+                text="Paused — filling stopped. Edit form in Chrome, then Continue."
             )
         else:
             self.btn.config(
@@ -339,14 +461,35 @@ class FillPauseHUD:
                 activebackground=BG_ACCENT,
             )
             self.detail.config(
-                text="Pause takes effect between fill actions (not mid-widget)."
+                text="Pause stops filling immediately. Continue resumes. Never submit."
             )
+        self._sync_log(st)
+
+    def _sync_log(self, st: dict) -> None:
+        rows = st.get("log") if isinstance(st.get("log"), list) else []
+        lines: list[str] = []
+        for row in rows[-LOG_MAX:]:
+            if isinstance(row, dict):
+                line = str(row.get("line") or "").strip()
+            else:
+                line = str(row or "").strip()
+            if line:
+                lines.append(line)
+        text = "\n".join(lines) if lines else "(waiting for fill activity)"
+        current = self.log.get("1.0", "end-1c")
+        if current == text:
+            return
+        self.log.config(state="normal")
+        self.log.delete("1.0", "end")
+        self.log.insert("1.0", text)
+        self.log.see("end")
+        self.log.config(state="disabled")
 
     def _poll(self) -> None:
         if str(_load_state(self.state_path).get("hud_stop")) == "1":
             self.root.destroy()
             return
-        st = _load_state(self.state_path)
+        st = _load_merged(self.state_path)
         self._sync_ui(st)
         self._maybe_reposition(st)
         self.root.after(POLL_MS, self._poll)

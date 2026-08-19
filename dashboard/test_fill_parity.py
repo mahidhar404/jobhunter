@@ -124,6 +124,30 @@ def test_resolve_job_resume_file_prefers_resume_path(tmp_path, monkeypatch=None)
     assert srv.resolve_job_resume_file({}) is None
 
 
+def test_fill_resume_resolver_prefers_conventionally_named_published_copy(tmp_path):
+    srv = _load_server()
+    raw = tmp_path / "resume.pdf"
+    raw.write_bytes(b"%PDF raw")
+    published = tmp_path / "Acme_resume_04217.pdf"
+    published.write_bytes(b"%PDF published")
+    job = {
+        "resume_path": str(raw),
+        "resume_by_company_path": str(published),
+    }
+
+    assert srv.resolve_job_resume_upload_file(job) == published
+
+
+def test_real_fill_body_passes_conventionally_published_pdf_to_fastfill():
+    srv = _load_server()
+    import inspect
+
+    body = inspect.getsource(srv._run_hybrid_fill_dummy_body)
+    assert "_ensure_conventional_resume_pdf(job_id)" in body
+    assert "else conventional_resume" in body
+    assert "resume_path=resume_arg" in body
+
+
 def test_parse_multipart_file_roundtrip():
     srv = _load_server()
     boundary = "----jhBoundary7"

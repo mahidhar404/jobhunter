@@ -66,6 +66,30 @@ class BlockDeletedJobsBatchTests(unittest.TestCase):
         self.assertEqual(data["ids"], ["solo"])
         self.assertEqual(len(data["tombstones"]), 1)
 
+    def test_load_blocked_id_set_keeps_user_delete_ids(self):
+        bu.BLOCKED_URLS_FILE.write_text(json.dumps({
+            "urls": [],
+            "ids": ["acme-data-scientist"],
+            "tombstones": [],
+            "updated_at": None,
+        }) + "\n")
+        self.assertEqual(bu.load_blocked_id_set(), {"acme-data-scientist"})
+
+    def test_greenhouse_host_variants_share_posting_block_key(self):
+        boards = "https://boards.greenhouse.io/acme/jobs/999"
+        job_boards = "https://job-boards.greenhouse.io/acme/jobs/999"
+        bu.block_deleted_job({
+            "id": "acme-ds",
+            "company": "Acme",
+            "title": "Data Scientist",
+            "apply_url": boards,
+        })
+        blocked = bu.load_blocked_url_set()
+        self.assertTrue(bu.is_url_blocked(job_boards, blocked))
+        self.assertTrue(
+            set(bu.block_keys_for_url(boards)) & set(bu.block_keys_for_url(job_boards))
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

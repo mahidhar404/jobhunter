@@ -412,7 +412,7 @@ def test_launcher_focuses_existing_ui_not_activate() -> None:
     # CHR2-009: rebuild injects ROOT; source uses placeholder.
     assert "__JOB_HUNTER_ROOT__" in applescript
     # CHR2-010: focus failures must surface (not bare try/end try).
-    assert "focus failed" in applescript.lower() or "Job Hunter Dashboard focus failed" in applescript
+    assert "focus failed" in applescript.lower() or "OmniDex focus failed" in applescript
     rebuild = (
         Path(srv.__file__).resolve().parent / "rebuild_desktop_app.sh"
     ).read_text()

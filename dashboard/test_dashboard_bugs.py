@@ -7,7 +7,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
+import subprocess
 import sys
+import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -16,6 +21,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 SERVER_PATH = HERE / "server.py"
 APP_JS = HERE / "static" / "app.js"
+INDEX_HTML = HERE / "static" / "index.html"
 
 
 def _load_server():
@@ -104,11 +110,13 @@ def test_patch_job_refuses_clobber_abort_statuses():
                 }
             ]
         }
-        with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-            srv, "write_jobs"
-        ) as wj:
+
+        @contextmanager
+        def _fake_locked(*, allow_purge=False):
+            yield jobs
+
+        with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked):
             srv._patch_job("x", status="ready_for_review", status_detail="should not apply")
-            wj.assert_not_called()
             assert jobs["jobs"][0]["status"] == abort
 
 
@@ -124,11 +132,13 @@ def test_patch_job_allows_normal_progress():
             }
         ]
     }
-    with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-        srv, "write_jobs"
-    ) as wj:
+
+    @contextmanager
+    def _fake_locked(*, allow_purge=False):
+        yield jobs
+
+    with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked):
         srv._patch_job("x", status="ready_for_review", status_detail="Ready")
-        wj.assert_called_once()
         assert jobs["jobs"][0]["status"] == "ready_for_review"
 
 
@@ -184,12 +194,15 @@ def test_fill_abort_statuses_cover_hunt_set():
     assert needed <= set(srv.FILL_ABORT_STATUSES)
 
 
-def test_app_js_cancel_not_for_ready():
-    """DASH-008: Cancel when runInProgress or stuck (not Ready bucket)."""
+def test_app_js_cancel_for_progress_stuck_ready():
+    """Cancel/Stop is offered for In Progress, Stuck, and Ready — not Open/Applied."""
     src = APP_JS.read_text(encoding="utf-8")
-    assert "runInProgress || bucket === \"ready\"" not in src
     assert "canCancel" in src
-    assert "STUCK_STATUSES.has(job.status)" in src
+    cancel_line = [ln for ln in src.splitlines() if "const canCancel" in ln]
+    assert cancel_line, "canCancel assignment missing"
+    joined = " ".join(cancel_line)
+    assert "progress" in joined and "stuck" in joined and "ready" in joined
+    assert "Cancel is unavailable on Ready" not in src
 
 
 def test_max_headed_chrome_mains_default_three():
@@ -222,14 +235,65 @@ def test_app_js_start_fill_mode_no_false_skip_without_pdf():
     assert "const skipPartyrock = normalized === \"with-resume\" || normalized === \"retry\";" not in src
 
 
+def test_resume_face_previews_and_menu_has_no_duplicate_preview_or_copy_path():
+    """Resume face owns preview; its secondary menu only contains file actions."""
+    src = APP_JS.read_text(encoding="utf-8")
+    popover = src.split("function renderResumePopover", 1)[1].split(
+        "function renderDossier", 1
+    )[0]
+    resume_face = src.split("function executeResumeFace", 1)[1].split(
+        "function toggleTreatResumeOnFile", 1
+    )[0]
+
+    assert 'id="resume-menu-btn"' in src
+    assert "toggleResumeMenu(event)" in src
+    assert "previewJobResume(jobId);" in resume_face
+    assert "toggleResumePanel(jobId);" not in resume_face
+    assert 'id="resume-preview-btn"' not in popover
+    assert 'id="resume-docs-btn"' not in popover
+    assert "Copy path" not in popover
+    assert ">Preview</button>" not in popover
+    assert "\n        Upload\n" in popover
+    assert ">Edit LaTeX</button>" in popover
+    assert ">Clear</button>" in popover
+
+
+def test_dashboard_uses_conventional_resume_display_name_everywhere():
+    """Dashboard labels and preview use server-provided published filename."""
+    src = APP_JS.read_text(encoding="utf-8")
+    display_name = src.split("function resumeDisplayName", 1)[1].split(
+        "function defaultFillMode", 1
+    )[0]
+    applied = src.split("const resumeName =", 1)[1].split(
+        "const editRow =", 1
+    )[0]
+
+    assert "job.resume_display_name" in display_name
+    assert "job.resume_by_company_path" in display_name
+    assert "job.resume_path" not in display_name
+    assert "resumeDisplayName(job)" in applied
+    assert "${escapeHtml(resumeName)}</a>" in applied
+    assert "resumeDisplayName(job)" in src.split("function renderResumePanel", 1)[1]
+
+
+def test_app_js_cancel_stays_on_current_tab():
+    """Cancel must not jump the dossier to Open after abort."""
+    src = APP_JS.read_text(encoding="utf-8")
+    fn = src.split("async function cancelJob(jobId)", 1)[1].split(
+        "\nasync function skipJob", 1
+    )[0]
+    assert "surfaceOpenJob" not in fn
+    assert "await poll()" in fn
+
+
 def test_app_js_escapes_question_and_cancel_gate():
     """DASH-007 / DASH-009: escapeHtml question; Cancel for in-progress + stuck."""
     src = APP_JS.read_text(encoding="utf-8")
     assert "escapeHtml(job.question" in src
     assert "canCancel" in src
-    assert "STUCK_STATUSES.has(job.status)" in src
-    # Cancel must not show for every non-terminal job (e.g. open/applied).
     assert "${canCancel" in src or "(canCancel)" in src
+    # Cancel must not show for every non-terminal job (e.g. open/applied).
+    assert "bucket === \"open\"" not in src.split("const canCancel", 1)[1].split("\n", 1)[0]
 
 
 def test_app_js_uses_js_string_escape_on_detail_actions():
@@ -291,6 +355,325 @@ def test_claim_fill_job_blocks_duplicate_thread():
     srv._active_fill_jobs.clear()
 
 
+def test_fill_run_stale_accepts_locked_fill_gen():
+    """Post-tectonic path holds _lock; stale check must not re-enter it."""
+    srv = _load_server()
+    tok = srv._fill_run_ctx.set(("lock-job", 3))
+    try:
+        assert srv._fill_run_stale("lock-job", fill_gen=3) is False
+        assert srv._fill_run_stale("lock-job", fill_gen=4) is True
+        # While holding _lock, fill_gen=… must return without calling _job_fill_gen.
+        with srv._lock:
+            with mock.patch.object(
+                srv, "_job_fill_gen", side_effect=AssertionError("must not re-lock")
+            ):
+                assert srv._fill_run_stale("lock-job", fill_gen=3) is False
+    finally:
+        srv._fill_run_ctx.reset(tok)
+
+
+def test_post_tectonic_stale_check_passes_fill_gen_in_source():
+    """Regression: bare _fill_run_stale(job_id) under _lock deadlocks the server."""
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    helper = src.split("def _persist_compiled_resume_after_tectonic", 1)[1].split(
+        "def _claim_fill_job", 1
+    )[0]
+    assert "fill_gen=int(job.get(\"fill_gen\") or 0)" in helper
+    # Call sites only (docstring may mention the bare form as a warning).
+    call_lines = [
+        ln for ln in helper.splitlines()
+        if "_fill_run_stale(" in ln and ln.lstrip().startswith(("if ", "and ", "return "))
+    ]
+    assert call_lines, "expected an _fill_run_stale call in helper"
+    assert all("fill_gen=" in ln for ln in call_lines), call_lines
+    assert "_persist_compiled_resume_after_tectonic(" in src.split(
+        "Converting resume to PDF (tectonic)", 1
+    )[1].split("if not compile_ok", 1)[0]
+
+
+def test_post_tectonic_handoff_completes_under_real_locks():
+    """End-to-end: tectonic handoff with real _lock + EX flock must not deadlock.
+
+    The production hang was: with _lock + locked_jobs_for_write, then bare
+    _fill_run_stale(job_id) → _job_fill_gen → with _lock again.
+    """
+    import tempfile
+
+    srv = _load_server()
+    job_id = "deadlock-tectonic-1"
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        jobs_file = td_path / "jobs.json"
+        lock_file = td_path / "jobs.json.lock"
+        resumes = td_path / "resumes" / job_id
+        resumes.mkdir(parents=True)
+        resume_pdf = resumes / "resume.pdf"
+        # Minimal PDF header so resolve/sync treats it as a real file.
+        resume_pdf.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n")
+        jobs = {
+            "revision": 1,
+            "jobs": [
+                {
+                    "id": job_id,
+                    "status": "tailoring",
+                    "status_detail": "Converting resume to PDF…",
+                    "fill_gen": 2,
+                    "title": "Dummy ML Role",
+                    "company": "Dummy Co",
+                    "location": "Remote",
+                    "apply_url": "https://example.test/apply/dummy",
+                    "session_key": f"agent:job-hunter:job-{job_id}",
+                    "job_description": "Dummy JD for lock regression — not real PII.",
+                }
+            ],
+        }
+        jobs_file.write_text(json.dumps(jobs), encoding="utf-8")
+        lock_file.touch()
+
+        done = threading.Event()
+        err: list[BaseException] = []
+
+        def _run() -> None:
+            try:
+                with (
+                    mock.patch.object(srv, "JOBS_FILE", jobs_file),
+                    mock.patch.object(srv, "JOBS_LOCK_FILE", lock_file),
+                    mock.patch.object(srv, "ROOT", td_path),
+                    mock.patch.object(srv._jobs_lock_mod, "JOBS_FILE", jobs_file),
+                    mock.patch.object(srv._jobs_lock_mod, "LOCK_FILE", lock_file),
+                ):
+                    tok = srv._fill_run_ctx.set((job_id, 2))
+                    try:
+                        srv._persist_compiled_resume_after_tectonic(
+                            job_id,
+                            resume_pdf=resume_pdf,
+                            compile_ok=True,
+                            compile_exit=0,
+                            compile_log=td_path / "tectonic_dummy.log",
+                        )
+                    finally:
+                        srv._fill_run_ctx.reset(tok)
+            except BaseException as e:
+                err.append(e)
+            finally:
+                done.set()
+
+        t = threading.Thread(target=_run, name="post-tectonic-handoff", daemon=True)
+        t.start()
+        if not done.wait(5.0):
+            raise AssertionError(
+                "post-tectonic handoff deadlocked (did not finish within 5s) — "
+                "likely bare _fill_run_stale under _lock"
+            )
+        t.join(timeout=1.0)
+        if err:
+            raise err[0]
+
+        saved = json.loads(jobs_file.read_text(encoding="utf-8"))
+        job = next(j for j in saved["jobs"] if j["id"] == job_id)
+        assert job["status"] == "navigating", job
+        assert job.get("resume_on_disk") is True, job
+        assert job.get("resume_path"), job
+        assert "Preparing fill" in (job.get("status_detail") or "")
+
+
+def test_post_tectonic_pipeline_advances_past_tailoring():
+    """Stubbed PartyRock/tectonic/fill: status leaves tailoring after compile."""
+    import tempfile
+
+    srv = _load_server()
+    job_id = "pipe-tectonic-2"
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        jobs_file = td_path / "jobs.json"
+        lock_file = td_path / "jobs.json.lock"
+        resumes = td_path / "resumes" / job_id
+        resumes.mkdir(parents=True)
+        (resumes / "jd_full.txt").write_text(
+            "Dummy job description for pipeline lock test.\n", encoding="utf-8"
+        )
+        jobs = {
+            "revision": 1,
+            "jobs": [
+                {
+                    "id": job_id,
+                    "status": "tailoring",
+                    "status_detail": "Waiting on resume from PartyRock…",
+                    "fill_gen": 1,
+                    "title": "Dummy Data Scientist",
+                    "company": "Fixture Corp",
+                    "location": "Austin, TX",
+                    "apply_url": "https://boards.example.test/jobs/dummy",
+                    "session_key": f"agent:job-hunter:job-{job_id}",
+                    "job_description": "Short dummy JD.",
+                }
+            ],
+        }
+        jobs_file.write_text(json.dumps(jobs), encoding="utf-8")
+        lock_file.touch()
+        subprocess_commands: list[list[str]] = []
+
+        def _fake_subprocess(cmd, log_name, timeout_s, **kwargs):
+            subprocess_commands.append([str(c) for c in cmd])
+            log_path = td_path / "logs"
+            log_path.mkdir(exist_ok=True)
+            out = log_path / log_name
+            out.write_text("ok\n", encoding="utf-8")
+            cmd0 = " ".join(str(c) for c in cmd)
+            job_dir = resumes
+            if "tailor_resume" in cmd0 or "TAILOR" in cmd0.upper():
+                # Dummy LaTeX only — never real applicant content.
+                (job_dir / "resume.tex").write_text(
+                    "\\documentclass{article}\\begin{document}Dummy\\end{document}\n",
+                    encoding="utf-8",
+                )
+                return 0, out
+            if "tectonic" in cmd0:
+                (job_dir / "resume.pdf").write_bytes(
+                    b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\ntrailer<<>>\n%%EOF\n"
+                )
+                return 0, out
+            if "fit_resume_pages" in cmd0:
+                return 0, out
+            return 0, out
+
+        fill_calls: list[tuple] = []
+
+        def _fake_fill(*args, **kwargs):
+            fill_calls.append((args, kwargs))
+
+        done = threading.Event()
+        err: list[BaseException] = []
+
+        def _run() -> None:
+            try:
+                with (
+                    mock.patch.object(srv, "JOBS_FILE", jobs_file),
+                    mock.patch.object(srv, "JOBS_LOCK_FILE", lock_file),
+                    mock.patch.object(srv, "ROOT", td_path),
+                    mock.patch.object(srv, "RESUMES_DIR", td_path / "resumes"),
+                    mock.patch.object(srv, "INBOUND_MEDIA_DIR", td_path / "inbound"),
+                    mock.patch.object(srv._jobs_lock_mod, "JOBS_FILE", jobs_file),
+                    mock.patch.object(srv._jobs_lock_mod, "LOCK_FILE", lock_file),
+                    mock.patch.object(srv, "_run_subprocess_step", _fake_subprocess),
+                    mock.patch.object(
+                        srv, "_ensure_openclaw_managed_browser", return_value={}
+                    ),
+                    mock.patch.object(srv, "close_job_partyrock_tab", return_value=None),
+                    mock.patch.object(
+                        srv, "partyrock_url", return_value="https://partyrock.example.test/"
+                    ),
+                    mock.patch.object(srv, "partyrock_mode_label", return_value="Testing"),
+                    mock.patch.object(srv, "run_hybrid_fill_dummy", _fake_fill),
+                    mock.patch.object(srv, "_publish_resume_by_company", return_value=None),
+                    mock.patch.object(srv, "_cleanup_old_inbound_resumes"),
+                    mock.patch.object(srv, "run_agent_message"),
+                ):
+                    tok = srv._bind_fill_run_ctx(job_id, 1)
+                    try:
+                        srv._run_tailor_then_fill_body(
+                            job_id,
+                            test_mode=True,
+                            skip_partyrock=False,
+                            force_partyrock=True,
+                            restore_status="discovered",
+                            fill_run_gen=1,
+                        )
+                    finally:
+                        srv._fill_run_ctx.reset(tok)
+            except BaseException as e:
+                err.append(e)
+            finally:
+                done.set()
+
+        t = threading.Thread(target=_run, name="tailor-fill-pipe", daemon=True)
+        t.start()
+        if not done.wait(15.0):
+            raise AssertionError(
+                "tailor→fill pipeline deadlocked or hung (>15s) after compile handoff"
+            )
+        t.join(timeout=1.0)
+        if err:
+            raise err[0]
+
+        saved = json.loads(jobs_file.read_text(encoding="utf-8"))
+        job = next(j for j in saved["jobs"] if j["id"] == job_id)
+        assert job["status"] != "tailoring", job
+        assert job.get("resume_path"), job
+        assert job.get("resume_on_disk") is True, job
+        assert fill_calls, "expected run_hybrid_fill_dummy after successful compile"
+        assert job["status"] in ("navigating", "filling", "ready_for_review", "stuck") or fill_calls
+        tailor_cmd = next(cmd for cmd in subprocess_commands if "tailor_resume.py" in " ".join(cmd))
+        assert "--keep-open" not in tailor_cmd
+
+
+def test_browser_cold_start_sweeps_restored_idle_partyrock_tabs():
+    srv = _load_server()
+    started = {"ok": True, "via": "cft_direct", "started": True}
+    with mock.patch.object(
+        srv, "ensure_partyrock_browser_direct", return_value=started
+    ), mock.patch.object(
+        srv,
+        "close_idle_partyrock_tabs",
+        return_value={"closed": ["OLD"], "failed": [], "protected": []},
+    ) as sweep:
+        result = srv._ensure_openclaw_managed_browser(required=True)
+
+    assert result == started
+    assert sweep.called
+
+
+def test_browser_already_running_sweeps_idle_partyrock_tabs():
+    """Leftover PartyRock tabs must be swept when CfT is already up (not cold-start only)."""
+    srv = _load_server()
+    started = {"ok": True, "via": "already_running", "started": True}
+    with mock.patch.object(
+        srv, "ensure_partyrock_browser_direct", return_value=started
+    ), mock.patch.object(
+        srv,
+        "close_idle_partyrock_tabs",
+        return_value={"closed": ["OLD"], "failed": [], "protected": []},
+    ) as sweep:
+        result = srv._ensure_openclaw_managed_browser(required=True)
+
+    assert result == started
+    assert sweep.called
+    kwargs = sweep.call_args.kwargs
+    assert kwargs.get("resumes_dir") == srv.RESUMES_DIR
+
+
+def test_bare_fill_run_stale_under_lock_would_deadlock():
+    """Watchdog proof: re-entering _lock via bare _fill_run_stale hangs.
+
+    Uses a private Lock so a stuck daemon cannot poison the module ``_lock``.
+    ContextVar must be set on the worker thread (ContextVars are not shared).
+    """
+    srv = _load_server()
+    probe = threading.Lock()
+    hung = threading.Event()
+    finished = threading.Event()
+
+    def _boom() -> None:
+        tok = srv._fill_run_ctx.set(("reentry-job", 1))
+        try:
+            with probe:
+                hung.set()
+                try:
+                    srv._fill_run_stale("reentry-job")  # no fill_gen= → re-enters probe
+                finally:
+                    finished.set()
+        finally:
+            srv._fill_run_ctx.reset(tok)
+
+    with mock.patch.object(srv, "_lock", probe):
+        t = threading.Thread(target=_boom, daemon=True)
+        t.start()
+        assert hung.wait(1.0), "worker never acquired probe lock"
+        assert not finished.wait(0.4), (
+            "bare _fill_run_stale under _lock did not hang (unexpected)"
+        )
+
+
 def test_bind_fill_run_ctx_uses_explicit_gen():
     """Start must pass bumped fill_gen so the new thread is not stale."""
     srv = _load_server()
@@ -319,7 +702,70 @@ def test_app_js_optimistic_fill_start():
     src = APP_JS.read_text(encoding="utf-8")
     assert "applyFillStartLocally" in src
     assert "applyFillStartLocally(jobId" in src
-    assert 'setQueue("progress")' in src
+    fn = src.split("function applyFillStartLocally(", 1)[1].split(
+        "\nasync function startJob", 1
+    )[0]
+    assert 'job.status = skipPartyrock ? "navigating" : "tailoring"' in fn
+    assert "render()" in fn
+    # Stay on Open (or current tab); status change alone drops it from Open list.
+    assert 'setQueue("progress")' not in fn
+
+
+def test_app_js_start_switches_to_progress_tab():
+    """Start must NOT switch tabs — job leaves Open via status, dossier stays."""
+    src = APP_JS.read_text(encoding="utf-8")
+    start_fn = src.split("async function startJob(jobId", 1)[1].split(
+        "\nfunction toggleTestMode(", 1
+    )[0]
+    assert 'setQueue("progress")' not in start_fn
+    apply_fn = src.split("function applyFillStartLocally(", 1)[1].split(
+        "\nasync function startJob", 1
+    )[0]
+    assert 'setQueue("progress")' not in apply_fn
+    assert "Pin selected job when Start moved it to progress" not in src
+    vis = src.split("function visibleJobs()", 1)[1].split(
+        "\nfunction groupPriorityStatus(", 1
+    )[0]
+    # Generating job must leave the Open list (no selectedId pin).
+    assert "selectedId" not in vis
+    dossier = src.split("function renderDossier()", 1)[1].split(
+        "\nfunction bindDossierPopoverHandlers", 1
+    )[0]
+    # Same selected job still renders after it leaves the current queue list.
+    assert "jobs.find(j => j.id === selectedId)" in dossier
+    assert "visibleJobs()" not in dossier
+
+
+def test_app_js_company_apply_count_badge():
+    """Sidebar company rows show red applied-count tag via normalized companyKey."""
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "companyApplyCountBadgeHtml" in src
+    assert "rebuildCompanyAppliedCounts" in src
+    assert "normalizeCompanyName" in src
+    assert 'j.status !== "applied"' in src
+    badge_fn = src.split("function companyApplyCountBadgeHtml", 1)[1].split("\nfunction ", 1)[0]
+    assert 'class="tag applied-count"' in badge_fn
+    assert "${n}x" in badge_fn
+    row = src.split("function renderJobRow(", 1)[1].split("\nfunction ", 1)[0]
+    assert 'class="co"' in row
+    assert "companyApplyCountBadgeHtml(job)" in row
+    sib = src.split("function toggleCompanySiblings(", 1)[1].split("\nfunction ", 1)[0]
+    assert "normalizeCompanyName(company)" in sib
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert ".tag.applied-count" in html
+    assert ".company-apply-count" not in html
+    proc = subprocess.run(
+        ["node", str(HERE / "test_company_key.js")],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stdout)
+        sys.stderr.write(proc.stderr)
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "OK test_company_key.js" in proc.stdout
 
 
 def test_app_js_mark_applied_while_in_progress():
@@ -347,13 +793,22 @@ def test_force_stuck_orphaned_in_progress_ignores_age_on_startup():
             }
         ]
     }
-    with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-        srv, "write_jobs"
-    ) as wj:
+
+    @contextmanager
+    def _fake_locked(*, allow_purge=False):
+        yield jobs
+
+    with mock.patch.object(
+        srv, "locked_jobs_for_write", _fake_locked
+    ), mock.patch.object(
+        srv, "close_job_partyrock_tab", return_value={"closed": True}
+    ) as close_tab:
         forced = srv._force_stuck_orphaned_in_progress(ignore_age=True)
         assert forced == ["orphan-fill"]
         assert jobs["jobs"][0]["status"] == "stuck"
-        wj.assert_called_once()
+        close_tab.assert_called_once_with(
+            "orphan-fill", srv.RESUMES_DIR / "orphan-fill"
+        )
 
 
 def test_force_stuck_orphaned_respects_stale_age():
@@ -372,13 +827,15 @@ def test_force_stuck_orphaned_respects_stale_age():
             }
         ]
     }
-    with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-        srv, "write_jobs"
-    ) as wj:
+
+    @contextmanager
+    def _fake_locked(*, allow_purge=False):
+        yield jobs
+
+    with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked):
         forced = srv._force_stuck_orphaned_in_progress(ignore_age=False)
         assert forced == []
         assert jobs["jobs"][0]["status"] == "navigating"
-        wj.assert_not_called()
 
 
 def test_force_stuck_orphaned_when_past_stale():
@@ -398,13 +855,15 @@ def test_force_stuck_orphaned_when_past_stale():
             }
         ]
     }
-    with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-        srv, "write_jobs"
-    ) as wj:
+
+    @contextmanager
+    def _fake_locked(*, allow_purge=False):
+        yield jobs
+
+    with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked):
         forced = srv._force_stuck_orphaned_in_progress(ignore_age=False)
         assert forced == ["old-fill"]
         assert jobs["jobs"][0]["status"] == "stuck"
-        wj.assert_called_once()
 
 
 def test_mark_submitted_kills_proc_in_source():
@@ -492,8 +951,25 @@ def test_app_js_surfaces_deleted_and_skip_without_classic():
     assert 'data-queue="skipped"' not in (HERE / "static" / "index.html").read_text(encoding="utf-8")
 
 
+def test_classic_routes_redirect_to_ops():
+    """UI-033: /classic, classic.html, classic.js, ops-preview* HTTP-redirect to Ops /."""
+    src = (HERE / "server.py").read_text(encoding="utf-8")
+    assert 'parts[0] in ("classic", "classic.html", "classic.js")' in src
+    classic_chunk = src.split('("classic", "classic.html", "classic.js")', 1)[1][:400]
+    assert "send_response(302)" in classic_chunk
+    assert 'send_header("Location", "/")' in classic_chunk
+    assert 'parts[0] in ("ops-preview", "ops-preview.html")' in src
+    ops_chunk = src.split('("ops-preview", "ops-preview.html")', 1)[1][:400]
+    assert "send_response(302)" in ops_chunk
+    assert 'send_header("Location", "/")' in ops_chunk
+    assert '_send_file(STATIC_DIR / "classic.html"' not in src
+    assert not (HERE / "static" / "classic.html").exists()
+    assert not (HERE / "static" / "classic.js").exists()
+    assert not (HERE / "static" / "ops-preview.html").exists()
+
+
 def test_app_js_surfaces_applied_after_mark_submitted():
-    """DASH2-006 UI: mark applied optimistically moves job to Applied queue."""
+    """Mark applied updates status locally; view stays on the current tab."""
     app = APP_JS.read_text(encoding="utf-8")
     assert "surfaceAppliedJob" in app
     assert "applyMarkedAppliedLocally" in app
@@ -503,11 +979,18 @@ def test_app_js_surfaces_applied_after_mark_submitted():
     assert "if (!ok)" in chunk
     assert "applyMarkedAppliedLocally(jobId)" in chunk
     assert "surfaceAppliedJob(jobId)" in chunk
+    assert "setQueue" not in chunk
+    surface = app.split("function surfaceAppliedJob", 1)[1].split(
+        "\nfunction ", 1
+    )[0]
+    assert "setQueue" not in surface
     poll_chunk = app.split("async function poll()", 1)[1].split(
         "// ------------------------------------------------------------ Utility pane", 1
     )[0]
     assert "_pollSeq" in poll_chunk
     assert "seq !== _pollSeq" in poll_chunk
+    assert "setQueue" not in poll_chunk
+    assert "maybeAutoSelectQueue" not in poll_chunk
 
 
 def test_launch_script_reloads_focused_ui_on_reuse():
@@ -572,11 +1055,252 @@ def test_app_js_connection_error_banner():
     assert 'addEventListener("online"' in src
 
 
+def test_app_js_timeline_starts_collapsed_and_auto_collapses():
+    """Timeline boots closed; expands are temporary (10s timer + focus-loss)."""
+    src = APP_JS.read_text(encoding="utf-8")
+    html = (HERE / "static" / "index.html").read_text(encoding="utf-8")
+    assert "TL_AUTO_COLLAPSE_MS = 10000" in src
+    assert "scheduleTimelineAutoCollapse" in src
+    assert "eventInsideTimeline" in src
+    assert "timelineHasUserAttention" in src
+    assert "armTimelineAutoCollapseOnInteraction" in src
+    assert 'addEventListener("scroll", armTimelineAutoCollapseOnInteraction' in src
+    assert 'addEventListener("wheel", armTimelineAutoCollapseOnInteraction' in src
+    assert "let timelineCollapsed = true" in src
+    assert 'class="ops-body tl-collapsed"' in html
+    assert 'id="timeline-pane"' in html and "collapsed" in html
+    assert 'title="Expand timeline"' in html
+
+
+def test_app_js_start_failure_invalidates_etag_not_just_json():
+    """Failed Start must clear ETag too — else 304 keeps optimistic in-progress UI."""
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "function invalidateJobsListCache()" in src
+    assert "lastJobsEtag = null" in src
+    start_fn = src.split("async function startJob(jobId", 1)[1].split(
+        "\nfunction toggleTestMode(", 1
+    )[0]
+    assert "invalidateJobsListCache()" in start_fn
+    assert start_fn.count("invalidateJobsListCache()") >= 2
+    poll_fn = src.split("async function poll()", 1)[1].split("\nfunction openUtil(", 1)[0]
+    assert "if (lastJobsJSON == null)" in poll_fn
+    assert 'await fetch("/api/jobs")' in poll_fn
+
+
+def test_app_js_optimistic_fill_restores_fast_poll():
+    """Local fill start must bump idle→active poll cadence immediately."""
+    src = APP_JS.read_text(encoding="utf-8")
+    fn = src.split("function applyFillStartLocally(", 1)[1].split(
+        "\nasync function startJob", 1
+    )[0]
+    assert "syncPollTimers()" in fn
+
+
+def test_temp_applied_count_override_is_null():
+    """TEMP_APPLIED_COUNT_OVERRIDE must stay null outside deliberate UI experiments."""
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "const TEMP_APPLIED_COUNT_OVERRIDE = null;" in src
+
+
+def test_kpi_counts_use_per_family_filter_state():
+    """Each mission KPI uses its queue family's saved filters, not the active tab's."""
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "function jobMatchesListFilters(" in src
+    assert "function filterFamilyForBucket(" in src
+    assert "function filterStateForFamily(" in src
+    assert "function jobMatchesListFiltersForFamily(" in src
+    count_fn = src.split("function countBucket(bucket", 1)[1].split(
+        "\nfunction renderStats", 1
+    )[0]
+    assert "jobMatchesListFiltersForFamily" in count_fn
+    vis = src.split("function visibleJobs()", 1)[1].split(
+        "\nfunction groupPriorityStatus(", 1
+    )[0]
+    assert "jobMatchesListFilters" in vis
+
+
+def test_list_filters_persist_per_family_in_localstorage():
+    """List filters are a per-family localStorage map; tab switches swap them."""
+    src = APP_JS.read_text(encoding="utf-8")
+    assert 'const FILTER_STATE_KEY = "opsFilterState"' in src
+    assert "FILTER_FAMILY_KEYS" in src
+    assert '"pipeline"' in src
+    assert "filterFamilyForQueue" in src
+    save_fn = src.split("function saveFilterState()", 1)[1].split(
+        "\nfunction ", 1
+    )[0]
+    assert "filterStateByFamily" in save_fn
+    assert "persistFilterMap" in save_fn
+    assert "sessionStorage" not in save_fn
+    setq = src.split("function setQueue(next)", 1)[1].split(
+        "\nfunction ", 1
+    )[0]
+    assert "swapQueueFilterState" in setq
+
+
+def _setqueue_call_lines(src: str) -> list[str]:
+    return [ln.strip() for ln in src.splitlines() if "setQueue(" in ln]
+
+
+def test_app_js_setqueue_only_from_user_tab_clicks():
+    """KPI / Deleted trash clicks may setQueue; Start/poll/stuck/skip/restore must not."""
+    src = APP_JS.read_text(encoding="utf-8")
+    lines = _setqueue_call_lines(src)
+    assert lines == [
+        "function setQueue(next) {",
+        'setQueue(queue === "deleted" ? "open" : "deleted");',
+        "if (q) setQueue(q);",
+    ]
+    bind = src.split("function bindOpsChrome()", 1)[1].split(
+        "\nfunction ", 1
+    )[0]
+    assert "if (q) setQueue(q);" in bind
+    assert 'e.target.closest(".mstat")' in bind
+
+    for name, splitter in (
+        ("applyFillStartLocally", "\nasync function startJob"),
+        ("surfaceDeletedJob", "\nfunction surfaceOpenJob"),
+        ("surfaceOpenJob", "\nfunction surfaceAppliedJob"),
+        ("surfaceAppliedJob", "\nfunction applyMarkedAppliedLocally"),
+        ("restoreJob", "\nasync function markSubmitted"),
+        ("skipJob", "\nasync function restoreJob"),
+        ("deleteJob", "\nasync function emptyDeleted"),
+        ("cancelJob", "\nasync function skipJob"),
+        ("poll", "// ------------------------------------------------------------ Utility pane"),
+    ):
+        prefix = "async function " if name in (
+            "restoreJob", "skipJob", "deleteJob", "cancelJob", "poll",
+        ) else "function "
+        if name == "applyFillStartLocally":
+            chunk = src.split("function applyFillStartLocally(", 1)[1].split(
+                splitter, 1
+            )[0]
+        elif name == "poll":
+            chunk = src.split("async function poll()", 1)[1].split(splitter, 1)[0]
+        else:
+            chunk = src.split(f"{prefix}{name}", 1)[1].split(splitter, 1)[0]
+        assert "setQueue" not in chunk, f"{name} must not auto-switch queue tabs"
+
+    assert 'setQueue("stuck")' not in src
+    assert 'setQueue("progress")' not in src
+    assert 'setQueue("ready")' not in src
+    assert 'setQueue("applied")' not in src
+
+
+def test_header_tooltip_css_covers_nested_buttons_without_click_capture():
+    """Wrap-nested header buttons need descendant tooltip selectors; ::after no hits."""
+    html = (HERE / "static" / "index.html").read_text(encoding="utf-8")
+    assert ".header-actions [data-tooltip]" in html
+    assert ".header-actions > [data-tooltip]" not in html
+    tip_block = html.split(".header-actions [data-tooltip]::after", 1)[1].split(
+        ".header-actions [data-tooltip]:hover::after", 1
+    )[0]
+    assert "pointer-events: none" in tip_block
+
+
 def test_app_js_job_sort_fallbacks():
     """A failed job_sort.js load must not brick list render."""
     src = APP_JS.read_text(encoding="utf-8")
     assert "typeof compareByPosted !== \"function\"" in src
     assert "job_sort.js missing" in src
+
+
+def test_header_branding_omnidex_without_insights():
+    """Logo is OmniDex; Insights toggle must not sit under the KPI strip."""
+    html = (HERE / "static" / "index.html").read_text(encoding="utf-8")
+    assert "<title>OmniDex</title>" in html
+    assert '<div class="mark">OmniDex</div>' in html
+    assert "Orbitron" in html
+    assert 'id="insights"' not in html
+    assert "<summary>Insights</summary>" not in html
+    assert 'id="mission-stats"' in html
+    assert 'id="stat-stuck"' in html
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "function pollStats" not in src
+    assert "function renderInsights" not in src
+    assert "insightsStats" not in src
+
+
+def test_app_js_activity_dot_active_vs_ready():
+    """List squares + banner pulse: live work orange, parked/waiting green."""
+    src = APP_JS.read_text(encoding="utf-8")
+    html = (HERE / "static" / "index.html").read_text(encoding="utf-8")
+    assert "function jobActivityDot(" in src
+    fn = src.split("function jobActivityDot(", 1)[1].split("\nfunction ", 1)[0]
+    assert "ACTIVE_PROGRESS_STATUSES.has" in fn
+    assert 'return "active"' in fn
+    assert 'return "ready"' in fn
+    assert "resume_ready" in fn
+    assert "HOLD_BUSY_STATUSES" in fn
+
+    row = src.split("function renderJobRow(", 1)[1].split("\nfunction ", 1)[0]
+    assert "jobActivityDot(job)" in row
+    assert "activity-" in row
+    assert "queueBucket(job.status)" in row
+
+    bar = src.split("function updateStatusBar(", 1)[1].split("\nasync function ", 1)[0]
+    assert "jobActivityDot(" in bar
+    assert "activity-ready" in bar or "activity-${" in bar
+
+    group_block = src.split("html = groupEntries.map", 1)[1].split("list.innerHTML", 1)[0]
+    assert "jobActivityDot(" in group_block
+
+    assert ".status-rail.activity-active" in html
+    assert ".status-rail.activity-ready" in html
+    assert ".mstat.progress .n { color: var(--orange); }" in html
+    assert "#status-bar.activity-ready .pulse" in html
+
+    active_line = re.search(
+        r"const ACTIVE_PROGRESS_STATUSES = new Set\([^;]+;", src
+    )
+    hold_line = re.search(r"const HOLD_BUSY_STATUSES = new Set\([^;]+;", src)
+    helper = re.search(
+        r"function jobActivityDot\(job\) \{.*?\n\}", src, flags=re.S
+    )
+    assert active_line and hold_line and helper, "jobActivityDot wiring missing"
+    snippet = (
+        active_line.group(0)
+        + "\n"
+        + hold_line.group(0)
+        + "\n"
+        + helper.group(0)
+        + "\n"
+        + "const jobs = "
+        + json.dumps([
+            {"status": "tailoring"},
+            {"status": "navigating"},
+            {"status": "filling"},
+            {"status": "resuming"},
+            {"status": "resume_ready"},
+            {"status": "ready_for_review"},
+            {"status": "blocked_captcha"},
+            {"status": "discovered"},
+            {"status": "applied"},
+            {"status": "stuck"},
+        ])
+        + ";\n"
+        + "process.stdout.write(JSON.stringify(jobs.map(j => jobActivityDot(j))));\n"
+    )
+    proc = subprocess.run(
+        ["node", "-e", snippet],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    got = json.loads(proc.stdout)
+    assert got == [
+        "active",
+        "active",
+        "active",
+        "active",
+        "ready",
+        "ready",
+        "ready",
+        "",
+        "",
+        "",
+    ]
 
 
 def test_index_html_embedded_browser_boot():
@@ -590,11 +1314,11 @@ def test_index_html_embedded_browser_boot():
     assert 'onerror="window.__jhBootFailed' in html
 
 
-def test_app_js_boot_render_and_auto_queue():
-    """First paint before poll completes; auto-jump to a non-empty queue section."""
+def test_app_js_boot_render_without_auto_queue():
+    """First paint before poll completes; never auto-jump queue tabs."""
     src = APP_JS.read_text(encoding="utf-8")
     assert "list-boot-msg" in src
-    assert "maybeAutoSelectQueue" in src
+    assert "maybeAutoSelectQueue" not in src
     assert "markDashboardPainted" in src
     boot = src.split("try {", 1)[1].split("} catch (bootErr)", 1)[0]
     assert "render();" in boot
@@ -619,17 +1343,23 @@ def test_cancel_bumps_fill_gen():
             }
         ]
     }
+
+    @contextmanager
+    def _fake_locked(*, allow_purge=False):
+        yield jobs
+
     handler = srv.Handler.__new__(srv.Handler)
-    with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-        srv, "write_jobs"
-    ), mock.patch.object(srv, "_kill_process_tree"), mock.patch.object(
-        srv, "abort_gateway_session"
-    ), mock.patch.object(srv, "clear_fill_activity"), mock.patch.object(
+    with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked), mock.patch.object(
+        srv, "_kill_process_tree"
+    ), mock.patch.object(srv, "abort_gateway_session"), mock.patch.object(
+        srv, "clear_fill_activity"
+    ), mock.patch.object(
         srv, "close_job_partyrock_tab", return_value={}
     ), mock.patch.object(handler, "_send_json"):
         handler._handle_cancel("run-cancel")
     assert jobs["jobs"][0]["fill_gen"] == 4
-    assert jobs["jobs"][0]["status"] == "discovered"
+    assert jobs["jobs"][0]["status"] != "discovered"
+    assert jobs["jobs"][0]["status"] == "resume_ready"
 
 
 def test_stale_fill_gen_blocks_pipeline_patch():
@@ -650,11 +1380,14 @@ def test_stale_fill_gen_blocks_pipeline_patch():
     }
     tok = srv._fill_run_ctx.set(("stale-run", 1))
     try:
+        @contextmanager
+        def _fake_locked(*, allow_purge=False):
+            raise AssertionError("stale patch must not enter locked write")
+
         with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-            srv, "write_jobs"
-        ) as wj:
+            srv, "locked_jobs_for_write", _fake_locked
+        ):
             srv._patch_job("stale-run", status="navigating", status_detail="should not apply")
-            wj.assert_not_called()
         assert jobs["jobs"][0]["status"] == "discovered"
         assert srv._job_fill_aborted("stale-run") is True
     finally:
@@ -749,11 +1482,16 @@ def test_run_tailor_then_fill_claim_failure_in_source():
     chunk = src.split("def run_tailor_then_fill", 1)[1].split(
         "def _fill_skipping_partyrock", 1
     )[0]
-    assert "_claim_fill_job" in chunk
+    assert "_claim_fill_job_for_run" in chunk
+    assert "_bind_fill_run_ctx" in chunk
     assert "status=\"stuck\"" in chunk or "status='stuck'" in chunk
+    assert "stale gen or terminal abort" in chunk
+    assert "if claimed:" in chunk
+    assert "_release_fill_job(job_id)" in chunk
 
 
 def test_claim_fill_job_failure_marks_stuck():
+    """Same-gen claim timeout still surfaces stuck (slot never freed)."""
     srv = _load_server()
     srv._active_fill_jobs.add("dup-claim")
     jobs = {
@@ -767,17 +1505,105 @@ def test_claim_fill_job_failure_marks_stuck():
         ]
     }
     try:
-        with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-            srv, "write_jobs"
-        ), mock.patch.object(srv, "_patch_job") as pj, mock.patch.object(
-            srv, "append_fill_activity"
-        ), mock.patch.object(srv, "_run_tailor_then_fill_body") as body:
+        with mock.patch.object(srv, "_FILL_CLAIM_WAIT_S", 0), mock.patch.object(
+            srv, "read_jobs", return_value=jobs
+        ), mock.patch.object(srv, "write_jobs"), mock.patch.object(
+            srv, "_patch_job"
+        ) as pj, mock.patch.object(srv, "append_fill_activity"), mock.patch.object(
+            srv, "_run_tailor_then_fill_body"
+        ) as body:
             srv.run_tailor_then_fill("dup-claim", fill_run_gen=1)
             body.assert_not_called()
             pj.assert_called_once()
             assert pj.call_args.kwargs.get("status") == "stuck"
     finally:
         srv._active_fill_jobs.discard("dup-claim")
+
+
+def test_claim_fill_job_failure_stale_does_not_demote():
+    """Losing/stale Start must not flip the live run to stuck on claim miss."""
+    srv = _load_server()
+    srv._active_fill_jobs.add("stale-claim")
+    jobs = {
+        "jobs": [
+            {
+                "id": "stale-claim",
+                "status": "navigating",
+                "fill_gen": 5,
+                "session_key": "agent:job-hunter:job-stale-claim",
+            }
+        ]
+    }
+    try:
+        with mock.patch.object(srv, "_FILL_CLAIM_WAIT_S", 0), mock.patch.object(
+            srv, "read_jobs", return_value=jobs
+        ), mock.patch.object(srv, "write_jobs"), mock.patch.object(
+            srv, "_patch_job"
+        ) as pj, mock.patch.object(srv, "append_fill_activity") as af, mock.patch.object(
+            srv, "_run_tailor_then_fill_body"
+        ) as body:
+            srv.run_tailor_then_fill("stale-claim", fill_run_gen=4)
+            body.assert_not_called()
+            pj.assert_not_called()
+            af.assert_not_called()
+            assert jobs["jobs"][0]["status"] == "navigating"
+            # Losing thread must not release the active pipeline's claim.
+            assert "stale-claim" in srv._active_fill_jobs
+    finally:
+        srv._active_fill_jobs.discard("stale-claim")
+
+
+def test_claim_failure_does_not_release_peer_claim():
+    """Claim-timeout stuck path must leave another thread's claim intact."""
+    srv = _load_server()
+    srv._active_fill_jobs.add("peer-claim")
+    jobs = {
+        "jobs": [
+            {
+                "id": "peer-claim",
+                "status": "tailoring",
+                "fill_gen": 1,
+                "session_key": "agent:job-hunter:job-peer-claim",
+            }
+        ]
+    }
+    try:
+        with mock.patch.object(srv, "_FILL_CLAIM_WAIT_S", 0), mock.patch.object(
+            srv, "read_jobs", return_value=jobs
+        ), mock.patch.object(srv, "write_jobs"), mock.patch.object(
+            srv, "_patch_job"
+        ), mock.patch.object(srv, "append_fill_activity"), mock.patch.object(
+            srv, "_run_tailor_then_fill_body"
+        ):
+            srv.run_tailor_then_fill("peer-claim", fill_run_gen=1)
+        assert "peer-claim" in srv._active_fill_jobs
+    finally:
+        srv._active_fill_jobs.discard("peer-claim")
+
+
+def test_claim_fill_job_for_run_waits_then_claims():
+    """New Start should claim after a prior thread releases (Cancel→Retry race)."""
+    srv = _load_server()
+    srv._active_fill_jobs.add("wait-claim")
+    released = {"done": False}
+
+    def _release_soon():
+        time.sleep(0.08)
+        srv._release_fill_job("wait-claim")
+        released["done"] = True
+
+    t = threading.Thread(target=_release_soon, daemon=True)
+    t.start()
+    try:
+        with mock.patch.object(srv, "_FILL_CLAIM_WAIT_S", 2.0), mock.patch.object(
+            srv, "_job_fill_gen", return_value=2
+        ):
+            assert srv._claim_fill_job_for_run("wait-claim", 2) is True
+        assert released["done"] is True
+        assert "wait-claim" in srv._active_fill_jobs
+    finally:
+        t.join(timeout=2)
+        srv._active_fill_jobs.discard("wait-claim")
 
 
 def test_hold_detection_ignores_applied_status():
@@ -806,14 +1632,18 @@ def test_patch_job_blocks_detail_on_terminal_status():
             }
         ]
     }
-    with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-        srv, "write_jobs"
-    ) as wj:
+
+    @contextmanager
+    def _fake_locked(*, allow_purge=False):
+        yield jobs
+
+    with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked):
         srv._patch_job("applied-x", status_detail="Browser held open for review")
-        wj.assert_not_called()
+    assert jobs["jobs"][0]["status_detail"] == "Marked as applied by user from dashboard."
 
 
 def test_pipeline_stale_gen_handoff_marks_stuck():
+    """Stale fill_gen must exit silently — never demote a newer run to stuck."""
     srv = _load_server()
     jobs = {
         "jobs": [
@@ -829,13 +1659,46 @@ def test_pipeline_stale_gen_handoff_marks_stuck():
     try:
         with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
             srv, "write_jobs"
-        ):
-            stopped = srv._pipeline_stop_if_aborted("stale-nav", "fast_fill launch")
+        ) as wj:
+
+            @contextmanager
+            def _fake_locked(*, allow_purge=False):
+                yield jobs
+
+            with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked):
+                stopped = srv._pipeline_stop_if_aborted("stale-nav", "fast_fill launch")
             assert stopped is True
-            assert jobs["jobs"][0]["status"] == "stuck"
-            assert "fill_gen stale" in jobs["jobs"][0]["status_detail"]
+            assert jobs["jobs"][0]["status"] == "navigating"
+            wj.assert_not_called()
     finally:
         srv._fill_run_ctx.reset(tok)
+
+
+def test_empty_jd_uses_extract_not_open_agent_in_source():
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    assert "extract_job_posting.py" in src
+    assert "No job description after extract_job_posting" in src
+    assert "agent fetching apply page then continuing pipeline" not in src
+    assert "Do NOT fill the application" in src
+
+
+def test_tectonic_fail_agent_does_not_fill_in_source():
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    chunk = src.split("if not compile_ok:", 1)[1].split(
+        "Fitting resume within two pages", 1
+    )[0]
+    assert "Do NOT fill the application" in chunk
+    assert "set ready_for_review" in chunk
+    assert "continue the pipeline (fill the application" not in chunk
+    assert "resume_pdf.exists()" in chunk
+    assert "_persist_compiled_resume_after_tectonic(" in chunk
+
+
+def test_skip_partyrock_messaging_avoids_uploaded_resume_in_source():
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    assert "using uploaded resume" not in src.lower()
+    assert "dummy fixture" in src
+    assert "PartyRock skipped" in src
 
 
 def test_mark_submitted_releases_fill_and_clears_hold_in_source():
@@ -875,19 +1738,27 @@ if __name__ == "__main__":
     test_mark_fill_thread_stuck_patches_when_running()
     test_pipeline_milestone_aborts_when_cancelled()
     test_fill_abort_statuses_cover_hunt_set()
-    test_app_js_cancel_not_for_ready()
+    test_app_js_cancel_for_progress_stuck_ready()
     test_max_headed_chrome_mains_default_three()
     test_app_js_concurrent_fill_no_global_busy_gate()
     test_app_js_start_fill_mode_no_false_skip_without_pdf()
     test_app_js_escapes_question_and_cancel_gate()
+    test_app_js_cancel_stays_on_current_tab()
     test_app_js_uses_js_string_escape_on_detail_actions()
     test_restore_handler_accepts_deleted_in_source()
     test_delete_kills_running_proc_in_source()
     test_handle_cancel_allows_stuck_in_source()
     test_partyrock_parallel_no_global_lock()
     test_claim_fill_job_blocks_duplicate_thread()
+    test_fill_run_stale_accepts_locked_fill_gen()
+    test_post_tectonic_stale_check_passes_fill_gen_in_source()
+    test_post_tectonic_handoff_completes_under_real_locks()
+    test_post_tectonic_pipeline_advances_past_tailoring()
+    test_bare_fill_run_stale_under_lock_would_deadlock()
     test_bind_fill_run_ctx_uses_explicit_gen()
     test_app_js_optimistic_fill_start()
+    test_app_js_start_switches_to_progress_tab()
+    test_app_js_company_apply_count_badge()
     test_app_js_mark_applied_while_in_progress()
     test_force_stuck_orphaned_in_progress_ignores_age_on_startup()
     test_force_stuck_orphaned_respects_stale_age()
@@ -900,6 +1771,7 @@ if __name__ == "__main__":
     test_app_js_date_older_excludes_unknown()
     test_agent_fallback_missing_tex_forces_stuck_in_source()
     test_app_js_surfaces_deleted_and_skip_without_classic()
+    test_classic_routes_redirect_to_ops()
     test_app_js_surfaces_applied_after_mark_submitted()
     test_cancel_bumps_fill_gen()
     test_stale_fill_gen_blocks_pipeline_patch()
@@ -909,11 +1781,28 @@ if __name__ == "__main__":
     test_partyrock_handoff_has_abort_checkpoints_in_source()
     test_run_tailor_then_fill_claim_failure_in_source()
     test_claim_fill_job_failure_marks_stuck()
+    test_claim_fill_job_failure_stale_does_not_demote()
+    test_claim_failure_does_not_release_peer_claim()
+    test_claim_fill_job_for_run_waits_then_claims()
     test_session_running_local_includes_agent_turn()
     test_hold_detection_ignores_applied_status()
     test_patch_job_blocks_detail_on_terminal_status()
     test_pipeline_stale_gen_handoff_marks_stuck()
+    test_empty_jd_uses_extract_not_open_agent_in_source()
+    test_tectonic_fail_agent_does_not_fill_in_source()
+    test_skip_partyrock_messaging_avoids_uploaded_resume_in_source()
     test_mark_submitted_releases_fill_and_clears_hold_in_source()
     test_fill_streaming_aborts_on_terminal_status_in_source()
     test_hybrid_fill_passes_fill_run_gen_in_source()
+    test_app_js_timeline_starts_collapsed_and_auto_collapses()
+    test_app_js_start_failure_invalidates_etag_not_just_json()
+    test_app_js_optimistic_fill_restores_fast_poll()
+    test_temp_applied_count_override_is_null()
+    test_kpi_counts_use_active_list_filters()
+    test_list_filters_persist_globally_in_localstorage()
+    test_app_js_setqueue_only_from_user_tab_clicks()
+    test_app_js_boot_render_without_auto_queue()
+    test_header_tooltip_css_covers_nested_buttons_without_click_capture()
+    test_header_branding_omnidex_without_insights()
+    test_app_js_activity_dot_active_vs_ready()
     print("OK test_dashboard_bugs")

@@ -15,6 +15,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from discovery_filters import (  # noqa: E402
+    INDIA_CITY_TOKENS,
+    INDIA_COUNTRY_TOKENS,
+    INDIA_STATE_TOKENS,
     NON_US_ISO2_CODES,
     US_STATE_ABBREVS,
     auto_delete_reason,
@@ -106,6 +109,13 @@ def main() -> int:
         a = _extract_js_set(js, name)
         assert a == py_set, f"{name} app.js != discovery_filters.py"
 
+    # India vocabulary must remain represented in the JS mirror. This catches
+    # US-only leaks when one side gains a city/state but the other does not.
+    india_js = _extract_js_re(js, "INDIA_LOCATION_RE")
+    for token in (*INDIA_COUNTRY_TOKENS, *INDIA_STATE_TOKENS, *INDIA_CITY_TOKENS):
+        sample = token.replace(r"\s+", " ")
+        assert india_js.search(sample), f"INDIA_LOCATION_RE missing {token}"
+
     seniority_re = _extract_js_re(js, "SENIORITY_EXCLUDE_RE")
     clearance_re = _extract_js_re(js, "CLEARANCE_REQUIREMENT_RE")
     clearance_none_re = _extract_js_re(js, "CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE")
@@ -124,6 +134,11 @@ def main() -> int:
         ("Security Engineer", "Google", "Build product security for consumer apps."),
         ("Data Scientist", "Acme", "CLEARANCE REQUIRED FOR START: No"),
         ("AI Engineer", "Guidehouse", "Clearance Required\n:\nNone"),
+        ("Data Scientist", "Acme", "No clearance required for this position."),
+        ("Data Scientist", "Acme", "This role does not require a security clearance."),
+        ("Data Scientist", "Acme", "Clearance Not Required"),
+        ("ML Engineer", "Acme", "Security Clearance Not Required"),
+        ("Data Scientist", "Acme", "Clearance: Not Required"),
         (
             "Developer",
             "Ripple Effect",

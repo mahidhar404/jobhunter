@@ -25,18 +25,20 @@ assert.deepStrictEqual(
   ["timestamp", "date-only"],
 );
 
-// Missing/invalid posted dates sort last even with a very recent created_at.
+// Jobs without date_posted use created_at (discovery date) for posted sort.
 assert.deepStrictEqual(
   order([
     { id: "missing", created_at: "2026-08-05T12:00:00Z" },
     { id: "invalid", date_posted: "not-a-date", created_at: "2026-08-05T12:00:00Z" },
     { id: "posted", date_posted: "2026-07-01" },
   ]),
-  // "invalid" before "missing" only because unknown-date rows tie-break by id.
-  ["posted", "invalid", "missing"],
+  ["invalid", "missing", "posted"],
 );
 assert.strictEqual(datePostedTime({ date_posted: "not-a-date" }), null);
 assert.strictEqual(datePostedTime({}), null);
+assert.ok(
+  datePostedTime({ created_at: "2026-08-05T12:00:00Z" }) > datePostedTime({ date_posted: "2026-07-01" }),
+);
 
 // Equal posted dates fall back to updated_at/created_at, newest first.
 assert.deepStrictEqual(
@@ -95,7 +97,7 @@ for (const file of ["app.js"]) {
     { id: "newest", date_posted: "2026-08-05T08:00:00Z" },
     { id: "mid", date_posted: "2026-08-01" },
   ], "date").map(j => j.id);
-  assert.deepStrictEqual(sorted, ["newest", "mid", "old", "no-date"], file);
+  assert.deepStrictEqual(sorted, ["no-date", "newest", "mid", "old"], file);
 }
 
 console.log("ok: job sort tests passed");

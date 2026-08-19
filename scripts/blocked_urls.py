@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from apply_urls import normalize_url
+from posting_identity import posting_identity_for_url
 from urllib.parse import urlparse, urlunparse
 
 ROOT = Path(__file__).parent.parent
@@ -56,7 +57,11 @@ def _path_only_key(url: str) -> str:
 
 
 def block_keys_for_url(url: str) -> list[str]:
-    """Normalized keys that should all match this apply/job URL."""
+    """Normalized keys that should all match this apply/job URL.
+
+    Includes a host-agnostic ``posting:<key>`` token for supported ATS URLs so
+    Greenhouse ``boards`` vs ``job-boards`` (same numeric id) share one tombstone.
+    """
     keys: list[str] = []
     n = normalize_url(url) or (url or "").strip()
     if n:
@@ -64,6 +69,11 @@ def block_keys_for_url(url: str) -> list[str]:
     po = _path_only_key(url)
     if po and po not in keys:
         keys.append(po)
+    posting, _org = posting_identity_for_url(url)
+    if posting:
+        posting_key_token = f"posting:{posting}"
+        if posting_key_token not in keys:
+            keys.append(posting_key_token)
     return keys
 
 
@@ -106,6 +116,11 @@ def load_blocked_url_set() -> set[str]:
         for key in block_keys_for_url(u):
             out.add(key)
     return out
+
+
+def load_blocked_id_set() -> set[str]:
+    """Durable user-deleted job ids; discovery/recovery must not reuse them."""
+    return set(_read_unlocked()["ids"])
 
 
 def urls_from_job(job: dict | None) -> list[str]:

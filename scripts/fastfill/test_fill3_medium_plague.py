@@ -49,7 +49,8 @@ def main() -> int:
     from fast_fill import _leftover_set_fingerprint, _promote_demoted_flash_leftovers
     from fill_pause import _INSTALL_OVERLAY_JS
 
-    assert "between" in _INSTALL_OVERLAY_JS.lower()
+    assert "jh-log" in _INSTALL_OVERLAY_JS
+    assert "Pause fill" in _INSTALL_OVERLAY_JS
     fp = _leftover_set_fingerprint(
         {"leftovers": [{"type": "A", "label": "a", "reason": "r", "flash_candidate": True}]}
     )

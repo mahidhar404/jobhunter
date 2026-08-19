@@ -26,6 +26,15 @@ def test_is_daily_google_chrome():
     assert not is_daily_google_chrome(None)
 
 
+def test_launch_cft_without_url_uses_no_startup_window() -> None:
+    src = (ROOT / "scripts" / "chrome_for_testing.py").read_text()
+    block = src.split("def launch_cft_with_openclaw_profile(", 1)[1].split(
+        "\ndef ensure_partyrock_browser_direct", 1
+    )[0]
+    assert "--no-startup-window" in block
+    assert "if url:" in block
+
+
 def test_resolve_cft_finds_playwright_cache():
     cft = resolve_chrome_for_testing()
     assert cft is not None, "expected Playwright Chrome for Testing on this machine"
@@ -36,5 +45,6 @@ def test_resolve_cft_finds_playwright_cache():
 
 if __name__ == "__main__":
     test_is_daily_google_chrome()
+    test_launch_cft_without_url_uses_no_startup_window()
     test_resolve_cft_finds_playwright_cache()
     print("OK test_chrome_for_testing")

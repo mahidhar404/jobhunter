@@ -17,6 +17,7 @@ from resume_publish import (  # noqa: E402
     BY_COMPANY_DIR,
     FILE_ID_DIGITS,
     by_company_resume_path,
+    conventional_resume_filename,
     ensure_file_id,
     publish_resume_to_by_company,
     sanitize_filename,
@@ -34,6 +35,14 @@ class TestEnsureFileId(unittest.TestCase):
     def test_reuses_existing(self):
         job = {"id": "j1", "file_id": "04217"}
         self.assertEqual(ensure_file_id(job), "04217")
+
+    def test_recovers_id_from_conventional_published_path(self):
+        job = {
+            "id": "j1",
+            "resume_by_company_path": "resumes/by_company/Acme_resume_04217.pdf",
+        }
+        self.assertEqual(ensure_file_id(job), "04217")
+        self.assertEqual(job["file_id"], "04217")
 
     def test_mints_unique_five_digit(self):
         job = {"id": "j2", "company": "Acme"}
@@ -107,6 +116,52 @@ class TestPublishResume(unittest.TestCase):
             self.assertNotEqual(job_a["file_id"], job_b["file_id"])
             self.assertEqual(len(list(by_co.glob("Acme_resume_*.pdf"))), 2)
 
+    def test_publish_migrates_nonconventional_persisted_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            by_co = root / "resumes" / "by_company"
+            by_co.mkdir(parents=True)
+            old = by_co / "resume.pdf"
+            old.write_bytes(b"%PDF old")
+            source = root / "resume.pdf"
+            source.write_bytes(b"%PDF current")
+            job = {
+                "id": "j1",
+                "company": "Acme",
+                "file_id": "04217",
+                "resume_by_company_path": str(old.relative_to(root)),
+            }
+
+            dest = publish_resume_to_by_company(
+                job, source, by_company_dir=by_co, root=root
+            )
+
+            self.assertEqual(dest.name, "Acme_resume_04217.pdf")
+            self.assertEqual(job["resume_by_company_path"], str(dest.relative_to(root)))
+            self.assertEqual(dest.read_bytes(), b"%PDF current")
+
+    def test_publish_accepts_canonical_file_as_its_own_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            by_co = root / "resumes" / "by_company"
+            by_co.mkdir(parents=True)
+            canonical = by_co / "Acme_resume_04217.pdf"
+            canonical.write_bytes(b"%PDF canonical")
+            job = {
+                "id": "j1",
+                "company": "Acme",
+                "file_id": "04217",
+                "resume_path": str(canonical.relative_to(root)),
+                "resume_by_company_path": str(canonical.relative_to(root)),
+            }
+
+            dest = publish_resume_to_by_company(
+                job, canonical, by_company_dir=by_co, root=root
+            )
+
+            self.assertEqual(dest, canonical)
+            self.assertEqual(dest.read_bytes(), b"%PDF canonical")
+
     def test_rejects_non_pdf(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -123,6 +178,24 @@ class TestPublishResume(unittest.TestCase):
     def test_by_company_resume_path_helper(self):
         p = by_company_resume_path("Jerry.ai", "00042", by_company_dir=Path("/tmp"))
         self.assertEqual(p.name, "Jerry.ai_resume_00042.pdf")
+
+    def test_conventional_filename_prefers_published_name(self):
+        job = {
+            "company": "Jerry.ai",
+            "file_id": "00042",
+            "resume_by_company_path": "resumes/by_company/Jerry.ai_resume_00042.pdf",
+        }
+        self.assertEqual(
+            conventional_resume_filename(job),
+            "Jerry.ai_resume_00042.pdf",
+        )
+
+    def test_conventional_filename_derives_from_company_and_file_id(self):
+        job = {"company": "Acme/Corp", "file_id": "73109"}
+        self.assertEqual(
+            conventional_resume_filename(job),
+            "AcmeCorp_resume_73109.pdf",
+        )
 
 
 class TestSymlinkTarget(unittest.TestCase):

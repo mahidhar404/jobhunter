@@ -482,7 +482,7 @@ def test_filter_required_empty_drops_not_in_dom_apt():
             {
                 "type": "ADDRESS_LINE1",
                 "automation_id": "addressSection_addressLine1",
-                "readback": "100 Example Ave",
+                "readback": "521 East Capitol Avenue",
                 "verified": True,
                 "ok": True,
             }

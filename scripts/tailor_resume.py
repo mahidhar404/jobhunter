@@ -15,14 +15,17 @@ the same session as ``./open_partyrock.sh`` / dashboard Start tailor. That is
 shows a sign-in wall, re-auth with ``./open_partyrock.sh`` then retry. Drives
 the page with Playwright and polls the DOM in a plain loop.
 
-Each run opens a **new CDP tab** (via /json/new) so parallel jobs never
-share/overwrite one PartyRock page. On success the tab stays open until
-the dashboard marks the job applied (see partyrock_tabs.py). On failure
-the tab is closed immediately.
+Each run claims one PartyRock CDP tab (reuses an idle leftover page when
+possible, otherwise ``/json/new``) so parallel jobs never share/overwrite one
+PartyRock page. The dashboard lets the tab close as soon as the generated
+resume is collected; ``--keep-open`` is reserved for an explicit manual/debug
+hold.
 
 Usage:
-  python3 tailor_resume.py --jd-file PATH --location "City, ST" --out PATH
-  python3 tailor_resume.py --jd-file PATH --location "City, ST" --out PATH \
+  python3 tailor_resume.py --jd-file PATH --title ROLE --company COMPANY \
+      --location "City, ST" --out PATH
+  python3 tailor_resume.py --jd-file PATH --title ROLE --company COMPANY \
+      --location "City, ST" --out PATH \
       --job-id ID --keep-open
 
 Exit code 0 + writes --out on success. Nonzero + prints an error on
@@ -45,6 +48,7 @@ from partyrock_config import (
 )
 from partyrock_tabs import (
     clear_tab_meta,
+    close_job_partyrock_tab,
     close_tab,
     open_job_partyrock_tab,
     write_tab_meta,
@@ -158,6 +162,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--jd-file", default=None)
     parser.add_argument(
+        "--title",
+        default="",
+        help="Role title included with the description sent to PartyRock",
+    )
+    parser.add_argument(
+        "--company",
+        default="",
+        help="Company name included with the description sent to PartyRock",
+    )
+    parser.add_argument(
         "--location",
         default="",
         help="Job location included with the description sent to PartyRock",
@@ -214,9 +228,14 @@ def main() -> None:
         sys.exit(2)
 
     job_description = Path(args.jd_file).read_text()
-    partyrock_input = build_partyrock_input(job_description, args.location)
+    partyrock_input = build_partyrock_input(
+        job_description,
+        args.location,
+        company=args.company,
+        title=args.title,
+    )
     job_id = (args.job_id or "").strip()
-    keep_open = bool(args.keep_open) or bool(job_id)
+    keep_open = bool(args.keep_open)
     out_path = Path(args.out)
     job_dir = out_path.parent
     cdp_http = args.cdp_url.rstrip("/")
@@ -252,8 +271,11 @@ def main() -> None:
                 log(f"error: could not attach to CDP target {target_id}")
                 sys.exit(1)
             try:
-                # /json/new may already be navigating; wait for app UI.
-                page.wait_for_load_state("domcontentloaded", timeout=30000)
+                if tab_info.get("needs_navigate"):
+                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                else:
+                    # /json/new may already be navigating; wait for app UI.
+                    page.wait_for_load_state("domcontentloaded", timeout=30000)
                 page.wait_for_timeout(2000)
 
                 try:
@@ -273,8 +295,8 @@ def main() -> None:
                     sys.exit(1)
                 play_button.click()
                 log(
-                    "submitted JD + location, waiting for PartyRock to generate "
-                    "the resume..."
+                    "submitted role title + company + location + JD, waiting "
+                    "for PartyRock to generate the resume..."
                 )
                 poll_start = time.monotonic()
 
@@ -351,6 +373,7 @@ def main() -> None:
                         target_id=target_id,
                         url=url,
                         title=title,
+                        in_use=False,
                     )
                     log(
                         f"keeping PartyRock tab open (target_id={target_id}); "
@@ -366,11 +389,19 @@ def main() -> None:
     finally:
         if target_id and not (success and keep_open):
             try:
-                close_tab(target_id, cdp_http=cdp_http)
-                log(f"closed PartyRock tab target_id={target_id} (run not kept open)")
+                if job_id:
+                    closed = close_job_partyrock_tab(job_id, job_dir, cdp_http=cdp_http)
+                    log(
+                        f"PartyRock tab cleanup target_id={target_id} "
+                        f"reason={closed.get('reason')}"
+                    )
+                else:
+                    close_tab(target_id, cdp_http=cdp_http)
+                    log(f"closed PartyRock tab target_id={target_id} (run not kept open)")
             except Exception as e:
                 log(f"warn: failed to close PartyRock tab {target_id}: {e}")
-            clear_tab_meta(job_dir)
+            if not job_id:
+                clear_tab_meta(job_dir)
 
 
 if __name__ == "__main__":

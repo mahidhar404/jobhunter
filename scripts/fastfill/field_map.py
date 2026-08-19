@@ -1044,7 +1044,7 @@ def _build_dummy_profile() -> dict:
 
 
 DUMMY_PROFILE = _build_dummy_profile()
-DUMMY_ADDRESS = "100 Example Ave, Apt 1A, Springfield, IL 62701"
+DUMMY_ADDRESS = "521 East Capitol Avenue, Apt 1A, Springfield, IL 62701"
 
 # The dummy resume PDF (compiled from fixtures/dummy_resume_de.tex via tectonic)
 # used by every live test harness that needs an actual file to upload.

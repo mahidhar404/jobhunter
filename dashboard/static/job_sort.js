@@ -3,11 +3,10 @@
 
    This file is also the single source of truth for what a job's *displayed*
    posted date is. Sorting on one value while the row renders another is what
-   made the Posted sort look broken: the age column fell back to created_at,
-   so ~1000 undated rows were correctly parked at the bottom of the list while
-   labelling themselves "0d" - i.e. fresher than everything above them. Any
-   posted-date label must come from jobPostedDisplay() so the two can't drift
-   apart again. */
+   made the Posted sort look broken when sort and label used different fields.
+   Any posted-date label must come from jobPostedDisplay() so the two can't
+   drift apart again. When the listing has no date_posted (or fallback), the
+   discovery timestamp (created_at) is treated as the posted date. */
 (function (root) {
   /** Resolved posted date: { time, iso, approx }; time is null when unknown.
    *  date_posted is the exact date from the source; date_posted_fallback is
@@ -22,6 +21,11 @@
     if (fb != null && fb !== "") {
       const t = Date.parse(fb);
       if (!Number.isNaN(t)) return { time: t, iso: fb, approx: true };
+    }
+    const discovered = job && job.created_at;
+    if (discovered != null && discovered !== "") {
+      const t = Date.parse(discovered);
+      if (!Number.isNaN(t)) return { time: t, iso: discovered, approx: false };
     }
     return { time: null, iso: null, approx: false };
   }

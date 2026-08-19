@@ -2,10 +2,10 @@
 """Conservative jobs.json duplicate pass: merge URLs, soft-delete losers.
 
 Merges only when confidence is high:
-  - exact normalized URL match across job_url/apply_url/source_url/alternate_urls, OR
-  - identical substantial JD fingerprints (normalized equality / hash), OR
-  - same normalized company + title similarity >= 0.85 AND URL quality ranks differ
-    (one side ATS/company, other aggregator) — or both same exact apply after normalize.
+  - exact normalized URL or supported ATS posting-key match, OR
+  - identical substantial full-JD fingerprints, with a same-ATS-org gate when
+    normalized companies differ, OR
+  - exact-title same-ATS-org reposts when one posting is demonstrably fresher.
 
 Winner keeps the better (ATS) apply_url. Among equal-quality ATS URLs, prefer the
 URL from the fresher posting (e.g. SmartRecruiters re-post). Winner's date_posted
@@ -21,7 +21,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import difflib
 import re
 import sys
 from datetime import datetime, timezone
@@ -38,13 +37,12 @@ from apply_urls import (  # noqa: E402
     normalize_url,
     prefer_apply_url,
     url_preference_rank,
-    RANK_AGGREGATOR,
 )
 from jd_fingerprint import item_jd_fingerprint, same_jd_fingerprint  # noqa: E402
 from jobs_lock import locked_jobs_for_write  # noqa: E402
+from posting_identity import ats_org_key, posting_key, same_ats_org  # noqa: E402
 from text_normalize import normalize_company, normalize_title  # noqa: E402
 
-TITLE_SIM_THRESHOLD = 0.85
 # Statuses that should not win a merge (or be active merge sources).
 INACTIVE = frozenset({
     "deleted",
@@ -71,41 +69,39 @@ def exact_url_overlap(a: dict, b: dict) -> bool:
     return bool(a_keys & b_keys)
 
 
-def title_similar(a: dict, b: dict) -> bool:
-    return (
-        difflib.SequenceMatcher(
-            None, normalize_title(a.get("title")), normalize_title(b.get("title"))
-        ).ratio()
-        >= TITLE_SIM_THRESHOLD
-    )
+def duplicate_reason(a: dict, b: dict) -> str | None:
+    """Return the first high-confidence identity signal in canonical order."""
+    if a.get("id") == b.get("id"):
+        return None
+    if exact_url_overlap(a, b):
+        return "url"
+    a_posting, b_posting = posting_key(a), posting_key(b)
+    if a_posting and a_posting == b_posting:
+        return "posting_key"
+    if same_jd_fingerprint(a, b):
+        same_company = (
+            normalize_company(a.get("company"))
+            and normalize_company(a.get("company"))
+            == normalize_company(b.get("company"))
+        )
+        if same_company or same_ats_org(a, b):
+            return "jd_fingerprint"
+    exact_title = normalize_title(a.get("title"))
+    if (
+        exact_title
+        and exact_title == normalize_title(b.get("title"))
+        and same_ats_org(a, b)
+        and a_posting
+        and b_posting
+        and a_posting != b_posting
+        and (is_fresher(a, b) or is_fresher(b, a))
+    ):
+        return "repost"
+    return None
 
 
 def should_merge(a: dict, b: dict) -> bool:
-    if a.get("id") == b.get("id"):
-        return False
-    if exact_url_overlap(a, b):
-        return True
-    # High-precision: identical substantial JD after normalize (any company).
-    if same_jd_fingerprint(a, b):
-        return True
-    if normalize_company(a.get("company")) != normalize_company(b.get("company")):
-        return False
-    if not normalize_company(a.get("company")):
-        return False
-    if not title_similar(a, b):
-        return False
-    # Conservative: only when URL quality differs (ATS vs aggregator) or both
-    # resolve to the same preferred apply URL.
-    ea = enrich_listing_urls(a)
-    eb = enrich_listing_urls(b)
-    ra = url_preference_rank(ea["apply_url"])
-    rb = url_preference_rank(eb["apply_url"])
-    if normalize_url(ea["apply_url"]) and normalize_url(ea["apply_url"]) == normalize_url(eb["apply_url"]):
-        return True
-    # One clearly better (ATS/company) than the other (aggregator)
-    if min(ra, rb) < RANK_AGGREGATOR and max(ra, rb) >= RANK_AGGREGATOR:
-        return True
-    return False
+    return duplicate_reason(a, b) is not None
 
 
 class _PostedSignal(NamedTuple):
@@ -136,7 +132,7 @@ def _parse_posted_ts(value) -> float | None:
 
 
 def posted_signal(job: dict) -> _PostedSignal | None:
-    """Effective posted signal mirroring dashboard jobPostedDisplay (exact then fallback)."""
+    """Effective posted signal mirroring dashboard jobPostedDisplay."""
     exact = job.get("date_posted")
     ts = _parse_posted_ts(exact)
     if ts is not None:
@@ -145,6 +141,10 @@ def posted_signal(job: dict) -> _PostedSignal | None:
     ts = _parse_posted_ts(fb)
     if ts is not None:
         return _PostedSignal(ts, str(fb).strip(), True)
+    created = job.get("created_at")
+    ts = _parse_posted_ts(created)
+    if ts is not None:
+        return _PostedSignal(ts, str(created).strip(), False)
     return None
 
 
@@ -283,11 +283,13 @@ def fold_urls_into_winner(winner: dict, loser: dict) -> None:
     merge_freshness_into_winner(winner, loser)
 
 
-def mark_loser_merged(loser: dict, winner: dict, *, why: str) -> None:
+def mark_loser_merged(
+    loser: dict, winner: dict, *, why: str, deleted_reason: str = "duplicate"
+) -> None:
     """Soft-delete loser after folding URLs onto winner (no Skipped pile)."""
     now = now_iso()
     loser["status"] = "deleted"
-    loser["deleted_reason"] = "duplicate"
+    loser["deleted_reason"] = deleted_reason
     loser["deleted_at"] = now
     wid = winner.get("id")
     loser["duplicate_of"] = wid
@@ -302,6 +304,36 @@ def mark_loser_merged(loser: dict, winner: dict, *, why: str) -> None:
 def _is_merged_away(job: dict) -> bool:
     st = job.get("status")
     return st == "deleted" or st == "skipped_duplicate"
+
+
+def soft_link_exact_title_peers(jobs: list[dict]) -> None:
+    """Relate same-company exact-title rows without treating title as identity."""
+    groups: dict[tuple[str, str], list[dict]] = {}
+    active: list[dict] = []
+    for job in jobs:
+        if _is_merged_away(job):
+            continue
+        active.append(job)
+        key = (
+            normalize_company(job.get("company")),
+            normalize_title(job.get("title")),
+        )
+        if all(key):
+            groups.setdefault(key, []).append(job)
+    related_by_id: dict[str, list[str]] = {}
+    for peers in groups.values():
+        if len(peers) < 2:
+            continue
+        ids = {str(j.get("id")) for j in peers if j.get("id")}
+        for job in peers:
+            own = str(job.get("id") or "")
+            related_by_id[own] = sorted(ids - {own})
+    for job in active:
+        related = related_by_id.get(str(job.get("id") or ""))
+        if related:
+            job["related_listing_ids"] = related
+        else:
+            job.pop("related_listing_ids", None)
 
 
 def _backfill_freshness_from_deleted_dupes(
@@ -354,102 +386,116 @@ def _merge_active_jobs(jobs: list[dict], by_id: dict, dry_run: bool = False) -> 
     active = [j for j in jobs if not _is_merged_away(j)]
     merged_pairs = 0
 
-    # Pass 1: fingerprint clusters (identical substantial JD).
+    def merge_phase(
+        items: list[dict],
+        reason_for_pair,
+    ) -> list[dict]:
+        nonlocal merged_pairs
+        kept: list[dict] = []
+        for item in items:
+            match_idx = None
+            reason = None
+            for i, existing in enumerate(kept):
+                reason = reason_for_pair(item, existing)
+                if reason:
+                    match_idx = i
+                    break
+            if match_idx is None:
+                kept.append(item)
+                continue
+            existing = kept[match_idx]
+            if reason == "repost":
+                winner, loser = (
+                    (item, existing) if is_fresher(item, existing) else (existing, item)
+                )
+            else:
+                winner, loser = pick_winner(existing, item)
+            if dry_run:
+                print(
+                    f"would merge {loser.get('id')} -> {winner.get('id')} "
+                    f"({reason})"
+                )
+                kept[match_idx] = winner
+                merged_pairs += 1
+                continue
+            if _is_merged_away(winner):
+                kept[match_idx] = item
+                continue
+            fold_urls_into_winner(winner, loser)
+            loser_rec = by_id.get(loser["id"], loser)
+            if not _is_merged_away(loser_rec):
+                mark_loser_merged(
+                    loser_rec,
+                    winner,
+                    why=str(reason).replace("_", " "),
+                    deleted_reason="repost" if reason == "repost" else "duplicate",
+                )
+            winner["updated_at"] = now_iso()
+            kept[match_idx] = winner
+            merged_pairs += 1
+        return kept
+
+    # Pass 1: URL/posting key, globally (company labels may disagree).
+    def url_or_posting_reason(a: dict, b: dict) -> str | None:
+        if exact_url_overlap(a, b):
+            return "url"
+        a_key, b_key = posting_key(a), posting_key(b)
+        if a_key and a_key == b_key:
+            return "posting_key"
+        return None
+
+    survivors = merge_phase(active, url_or_posting_reason)
+
+    # Pass 2: full-JD fingerprint, cross-company only inside the same ATS org.
     fp_groups: dict[str, list[dict]] = {}
     no_fp: list[dict] = []
-    for j in active:
+    for j in survivors:
         fp = item_jd_fingerprint(j)
         if fp:
             fp_groups.setdefault(fp, []).append(j)
         else:
             no_fp.append(j)
 
-    survivors: list[dict] = list(no_fp)
+    survivors = list(no_fp)
     for _fp, items in fp_groups.items():
-        if len(items) == 1:
-            survivors.append(items[0])
-            continue
-        kept: list[dict] = []
-        for item in items:
-            match_idx = None
-            for i, k in enumerate(kept):
-                if should_merge(item, k):
-                    match_idx = i
-                    break
-            if match_idx is None:
-                kept.append(item)
-                continue
-            existing = kept[match_idx]
-            winner, loser = pick_winner(existing, item)
-            if dry_run:
-                print(
-                    f"would merge {loser.get('id')} -> {winner.get('id')} "
-                    f"(jd fingerprint; apply={prefer_apply_url(winner.get('apply_url'), loser.get('apply_url'))})"
-                )
-                kept[match_idx] = winner
-                merged_pairs += 1
-                continue
-            if _is_merged_away(winner):
-                kept[match_idx] = item
-                continue
-            fold_urls_into_winner(winner, loser)
-            loser_rec = by_id.get(loser["id"], loser)
-            if not _is_merged_away(loser_rec):
-                mark_loser_merged(
-                    loser_rec,
-                    winner,
-                    why="identical job description fingerprint",
-                )
-            winner["updated_at"] = now_iso()
-            kept[match_idx] = winner
-            merged_pairs += 1
-        survivors.extend(kept)
+        def fingerprint_reason(a: dict, b: dict) -> str | None:
+            same_company = (
+                normalize_company(a.get("company"))
+                and normalize_company(a.get("company"))
+                == normalize_company(b.get("company"))
+            )
+            return "jd_fingerprint" if same_company or same_ats_org(a, b) else None
 
-    # Pass 2: company + URL/title (existing conservative rules).
-    clusters: dict[str, list[dict]] = {}
+        survivors.extend(merge_phase(items, fingerprint_reason))
+
+    # Pass 3: exact-title, same-ATS-org reposts. Distinct posting keys are
+    # required and the fresher posting wins; ordinary title similarity never deletes.
+    repost_groups: dict[tuple[str, str], list[dict]] = {}
+    no_repost_key: list[dict] = []
     for j in survivors:
-        if _is_merged_away(j):
-            continue
-        clusters.setdefault(normalize_company(j.get("company")), []).append(j)
+        key = (ats_org_key(j) or "", normalize_title(j.get("title")))
+        if all(key):
+            repost_groups.setdefault(key, []).append(j)
+        else:
+            no_repost_key.append(j)
 
-    for _ck, items in clusters.items():
-        if not _ck:
-            continue
-        kept: list[dict] = []
-        for item in items:
-            match_idx = None
-            for i, k in enumerate(kept):
-                if should_merge(item, k):
-                    match_idx = i
-                    break
-            if match_idx is None:
-                kept.append(item)
-                continue
-            existing = kept[match_idx]
-            winner, loser = pick_winner(existing, item)
-            if dry_run:
-                print(
-                    f"would merge {loser.get('id')} -> {winner.get('id')} "
-                    f"(apply={prefer_apply_url(winner.get('apply_url'), loser.get('apply_url'))})"
-                )
-                kept[match_idx] = winner
-                merged_pairs += 1
-                continue
-            if _is_merged_away(winner):
-                kept[match_idx] = item
-                continue
-            fold_urls_into_winner(winner, loser)
-            loser_rec = by_id.get(loser["id"], loser)
-            if not _is_merged_away(loser_rec):
-                mark_loser_merged(
-                    loser_rec,
-                    winner,
-                    why="same company/title, URL, or JD",
-                )
-            winner["updated_at"] = now_iso()
-            kept[match_idx] = winner
-            merged_pairs += 1
+    survivors = no_repost_key
+    for items in repost_groups.values():
+        def repost_reason(a: dict, b: dict) -> str | None:
+            a_key, b_key = posting_key(a), posting_key(b)
+            if (
+                a_key
+                and b_key
+                and a_key != b_key
+                and (is_fresher(a, b) or is_fresher(b, a))
+            ):
+                return "repost"
+            return None
 
+        survivors.extend(merge_phase(items, repost_reason))
+
+    if not dry_run:
+        soft_link_exact_title_peers(jobs)
     return merged_pairs
 
 

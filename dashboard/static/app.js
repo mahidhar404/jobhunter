@@ -7,6 +7,7 @@ const STATUS_COLORS = {
   navigating: "#e8913a",
   filling: "#e8913a",
   resuming: "#e8913a",
+  resume_ready: "#5cb8a8",
   stuck: "#e8913a",
   blocked_captcha: "#e8913a",
   ready_for_review: "#3dbf8a",
@@ -28,6 +29,7 @@ const DELETED_REASON_LABELS = {
   seniority: { short: "Management / seniority", long: "Management / seniority" },
   non_us: { short: "Non-US location", long: "Non-US location" },
   non_us_location: { short: "Non-US location", long: "Non-US location" },
+  stale_listing: { short: "Stale listing", long: "Listing posted more than 10 days ago" },
   user: { short: "Skipped / deleted by you", long: "Skipped or deleted by you" },
   manual: { short: "Skipped / deleted by you", long: "Skipped or deleted by you" },
   skipped_manual: { short: "Skipped by you", long: "Skipped by you" },
@@ -43,6 +45,7 @@ const DELETED_REASON_ORDER = [
   "clearance_or_intel",
   "management_track",
   "non_us_location",
+  "stale_listing",
   "contract",
   "easy_apply",
   "duplicate",
@@ -57,9 +60,13 @@ const TERMINAL = ["applied"];
 // the list (see groupPriorityStatus/render()).
 const PRIORITY_ORDER = [
   "stuck", "blocked_captcha", "filling", "navigating", "tailoring", "resuming",
-  "ready_for_review", "discovered", "applied",
+  "resume_ready", "ready_for_review", "discovered", "applied",
 ];
-const IN_PROGRESS_OR_NEEDS_ATTENTION = ["tailoring", "navigating", "filling", "resuming", "stuck", "blocked_captcha"];
+const ACTIVE_PROGRESS_STATUSES = new Set(["tailoring", "navigating", "filling", "resuming"]);
+const IN_PROGRESS_OR_NEEDS_ATTENTION = [
+  "tailoring", "navigating", "filling", "resuming", "resume_ready",
+  "stuck", "blocked_captcha",
+];
 // Management-track / above-senior + clearly non-US locations + clearance /
 // intel-agency roles — hidden from a fresh, never-touched "discovered"
 // listing. New discoveries are already blocked at the source (see
@@ -72,7 +79,7 @@ const IN_PROGRESS_OR_NEEDS_ATTENTION = ["tailoring", "navigating", "filling", "r
 // but had real completed work behind it).
 // Keep in sync with scripts/discovery_filters.py (single source of policy).
 const SENIORITY_EXCLUDE_RE = /\b(principal|staff|lead|manager|mgr|director|vp|svp|evp|vice[\s-]+president|head\s+of|chief|founder|partner|fellow|distinguished|supervisor|architect|cto|ceo|cpo|cfo|coo|cio)\b/i;
-const NON_US_LOCATION_RE = /\b(india|japan|china|singapore|philippines|germany|france|poland|mexico|brazil|australia|vietnam|indonesia|malaysia|thailand|canada|united\s+kingdom|\buk\b|england|scotland|ireland|wales|netherlands|spain|italy|sweden|norway|denmark|switzerland|belgium|portugal|austria|finland|israel|south\s+korea|\bkorea\b|taiwan|hong\s+kong|dubai|u\.?a\.?e\.?|united\s+arab\s+emirates|new\s+zealand|argentina|colombia|chile|peru|ecuador|bolivia|uruguay|paraguay|venezuela|guatemala|honduras|nicaragua|costa\s+rica|panama|dominican\s+republic|saudi\s+arabia|\bksa\b|qatar|kuwait|bahrain|oman|jordan|lebanon|egypt|morocco|tunisia|nigeria|kenya|ghana|ethiopia|south\s+africa|ukraine|romania|serbia|slovakia|slovenia|croatia|hungary|czech(\s+republic)?|\bczechia\b|bulgaria|lithuania|latvia|estonia|greece|turkey|turkiye|pakistan|bangladesh|sri\s+lanka|nepal|cambodia|myanmar|armenia|azerbaijan|kazakhstan|uzbekistan|tajikistan|north\s+macedonia|macedonia|belarus|moldova|europe|european(\s+union)?|emea|apac|latam|\basia\b|africa|middle\s+east|worldwide|\bglobal\b|ontario|quebec|alberta|manitoba|saskatchewan|british\s+columbia|nova\s+scotia|new\s+brunswick|newfoundland|prince\s+edward|karnataka|telangana|maharashtra|tamil\s+nadu|kerala|gujarat|haryana|uttar\s+pradesh|west\s+bengal|andhra\s+pradesh|rajasthan|madhya\s+pradesh|odisha|assam|jharkhand|bangalore|bengaluru|mumbai|delhi|hyderabad|pune|chennai|kolkata|gurgaon|gurugram|noida|ahmedabad|jaipur|coimbatore|kochi|thiruvananthapuram|trivandrum|indore|bhubaneswar|vadodara|nagpur|mysuru|visakhapatnam|lucknow|chandigarh|kuala\s+lumpur|penang|bangkok|hanoi|ho\s+chi\s+minh|istanbul|athens|zagreb|gdansk|wroclaw|tokyo|osaka|shanghai|beijing|shenzhen|manila|jakarta|toronto|vancouver|montreal|ottawa|calgary|edmonton|kitchener|kitchener-waterloo|mississauga|winnipeg|halifax|london|paris|munich|berlin|amsterdam|dublin|zurich|geneva|stockholm|copenhagen|oslo|helsinki|lisbon|madrid|barcelona|rome|milan|prague|budapest|vienna|brussels|warsaw|krakow|bucharest|sofia|belgrade|bratislava|vilnius|tallinn|riga|edinburgh|glasgow|melbourne|sydney|brisbane|perth|adelaide|auckland|wellington|seoul|taipei|tel\s+aviv|jerusalem|haifa|sao\s+paulo|rio\s+de\s+janeiro|bogota|medellin|santiago|buenos\s+aires|lima|quito|montevideo|mexico\s+city|ciudad\s+de\s+mexico|guadalajara|monterrey|dubai|abu\s+dhabi|doha|riyadh|jeddah|cape\s+town|johannesburg|lagos|nairobi|stuttgart|frankfurt|hamburg|cologne|dusseldorf|lyon|marseille|toulouse|lille|\bgbr\b|\bcan\b|\bind\b|\baus\b|\bdeu\b|\bfra\b|\bnld\b|\bsgp\b|\birl\b|\bnzl\b|\bpol\b|\bmex\b|\bbra\b|\besp\b|\bita\b|\bswe\b|\bnor\b|\bdnk\b|\bche\b|\bbel\b|\bprt\b|\baut\b|\bfin\b|\bisr\b|\bkor\b|\btwn\b|\bphl\b|\bare\b|\brou\b|\buae\b|\bsau\b|\bqat\b)\b/i;
+const NON_US_LOCATION_RE = /\b(india|japan|china|singapore|philippines|germany|france|poland|mexico|brazil|australia|vietnam|indonesia|malaysia|thailand|canada|united\s+kingdom|\buk\b|england|scotland|ireland|wales|netherlands|spain|italy|sweden|norway|denmark|switzerland|belgium|portugal|austria|finland|israel|south\s+korea|\bkorea\b|taiwan|hong\s+kong|dubai|u\.?a\.?e\.?|united\s+arab\s+emirates|new\s+zealand|argentina|colombia|chile|peru|ecuador|bolivia|uruguay|paraguay|venezuela|guatemala|honduras|nicaragua|costa\s+rica|panama|dominican\s+republic|saudi\s+arabia|\bksa\b|qatar|kuwait|bahrain|oman|jordan|lebanon|egypt|morocco|tunisia|nigeria|kenya|ghana|ethiopia|south\s+africa|ukraine|romania|serbia|slovakia|slovenia|croatia|hungary|czech(\s+republic)?|\bczechia\b|bulgaria|lithuania|latvia|estonia|greece|turkey|turkiye|pakistan|bangladesh|sri\s+lanka|nepal|cambodia|myanmar|armenia|azerbaijan|kazakhstan|uzbekistan|tajikistan|north\s+macedonia|macedonia|belarus|moldova|europe|european(\s+union)?|emea|apac|latam|\basia\b|africa|middle\s+east|worldwide|\bglobal\b|ontario|quebec|alberta|manitoba|saskatchewan|british\s+columbia|nova\s+scotia|new\s+brunswick|newfoundland|prince\s+edward|karnataka|telangana|maharashtra|tamil\s+nadu|kerala|gujarat|haryana|uttar\s+pradesh|west\s+bengal|andhra\s+pradesh|rajasthan|madhya\s+pradesh|odisha|assam|jharkhand|bangalore|bengaluru|mumbai|delhi|hyderabad|pune|chennai|kolkata|gurgaon|gurugram|noida|ahmedabad|jaipur|coimbatore|kochi|thiruvananthapuram|trivandrum|indore|bhubaneswar|vadodara|nagpur|mysuru|visakhapatnam|lucknow|chandigarh|kuala\s+lumpur|penang|bangkok|hanoi|ho\s+chi\s+minh|istanbul|athens|zagreb|gdansk|wroclaw|tokyo|osaka|shanghai|beijing|shenzhen|manila|jakarta|toronto|vancouver|montreal|ottawa|calgary|edmonton|kitchener|kitchener-waterloo|mississauga|winnipeg|halifax|london|paris|munich|berlin|amsterdam|dublin|zurich|geneva|stockholm|copenhagen|oslo|helsinki|lisbon|madrid|barcelona|rome|milan|prague|budapest|vienna|brussels|warsaw|krakow|bucharest|sofia|belgrade|bratislava|vilnius|tallinn|riga|edinburgh|glasgow|melbourne|sydney|brisbane|perth|adelaide|auckland|wellington|seoul|taipei|tel\s+aviv|jerusalem|haifa|sao\s+paulo|rio\s+de\s+janeiro|bogota|medellin|santiago|buenos\s+aires|lima|quito|montevideo|mexico\s+city|ciudad\s+de\s+mexico|guadalajara|monterrey|dubai|abu\s+dhabi|doha|riyadh|jeddah|cape\s+town|johannesburg|lagos|nairobi|almaty|astana|nur-sultan|san\s+salvador|stuttgart|frankfurt|hamburg|cologne|dusseldorf|lyon|marseille|toulouse|lille|\bgbr\b|\bcan\b|\bind\b|\baus\b|\bdeu\b|\bfra\b|\bnld\b|\bsgp\b|\birl\b|\bnzl\b|\bpol\b|\bmex\b|\bbra\b|\besp\b|\bita\b|\bswe\b|\bnor\b|\bdnk\b|\bche\b|\bbel\b|\bprt\b|\baut\b|\bfin\b|\bisr\b|\bkor\b|\btwn\b|\bphl\b|\bare\b|\brou\b|\buae\b|\bsau\b|\bqat\b)\b/i;
 // u.s(?!\w) — not u.s. + \b; trailing "." is non-word so \b after u.s. never matches.
 const US_LOCATION_STRONG_RE = /\b(united\s+states|u\.s\.a\.?|u\.s(?!\w)|\busa\b|\bus\b|remote[,\s\/-]*us|us[,\s\/-]*remote|us[-\s]?based|us[-\s]?only|alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new\s+hampshire|new\s+jersey|new\s+mexico|new\s+york|north\s+carolina|north\s+dakota|ohio|oklahoma|oregon|pennsylvania|rhode\s+island|south\s+carolina|south\s+dakota|tennessee|texas|utah|vermont|virginia|washington|west\s+virginia|wisconsin|wyoming|district\s+of\s+columbia|san\s+francisco|seattle|austin|boston|chicago|denver|atlanta|dallas|houston|miami|phoenix|portland|salt\s+lake|los\s+angeles|san\s+diego|san\s+jose|palo\s+alto|mountain\s+view|sunnyvale|redmond|bellevue|cupertino|menlo\s+park|foster\s+city|oakland|irvine|raleigh|durham|charlotte|nashville|minneapolis|pittsburgh|philadelphia|washington,\s*dc|new\s+york\s+city|\bnyc\b|bay\s+area|silicon\s+valley)\b/i;
 // Bare ", XX" state abbreviations are a weaker US signal: ATS region codes
@@ -97,9 +104,9 @@ const NON_US_ISO2_CODES = new Set([
   "ae", "ar", "at", "au", "bd", "be", "bg", "bh", "br", "by", "ca", "ch",
   "cl", "cn", "co", "cr", "cz", "de", "dk", "do", "eg", "es", "fi", "fr",
   "gb", "gr", "gt", "hk", "hr", "hu", "id", "ie", "il", "in", "it", "jo",
-  "jp", "ke", "kr", "kw", "lk", "lt", "lu", "lv", "ma", "mx", "my", "ng",
-  "nl", "no", "nz", "pa", "pe", "ph", "pk", "pl", "pt", "qa", "ro", "rs",
-  "ru", "sa", "se", "sg", "si", "sk", "th", "tr", "tw", "ua", "uk", "uy",
+  "jp", "ke", "kr", "kw", "kz", "lk", "lt", "lu", "lv", "ma", "mg", "mx", "my",
+  "ng", "nl", "no", "nz", "pa", "pe", "ph", "pk", "pl", "pt", "qa", "ro", "rs",
+  "ru", "sa", "se", "sg", "si", "sk", "sv", "th", "tr", "tw", "ua", "uk", "uy",
   "ve", "vn", "za",
 ]);
 // India region heuristics — keep in sync with scripts/discovery_filters.py
@@ -107,13 +114,14 @@ const NON_US_ISO2_CODES = new Set([
 // untouched discovered jobs and the Ops Region filter.
 const INDIA_LOCATION_RE = /\b(india|bharat|karnataka|telangana|maharashtra|tamil\s+nadu|kerala|gujarat|haryana|uttar\s+pradesh|west\s+bengal|andhra\s+pradesh|rajasthan|madhya\s+pradesh|odisha|assam|jharkhand|punjab|bihar|chhattisgarh|uttarakhand|goa|bangalore|bengaluru|mumbai|bombay|delhi|new\s+delhi|hyderabad|pune|chennai|madras|kolkata|calcutta|gurgaon|gurugram|noida|ghaziabad|ahmedabad|jaipur|coimbatore|kochi|cochin|thiruvananthapuram|trivandrum|indore|bhubaneswar|vadodara|nagpur|mysuru|mysore|visakhapatnam|vizag|lucknow|chandigarh|surat|nashik|thane|\bncr\b)\b/i;
 const INDIA_REMOTE_RE = /(remote[,\s/\-]*india|india[,\s/\-]*remote|india\s*\(\s*remote\s*\)|remote\s*\(\s*india\s*\)|(?:wfh|work\s+from\s+home)[,\s/\-]*india|anywhere\s+in\s+india|pan[\s\-]*india|across\s+india)/i;
+const GEORGIA_COUNTRY_CITY_RE = /\b(?:tbilisi|batumi)\b/i;
 // Clearance requirement language — not bare "security" / "secret" alone.
-const CLEARANCE_REQUIREMENT_RE = /(\bts[\s_\/.\-]*sci\b|\btop[\s\-]*secret\b|\bpolygraph\b|\b(?:ci|full[\s\-]*scope)[\s\-]*poly(?:graph)?\b|\b(?:q|l)[\s\-]*clearance\b|\bdoe[\s\-]*(?:q|l)\b|\bdod[\s\-]*(?:secret|top[\s\-]*secret|ts|clearance)\b|\bsecret[\s\-]*clearance\b|\bsecurity[\s\-]*clearance\b|\bactive[\s\-]*(?:ts|sci|secret|top[\s\-]*secret|security)?[\s\-]*clearance\b|\b(?:ts|secret|top[\s\-]*secret)[\s\-]*cleared\b|\bcleared[\s\-]*(?:candidate|personnel|position|role|engineer|scientist)\b|\bclearance[\s\-]*(?:required|preferred|mandatory|needed|necessary|eligibility|level|requirements?)\b|\b(?:must|require[ds]?|required|need(?:s|ed)?|possess(?:es|ing)?|hold(?:s|ing)?|obtain(?:able|ing)?|eligible\s+for|ability\s+to\s+obtain|able\s+to\s+obtain|currently\s+(?:hold|have)|have\s+an?\s+active).{0,48}clearance\b|\bclearance.{0,24}(?:required|preferred|mandatory|needed)\b|\bclassified\s+(?:information|environment|program|material|data|systems?|networks?|work|facility|facilities)\b|\b(?:handle|access|process|work\s+(?:with|on))\s+classified\b|\bsci[\s\-]*clearance\b|\bsap(?:\/sar)?\s+clearance\b|\bclearance\s*:\s*(?:secret|top[\s\-]*secret|ts(?:[\s_\/.\-]*sci)?|sci|public\s+trust|(?:doe[\s\-]*)?[ql]|active)\b|\bclearance\s*:.{0,48}(?:obtain|eligible|public\s+trust|secret|ts[\s_\/.\-]*sci|polygraph)\b|\bclearance[\s\-]*(?:type|level)\s*:\s*(?:secret|top[\s\-]*secret|ts(?:[\s_\/.\-]*sci)?|sci|public\s+trust|(?:doe[\s\-]*)?[ql]|active|confidential)\b|\bclearance(?:[\s\-]*(?:required(?:\s+for\s+start)?|type|level))?\s*:?\s*(?:\u2026|\.\.\.)\s*\[\s*full\s+text\b|\(\s*public\s+trust\s*\)|\bpublic\s+trust\s+clearance\b|\b(?:must|require[ds]?|required|need(?:s|ed)?|possess(?:es|ing)?|hold(?:s|ing)?|obtain(?:able|ing)?|eligible\s+for|ability\s+to\s+obtain|able\s+to\s+obtain|currently\s+(?:hold|have)|have\s+an?\s+active|maintain(?:ing)?).{0,48}public\s+trust\b|\bpublic\s+trust(?:\s+clearance)?[\s\-]*(?:required|preferred|mandatory|needed)\b)/i;
-// ATS "Clearance required: No/None" — stripped before CLEARANCE_REQUIREMENT_RE.
-const CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE = /\bclearance[\s\-]*(?:required|preferred|mandatory|needed)(?:\s+for\s+start)?[\s:\-|*]*(?:no|none|n\/?a)\b/i;
+const CLEARANCE_REQUIREMENT_RE = /(\bts[\s_\/.\-]*sci\b|\btop[\s\-]*secret\b|\bpolygraph\b|\b(?:ci|full[\s\-]*scope)[\s\-]*poly(?:graph)?\b|\b(?:q|l)[\s\-]*clearance\b|\bdoe[\s\-]*(?:q|l)\b|\bdod[\s\-]*(?:secret|top[\s\-]*secret|ts|clearance)\b|\bsecret[\s\-]*clearance\b|\bsecurity[\s\-]*clearance\b|\bactive[\s\-]*(?:ts|sci|secret|top[\s\-]*secret|security)?[\s\-]*clearance\b|\b(?:ts|secret|top[\s\-]*secret)[\s\-]*cleared\b|\bcleared[\s\-]*(?:candidate|personnel|position|role|engineer|scientist)\b|\bclearance[\s\-]*(?:required|preferred|mandatory|needed|necessary|eligibility|level|requirements?)\b|\b(?:must|require[ds]?|required|need(?:s|ed)?|possess(?:es|ing)?|hold(?:s|ing)?|obtain(?:able|ing)?|eligible\s+for|ability\s+to\s+obtain|able\s+to\s+obtain|currently\s+(?:hold|have)|have\s+an?\s+active).{0,48}clearance\b|\bclearance(?![\s:\-|*]*\bnot\b).{0,24}(?:required|preferred|mandatory|needed)\b|\bclassified\s+(?:information|environment|program|material|data|systems?|networks?|work|facility|facilities)\b|\b(?:handle|access|process|work\s+(?:with|on))\s+classified\b|\bsci[\s\-]*clearance\b|\bsap(?:\/sar)?\s+clearance\b|\bclearance\s*:\s*(?:secret|top[\s\-]*secret|ts(?:[\s_\/.\-]*sci)?|sci|public\s+trust|(?:doe[\s\-]*)?[ql]|active)\b|\bclearance\s*:.{0,48}(?:obtain|eligible|public\s+trust|secret|ts[\s_\/.\-]*sci|polygraph)\b|\bclearance[\s\-]*(?:type|level)\s*:\s*(?:secret|top[\s\-]*secret|ts(?:[\s_\/.\-]*sci)?|sci|public\s+trust|(?:doe[\s\-]*)?[ql]|active|confidential)\b|\bclearance(?:[\s\-]*(?:required(?:\s+for\s+start)?|type|level))?\s*:?\s*(?:\u2026|\.\.\.)\s*\[\s*full\s+text\b|\(\s*public\s+trust\s*\)|\bpublic\s+trust\s+clearance\b|\b(?:must|require[ds]?|required|need(?:s|ed)?|possess(?:es|ing)?|hold(?:s|ing)?|obtain(?:able|ing)?|eligible\s+for|ability\s+to\s+obtain|able\s+to\s+obtain|currently\s+(?:hold|have)|have\s+an?\s+active|maintain(?:ing)?).{0,48}public\s+trust\b|\bpublic\s+trust(?:\s+clearance)?[\s\-]*(?:required|preferred|mandatory|needed)\b)/i;
+// ATS "Clearance required: No/None" / "Clearance Not Required" — stripped first.
+const CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE = /(\bclearance[\s\-]*(?:required|preferred|mandatory|needed)(?:\s+for\s+start)?[\s:\-|*]*(?:no|none|n\/?a)\b|\bno\s+(?:security\s+)?clearance(?:\s+is)?\s+required\b|\bdoes\s+not\s+require\s+(?:an?\s+)?(?:security\s+)?clearance\b|\b(?:an?\s+)?(?:security\s+)?clearance\s+is\s+not\s+required\b|\b(?:(?:an?\s+|the\s+)?(?:security\s+)?)?clearance[\s:\-|*]*not[\s\-]+(?:required|needed|mandatory|necessary)\b)/i;
 const INTEL_AGENCY_COMPANY_RE = /(national\s+security\s+agency|\bnsa\b|central\s+intelligence(?:\s+agency)?|\bcia\b|defense\s+intelligence(?:\s+agency)?|\bdia\b|national\s+geospatial(?:[\s\-]+intelligence)?(?:\s+agency)?|\bnga\b|national\s+reconnaissance\s+office|\bnro\b|office\s+of\s+the\s+director\s+of\s+national\s+intelligence|\bodni\b|national\s+counterterrorism\s+center|\bnctc\b|defense\s+counterintelligence\s+and\s+security\s+agency|\bdcsa\b|intelligence\s+community\s+agency|u\.?s\.?\s+intelligence\s+community|\bic\s+agency\b)/i;
 const INTEL_AGENCY_URL_RE = /(intelligencecareers\.gov|(?:^|[\.\/])nsa\.gov|(?:^|[\.\/])cia\.gov|(?:^|[\.\/])dia\.mil|(?:^|[\.\/])nga\.mil|(?:^|[\.\/])nro\.gov|(?:^|[\.\/])dni\.gov|(?:^|[\.\/])dcsa\.mil)/i;
-const STALE_LISTING_MAX_AGE_DAYS = 30;
+const STALE_LISTING_MAX_AGE_DAYS = 10;
 
 // Keep in sync with scripts/discovery_filters.py — YOE / citizenship / work mode.
 const MAX_ACCEPTABLE_MIN_YOE = 6;
@@ -142,7 +150,7 @@ const YOE_RANGE_RE = new RegExp(
   "gi"
 );
 const YOE_LABEL_RE = /\b(?:yoe|years?\s+of\s+experience|years?\s+experience)\s*[:=]\s*(\d{1,2})\s*\+?/gi;
-const YOE_TENURE_BEFORE_RE = /(?:(?:more|over)\s+than|(?:nearly|almost|approximately|around|about)|(?:for|with)\s+(?:over|more\s+than)|(?:founded|established|celebrating)|(?:company|holding|firm|business|organization|leader|provider)(?:\s+\w+){0,4}\s+with)\s*$/i;
+const YOE_TENURE_BEFORE_RE = /(?:(?:more|over)\s+than|(?:nearly|almost|approximately|around|about)|(?:for|with)\s+(?:over|more\s+than)|(?:founded|established|celebrating)|(?:company|holding|firm|business|organization|leader|provider)(?:\s+\w+){0,4}\s+with|(?:our\s+team\s+has|we\s+have)|(?:preferred\s+qualifications?|nice\s+to\s+have)\s*:)\s*$/i;
 // Tier-2 YOE display fallback — prefer recall; keep in sync with discovery_filters.py
 const YOE_FB_WORD = String.raw`[\w/+&.,'-]+`;
 const YOE_FB_EXP = "(?:experience|exper(?:ience)?|exp\\.?|yoe)";
@@ -195,7 +203,7 @@ const YOE_FALLBACK_YEARS_IN_FIELD_RE = new RegExp(
   String.raw`\b(\d{1,2})\s*${YOE_PLUS}\s*(?:years?|yrs?\.?)\s+in\s+(?:${YOE_FB_WORD}\s+){0,6}(?:engineering|science|analytics|development|software|data|ml|ai)\b`,
   "gi"
 );
-const CITIZENSHIP_OR_GC_REQUIREMENT_RE = /(\b(?:u\.?s\.?|us|united\s+states)\s+citizens?\s+only\b|\bonly\s+(?:u\.?s\.?|us|united\s+states)\s+citizens?\b|\b(?:u\.?s\.?|us|united\s+states)\s+citizenship\s+required\b|\bmust\s+be\s+(?:a\s+)?(?:u\.?s\.?|us|united\s+states)\s+citizen\b|\brequire[sd]?\s+(?:u\.?s\.?|us|united\s+states)\s+citizenship\b|\bcitizenship\s*(?:requirement|:)\s*(?:u\.?s\.?|us|united\s+states)\b|\bgreen\s*card\s+required\b|\bmust\s+(?:have|hold|possess)\s+(?:a\s+)?green\s*card\b|\brequire[sd]?\s+(?:a\s+)?green\s*card\b|\bmust\s+be\s+(?:a\s+)?(?:permanent\s+resident|lawful\s+permanent\s+resident)\b|\b(?:permanent\s+resident|lawful\s+permanent\s+resident)\s+(?:status\s+)?required\b|\bonly\s+(?:u\.?s\.?|us)\s+(?:citizens?|permanent\s+residents?)\b|\b(?:citizens?|permanent\s+residents?)\s+only\b)/i;
+const CITIZENSHIP_OR_GC_REQUIREMENT_RE = /(\b(?:u\.?s\.?|us|united\s+states)\s+citizens?\s+only\b|\bonly\s+(?:u\.?s\.?|us|united\s+states)\s+citizens?\b|\b(?:u\.?s\.?|us|united\s+states)\s+citizenship\s+required\b|\bmust\s+be\s+(?:a\s+)?(?:u\.?s\.?|us|united\s+states)\s+citizen\b|\brequire[sd]?\s+(?:u\.?s\.?|us|united\s+states)\s+citizenship\b|\bcitizenship\s*(?:requirement|:)\s*(?:u\.?s\.?|us|united\s+states)\b|\bgreen\s*card\s+required\b|\bmust\s+(?:have|hold|possess)\s+(?:a\s+)?green\s*card\b|\brequire[sd]?\s+(?:a\s+)?green\s*card\b|\bmust\s+be\s+(?:a\s+)?(?:permanent\s+resident|lawful\s+permanent\s+resident)\b|\b(?:permanent\s+resident|lawful\s+permanent\s+resident)\s+(?:status\s+)?required\b|\bonly\s+(?:u\.?s\.?|us)\s+(?:citizens?|permanent\s+residents?)\b)/i;
 const WORK_MODE_HYBRID_RE = /(\bhybrid\b|\bremote\s+and\s+(?:in[\s\-]?office|on[\s\-]?site|onsite)\b|\b(?:in[\s\-]?office|on[\s\-]?site|onsite)\s+and\s+remote\b|\b\d+\s*(?:days?|x)\s+(?:a|per)\s+week\s+in\s+(?:the\s+)?(?:office|on[\s\-]?site)\b|\b(?:partially|part[\s\-]?time)\s+remote\b)/i;
 const WORK_MODE_REMOTE_RE = /(\bfully\s+remote\b|\bremote[\s\-]?first\b|\bwork\s+from\s+home\b|\bwfh\b|\bremote\b)/i;
 const WORK_MODE_ONSITE_RE = /(\bon[\s\-]?site\b|\bonsite\b|\bin[\s\-]?person\b|\bin[\s\-]?office\b|\bmust\s+relocate\b|\brelocation\s+required\b|\bon[\s\-]?campus\b)/i;
@@ -368,6 +376,8 @@ function isExcludedTitle(title) {
 function isClearlyNonUsLocation(location) {
   const loc = foldAccents(location || "").trim();
   if (!loc) return false; // undetermined — keep
+  if (GEORGIA_COUNTRY_CITY_RE.test(loc)
+      && !/\b(?:GA|USA|US|U\.S\.A?\.?|United\s+States)\b/i.test(loc)) return true;
   const parts = loc.split(",").map((p) => p.trim());
   const tail = parts.length >= 2 && /^[A-Za-z]{2}$/.test(parts[parts.length - 1])
     ? parts[parts.length - 1]
@@ -388,6 +398,7 @@ function isClearlyNonUsLocation(location) {
       if (decisive && !US_LOCATION_STRONG_RE.test(head)) return true;
     }
   }
+  if (isIndiaLocation(loc) && !US_LOCATION_STRONG_RE.test(loc)) return true;
   if (US_LOCATION_RE.test(loc)) return false;
   return NON_US_LOCATION_RE.test(loc);
 }
@@ -460,7 +471,7 @@ function updateEnabledRegionsFromDiscovery(disc) {
   return changed;
 }
 
-// Region filter for the Open list + mission stats: "" (All) | "us" | "india".
+// Region filter for the active list only: "" (All) | "us" | "india".
 // Prefers the stamped job.region, else derives from location. Kept in sync
 // with scripts/discovery_filters.py region_for_location.
 let regionFilter = "";
@@ -748,10 +759,20 @@ function formatWorkMode(mode, approx = false) {
 }
 
 function isStaleListing(job) {
-  const t = datePostedTime(job);
-  if (t == null) return false; // unknown date - benefit of the doubt, don't hide it
-  const ageDays = (Date.now() - t) / 86400000;
+  // jobPostedDisplay: exact date_posted, else created_at (discovery). Never ~ fallback.
+  const { time, approx } = jobPostedDisplay(job);
+  if (time == null || approx) return false;
+  const ageDays = (Date.now() - time) / 86400000;
   return ageDays > STALE_LISTING_MAX_AGE_DAYS;
+}
+
+function isNeedsUrlListing(job) {
+  // Recovered resume-dir stubs (or explicit needs_url) have no apply URL yet.
+  // Keep them in All / Deleted / Applied; only keep them out of Open counts.
+  if (!job) return false;
+  if (job.needs_url === true) return true;
+  const src = String(job.source || "").toLowerCase();
+  return src === "recovered" && !applicationHref(job);
 }
 
 function isHiddenUntouchedListing(job) {
@@ -759,6 +780,8 @@ function isHiddenUntouchedListing(job) {
   // it - never to anything already started, stuck, reviewed, or applied.
   // Excessive YOE / citizen-GC are a client safety net; server backfill
   // also moves them to deleted.
+  // Note: URL-less recovered stubs are NOT hidden here — see isNeedsUrlListing
+  // (Open queue / Open counts only) so All can still surface them.
   return job.status === "discovered" && (
     isExcludedTitle(job.title)
     || isStaleListing(job)
@@ -788,6 +811,16 @@ let queue = "open"; // stuck | ready | progress | open | applied | deleted | all
 let siblingsPanelCompany = null;
 /** Job id when the Resume expand-below preview panel is open. */
 let resumePanelJobId = null;
+/** Job id when the inline LaTeX editor below the action row is open. */
+let resumeLatexPanelJobId = null;
+/** Job id when the Fast copy panel below the action row is open. */
+let copyKitPanelJobId = null;
+/** jobId -> { loading, error, kit, testMode } */
+const copyKitCache = new Map();
+let copyKitCopiedKey = null;
+let copyKitCopiedTimer = null;
+/** Unsaved editor state survives normal dashboard poll re-renders. */
+const resumeLatexDrafts = new Map();
 /** Session + localStorage: treat job as having a resume (skip tailor UX only). */
 const TREAT_RESUME_STORAGE_KEY = "jobHunterTreatResumeOnFile";
 function loadTreatResumeOnFile() {
@@ -816,7 +849,7 @@ let groupBy = "none"; // none | company | source
 let sortBy = "date"; // date | company | status | yoe | salary | salary_asc | multi_opening
 let workModeFilter = ""; // "" | remote | hybrid | onsite | unknown
 let yoeFilter = ""; // "" | le3 | le5 | le6 | has | unknown
-let dateFilter = ""; // "" | 7d | 14d | 30d | older
+let dateFilter = ""; // "" | 1d | 2d | 3d | 7d | 14d | 30d | older
 let salaryFilter = ""; // "" | has | unknown | ge100 | ge150 | ge200 | le120
 /** Lean pipeline statuses (mission stats cover Open/Stuck/Ready/Applied). */
 let statusFilter = ""; // "" | tailoring | navigating | filling | blocked_captcha
@@ -827,20 +860,34 @@ let appliedSortKey = "date";
 let appliedSortDir = "desc";
 let editingAppliedId = null;
 let scrollToAppliedDetail = false;
+/** Applied queue: hide center tracking table when a sidebar job is selected (session-only). */
+let appliedTableHidden = false;
 let lastPollAt = null;
 
-/** Legacy flat blob from before filters were scoped per queue section. */
+/** Per-family list-filter map in localStorage. Survives tabs, refresh, sessions. */
 const FILTER_STATE_KEY = "opsFilterState";
-/** queue -> filter state; see readStoredFilterStates() for the migration. */
+/** Legacy per-queue map (sessionStorage); migrated into FILTER_STATE_KEY. */
 const FILTER_STATE_BY_QUEUE_KEY = "opsFilterStateByQueue";
+/** Storage families: Open, Applied, pipeline (Stuck/Ready/In progress), Deleted. */
+const FILTER_FAMILY_KEYS = ["open", "applied", "pipeline", "deleted"];
+/** Old sidebar queues that shared one pipeline family before unification. */
+const LEGACY_PIPELINE_QUEUE_KEYS = ["stuck", "ready", "progress"];
 /** Statuses duplicated by mission-stat clicks — drop on load if previously saved. */
 const MISSION_REDUNDANT_STATUSES = new Set([
   "discovered", "stuck", "ready_for_review", "applied",
 ]);
 const TL_KEY = "ops-timeline-collapsed";
-let timelineCollapsed = false;
+/** Auto-collapse after the user expands the timeline (ms). */
+const TL_AUTO_COLLAPSE_MS = 10000;
+/** Always start closed; expanded state is temporary (timer / focus-loss). */
+let timelineCollapsed = true;
+let _timelineAutoCollapseTimer = null;
 try {
-  timelineCollapsed = localStorage.getItem(TL_KEY) === "1";
+  // Prefer stored preference only when it says collapsed; never boot expanded.
+  if (localStorage.getItem(TL_KEY) === "0") {
+    /* ignore — start closed every session */
+  }
+  localStorage.setItem(TL_KEY, "1");
 } catch (_) { /* private mode / storage blocked */ }
 
 function migrateExtrasFromLegacy(s) {
@@ -885,45 +932,168 @@ function applyFilterState(state) {
   regionFilter = str(s.region);
 }
 
-/** queue -> filter state object; a missing entry means that section is clean. */
-let filterStatesByQueue = {};
+/** Screenshot Today preset: US + ≤5 YOE + posted last 2 days; other dropdowns default. */
+const TODAY_FILTER_PRESET = {
+  source: "",
+  group: "none",
+  sort: "date",
+  mode: "",
+  yoe: "le5",
+  date: "2d",
+  salary: "",
+  status: "",
+  extras: "",
+  region: "us",
+};
 
-function readStoredFilterStates() {
+/** In-memory map: family key -> captureFilterState() blob. */
+let filterStateByFamily = {};
+
+function filterFamilyForQueue(q) {
+  if (q === "applied") return "applied";
+  if (q === "deleted") return "deleted";
+  if (LEGACY_PIPELINE_QUEUE_KEYS.includes(q)) return "pipeline";
+  return "open";
+}
+
+function parseStoredObject(raw) {
+  if (!raw) return null;
   try {
-    const raw = sessionStorage.getItem(FILTER_STATE_BY_QUEUE_KEY);
-    if (raw) {
-      const s = JSON.parse(raw);
-      return s && typeof s === "object" ? s : {};
+    const s = JSON.parse(raw);
+    return s && typeof s === "object" && !Array.isArray(s) ? s : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** True when `s` is a { open: {...}, pipeline: {...} } per-family map. */
+function isPerFamilyFilterMap(s) {
+  if (!s || typeof s !== "object" || Array.isArray(s)) return false;
+  const keys = [...FILTER_FAMILY_KEYS, ...LEGACY_PIPELINE_QUEUE_KEYS, "deleted"];
+  return keys.some(
+    q => s[q] && typeof s[q] === "object" && !Array.isArray(s[q]),
+  );
+}
+
+/** Flat blob from the old one-global-filter era (search/source/sort at top level). */
+function isFlatFilterBlob(s) {
+  if (!s || typeof s !== "object" || Array.isArray(s)) return false;
+  if (isPerFamilyFilterMap(s)) return false;
+  return (
+    "search" in s || "source" in s || "sort" in s || "mode" in s
+    || "yoe" in s || "date" in s || "salary" in s || "region" in s
+  );
+}
+
+/** Merge legacy stuck/ready/progress keys into one pipeline family. */
+function normalizeStoredFilterMap(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const k of FILTER_FAMILY_KEYS) {
+    if (raw[k] && typeof raw[k] === "object" && !Array.isArray(raw[k])) {
+      out[k] = raw[k];
     }
-    // Pre-scoping sessions stored one flat blob: adopt it for the default queue.
-    const legacy = sessionStorage.getItem(FILTER_STATE_KEY);
-    if (legacy) {
-      const s = JSON.parse(legacy);
-      if (s && typeof s === "object") return { open: s };
+  }
+  let bestPipeline = out.pipeline || null;
+  let bestN = bestPipeline ? filterStateActivity(bestPipeline) : -1;
+  for (const k of LEGACY_PIPELINE_QUEUE_KEYS) {
+    const s = raw[k];
+    if (!s || typeof s !== "object" || Array.isArray(s)) continue;
+    const n = filterStateActivity(s);
+    if (n > bestN) {
+      bestN = n;
+      bestPipeline = s;
     }
-  } catch (_) { /* ignore corrupt session state */ }
-  return {};
+  }
+  if (bestPipeline) out.pipeline = bestPipeline;
+  return out;
+}
+
+function filterStateActivity(s) {
+  if (!s || typeof s !== "object") return 0;
+  let n = 0;
+  if (s.search) n++;
+  if (s.source) n++;
+  if (s.group && s.group !== "none") n++;
+  if (s.sort && s.sort !== "date") n++;
+  if (s.mode) n++;
+  if (s.yoe) n++;
+  if (s.date) n++;
+  if (s.salary) n++;
+  if (s.status) n++;
+  if (s.extras) n++;
+  if (s.region) n++;
+  return n;
+}
+
+function readStoredFilterMap() {
+  const local = parseStoredObject(storageGet(FILTER_STATE_KEY));
+  if (isPerFamilyFilterMap(local)) {
+    return { map: normalizeStoredFilterMap(local), persist: false };
+  }
+  if (isFlatFilterBlob(local)) {
+    return { map: { open: { ...local } }, persist: true };
+  }
+  const localByQueue = parseStoredObject(storageGet(FILTER_STATE_BY_QUEUE_KEY));
+  if (isPerFamilyFilterMap(localByQueue)) {
+    return { map: normalizeStoredFilterMap(localByQueue), persist: true };
+  }
+  const sessMap = parseStoredObject(
+    storageGet(FILTER_STATE_BY_QUEUE_KEY, sessionStorage),
+  );
+  if (isPerFamilyFilterMap(sessMap)) {
+    return { map: normalizeStoredFilterMap(sessMap), persist: true };
+  }
+  const sessFlat = parseStoredObject(storageGet(FILTER_STATE_KEY, sessionStorage));
+  if (isFlatFilterBlob(sessFlat)) {
+    return { map: { open: { ...sessFlat } }, persist: true };
+  }
+  if (isPerFamilyFilterMap(sessFlat)) {
+    return { map: normalizeStoredFilterMap(sessFlat), persist: true };
+  }
+  return { map: {}, persist: false };
+}
+
+function persistFilterMap() {
+  storageSet(FILTER_STATE_KEY, JSON.stringify(filterStateByFamily));
 }
 
 function loadFilterState() {
-  filterStatesByQueue = readStoredFilterStates();
-  applyFilterState(filterStatesByQueue[queue]);
+  const { map, persist } = readStoredFilterMap();
+  filterStateByFamily = map;
+  applyFilterState(filterStateByFamily[filterFamilyForQueue(queue)] || {});
+  if (persist) persistFilterMap();
 }
 
 function saveFilterState() {
-  filterStatesByQueue[queue] = captureFilterState();
-  try {
-    sessionStorage.setItem(
-      FILTER_STATE_BY_QUEUE_KEY, JSON.stringify(filterStatesByQueue),
-    );
-  } catch (_) { /* quota / private mode */ }
+  filterStateByFamily[filterFamilyForQueue(queue)] = captureFilterState();
+  persistFilterMap();
 }
 
-/** Clears the active section only; other sections keep their own filters. */
+/** Save current family's filters and restore the target family's on queue switch. */
+function swapQueueFilterState(nextQueue) {
+  const curFamily = filterFamilyForQueue(queue);
+  const nextFamily = filterFamilyForQueue(nextQueue);
+  filterStateByFamily[curFamily] = captureFilterState();
+  if (curFamily !== nextFamily) {
+    applyFilterState(filterStateByFamily[nextFamily] || {});
+    syncFilterControlsFromState();
+  }
+}
+
+/** Clears every list filter; the empty set is what persists. */
 function clearListFilters() {
   applyFilterState(null);
   const searchEl = document.getElementById("search");
   if (searchEl) searchEl.value = "";
+  syncFilterControlsFromState();
+  saveFilterState();
+  updateFiltersChrome();
+  render();
+}
+
+function applyTodayFilterPreset() {
+  applyFilterState({ ...TODAY_FILTER_PRESET, search: searchText });
   syncFilterControlsFromState();
   saveFilterState();
   updateFiltersChrome();
@@ -968,13 +1138,30 @@ function activeFilterCount() {
   return n;
 }
 
-function updateFiltersChrome() {
+function filtersToggleLabel(active, visible) {
+  return active > 0 ? `Filters · ${active} · ${visible}` : `Filters · ${visible}`;
+}
+
+function filtersToggleTitle(active, visible) {
+  const jobPart = `${visible} ${visible === 1 ? "job" : "jobs"} in this list`;
+  if (active <= 0) return jobPart;
+  const filterPart = `${active} ${active === 1 ? "filter" : "filters"}`;
+  return `${filterPart} · ${jobPart}`;
+}
+
+function updateFiltersChrome(visibleCount) {
   const n = activeFilterCount();
+  const vis = visibleCount == null ? visibleJobs().length : visibleCount;
   const label = document.getElementById("filters-toggle-label");
   const toggle = document.getElementById("filters-toggle");
   const popClear = document.getElementById("filters-popover-clear");
-  if (label) label.textContent = n > 0 ? `Filters · ${n}` : "Filters";
-  if (toggle) toggle.classList.toggle("has-active", n > 0);
+  const title = filtersToggleTitle(n, vis);
+  if (label) label.textContent = filtersToggleLabel(n, vis);
+  if (toggle) {
+    toggle.classList.toggle("has-active", n > 0);
+    toggle.title = title;
+    toggle.setAttribute("aria-label", title);
+  }
   if (popClear) popClear.disabled = n === 0;
 }
 
@@ -1067,7 +1254,7 @@ const BUILTIN_DAYS_OPTIONS = [
 
 const STUCK_STATUSES = new Set(["stuck", "blocked_captcha"]);
 const READY_STATUSES = new Set(["ready_for_review"]);
-const PROGRESS_STATUSES = new Set(["tailoring", "navigating", "filling", "resuming"]);
+const PROGRESS_STATUSES = new Set([...ACTIVE_PROGRESS_STATUSES, "resume_ready"]);
 /** Ready / CAPTCHA hold blocks Fill while browser still held (UI-002/008). */
 const HOLD_BUSY_STATUSES = new Set(["ready_for_review", "blocked_captcha"]);
 const OPEN_STATUSES = new Set(["discovered"]);
@@ -1225,10 +1412,22 @@ function queueBucket(status) {
   if (READY_STATUSES.has(status)) return "ready";
   if (PROGRESS_STATUSES.has(status)) return "progress";
   if (OPEN_STATUSES.has(status)) return "open";
-  // Cancelled is reset to Open server-side; treat any leftover as open.
+  // Leftover cancelled statuses migrate to Open server-side.
   if (status === "cancelled") return "open";
   if (status === "applied") return "applied";
   return "open";
+}
+
+/** Sidebar square + banner pulse: live pipeline vs parked waiting-on-you.
+ *  active/orange: tailoring, navigating, filling, resuming
+ *  ready/green:   resume_ready, ready_for_review, blocked_captcha
+ *  none:          Open/applied/stuck/deleted — keep queueBucket rail color
+ */
+function jobActivityDot(job) {
+  const status = (job && job.status) || "";
+  if (ACTIVE_PROGRESS_STATUSES.has(status)) return "active";
+  if (status === "resume_ready" || HOLD_BUSY_STATUSES.has(status)) return "ready";
+  return "";
 }
 
 /** Normalize aliases so clearance / clearance_or_intel share one group, etc. */
@@ -1291,8 +1490,18 @@ function deletedReasonGroupSortIndex(key) {
   return key ? DELETED_REASON_ORDER.length - 1.5 : DELETED_REASON_ORDER.length;
 }
 
+function normalizeCompanyName(name) {
+  // Keep in lockstep with scripts/text_normalize.py normalize_company().
+  let s = String(name || "").toLowerCase();
+  s = s.replace(/\b(inc|llc|corp|corporation|ltd|co|company|group|technologies|technology)\b\.?/g, "");
+  s = s.replace(/[^a-z0-9]+/g, "");
+  return s;
+}
+
 function companyKey(job) {
-  return (job.company || "").trim().toLowerCase() || "(unknown)";
+  const persisted = String((job && job.company_key) || "").trim();
+  if (persisted) return persisted;
+  return normalizeCompanyName(job && job.company) || "(unknown)";
 }
 
 // The age column is a *posted* age: postedAgeDays / postedAgeLabel come from
@@ -1331,18 +1540,46 @@ function ashbySpamHintHtml(job) {
     + `does not clear the flag.</div>`;
 }
 
+/** companyKey -> count of jobs with status applied (rebuilt each render). */
+let companyAppliedCounts = new Map();
+
+function rebuildCompanyAppliedCounts() {
+  const counts = new Map();
+  for (const j of jobs) {
+    if (j.status !== "applied") continue;
+    const key = companyKey(j);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  companyAppliedCounts = counts;
+}
+
+function companyApplyCountLookup(companyOrJob) {
+  const key = companyOrJob && typeof companyOrJob === "object"
+    ? companyKey(companyOrJob)
+    : (normalizeCompanyName(companyOrJob) || "(unknown)");
+  return companyAppliedCounts.get(key) || 0;
+}
+
+function companyApplyCountBadgeHtml(companyOrJob) {
+  const n = companyApplyCountLookup(companyOrJob);
+  if (!n) return "";
+  const title = n === 1 ? "Applied 1 time to this company" : `Applied ${n} times to this company`;
+  return `<span class="tag applied-count" title="${escapeAttr(title)}">${n}x</span>`;
+}
+
 function companyAppliedInfo(company) {
-  const key = (company || "").trim().toLowerCase();
+  const key = normalizeCompanyName(company);
   if (!key) return null;
+  const count = companyApplyCountLookup(key);
+  if (!count) return null;
   const applied = jobs.filter(j => j.status === "applied" && companyKey(j) === key);
-  if (!applied.length) return null;
   let latest = 0;
   for (const j of applied) {
     const t = Date.parse(j.updated_at || j.created_at || "") || 0;
     if (t > latest) latest = t;
   }
   const lastDays = latest ? Math.max(0, Math.floor((Date.now() - latest) / 86400000)) : null;
-  return { count: applied.length, lastDays };
+  return { count, lastDays };
 }
 
 /** Other non-skipped listings at the same company (excludes `job`).
@@ -1371,7 +1608,7 @@ function jobMatchesQueue(j) {
     case "stuck": return b === "stuck";
     case "ready": return b === "ready";
     case "progress": return b === "progress";
-    case "open": return b === "open";
+    case "open": return b === "open" && !isNeedsUrlListing(j);
     case "skipped": return false; // Skipped holding pen removed — use Deleted
     case "applied": return b === "applied";
     case "deleted": return b === "deleted";
@@ -1408,9 +1645,8 @@ function jobMatchesDateFilter(j) {
   }
   if (unknown) return false;
   const ageDays = (Date.now() - t) / 86400000;
-  if (dateFilter === "7d") return ageDays <= 7;
-  if (dateFilter === "14d") return ageDays <= 14;
-  if (dateFilter === "30d") return ageDays <= 30;
+  const windowMatch = /^(\d+)d$/.exec(dateFilter);
+  if (windowMatch) return ageDays <= Number(windowMatch[1]);
   return true;
 }
 
@@ -1441,6 +1677,59 @@ function jobMatchesExtrasFilter(j) {
   return true;
 }
 
+function jobMatchesSourceFilter(j) {
+  if (!sourceFilter) return true;
+  const names = jobSourceNames(j).map(n => n.toLowerCase());
+  return names.includes(sourceFilter.toLowerCase()) || (j.source || "") === sourceFilter;
+}
+
+function jobMatchesSearch(j) {
+  if (!searchText) return true;
+  const q = searchText.toLowerCase();
+  return (j.company || "").toLowerCase().includes(q)
+    || (j.title || "").toLowerCase().includes(q)
+    || (j.id || "").toLowerCase().includes(q);
+}
+
+/** Sidebar list filters (not the KPI tab / queue). Shared by list + KPI counts. */
+function jobMatchesListFilters(j) {
+  return jobMatchesWorkModeFilter(j)
+    && jobMatchesYoeFilter(j)
+    && jobMatchesDateFilter(j)
+    && jobMatchesSalaryFilter(j)
+    && jobMatchesStatusFilter(j)
+    && jobMatchesExtrasFilter(j)
+    && jobMatchesRegion(j)
+    && jobMatchesSourceFilter(j)
+    && jobMatchesSearch(j);
+}
+
+function filterFamilyForBucket(bucket) {
+  if (bucket === "applied") return "applied";
+  if (bucket === "deleted") return "deleted";
+  if (bucket === "open") return "open";
+  return "pipeline";
+}
+
+/** Saved filters for a family; active family uses live globals (search debounce, etc.). */
+function filterStateForFamily(family) {
+  if (family === filterFamilyForQueue(queue)) return captureFilterState();
+  return filterStateByFamily[family] || {};
+}
+
+/** Evaluate list filters from a snapshot without mutating globals. */
+function jobMatchesListFiltersForState(state, j) {
+  const saved = captureFilterState();
+  applyFilterState(state);
+  const ok = jobMatchesListFilters(j);
+  applyFilterState(saved);
+  return ok;
+}
+
+function jobMatchesListFiltersForFamily(family, j) {
+  return jobMatchesListFiltersForState(filterStateForFamily(family), j);
+}
+
 function visibleJobs() {
   let list = jobs.filter(j => {
     if (queue === "deleted") {
@@ -1452,28 +1741,7 @@ function visibleJobs() {
   if (queue !== "deleted") {
     list = list.filter(jobMatchesQueue);
   }
-  list = list.filter(jobMatchesWorkModeFilter);
-  list = list.filter(jobMatchesYoeFilter);
-  list = list.filter(jobMatchesDateFilter);
-  list = list.filter(jobMatchesSalaryFilter);
-  list = list.filter(jobMatchesStatusFilter);
-  list = list.filter(jobMatchesExtrasFilter);
-  list = list.filter(jobMatchesRegion);
-  if (sourceFilter) {
-    list = list.filter(j => {
-      const names = jobSourceNames(j).map(n => n.toLowerCase());
-      return names.includes(sourceFilter.toLowerCase()) || (j.source || "") === sourceFilter;
-    });
-  }
-  if (searchText) {
-    const q = searchText.toLowerCase();
-    list = list.filter(j =>
-      (j.company || "").toLowerCase().includes(q)
-      || (j.title || "").toLowerCase().includes(q)
-      || (j.id || "").toLowerCase().includes(q)
-    );
-  }
-  return list;
+  return list.filter(jobMatchesListFilters);
 }
 
 function groupPriorityStatus(items) {
@@ -1551,7 +1819,7 @@ function toggleGroup(key) {
 function jobGroupKey(job) {
   if (!job || groupBy === "none") return null;
   if (groupBy === "source") return job.source || "(unknown source)";
-  return job.company || "(unknown)";
+  return companyKey(job);
 }
 
 /**
@@ -1709,13 +1977,9 @@ function formatJobDescriptionHtml(text) {
 }
 
 function setQueue(next) {
-  if (next !== queue) {
-    saveFilterState(); // stash the outgoing section's filters before swapping
-    queue = next;
-    applyFilterState(filterStatesByQueue[queue]);
-    syncFilterControlsFromState();
-    updateFiltersChrome();
-  }
+  if (next !== queue) swapQueueFilterState(next);
+  queue = next;
+  if (next === "applied") appliedTableHidden = false;
   if (selectedId) {
     const job = jobs.find(j => j.id === selectedId);
     if (!job || !jobMatchesQueue(job)) selectedId = null;
@@ -1733,7 +1997,7 @@ function toggleDeletedView() {
 }
 
 function toggleCompanySiblings(company) {
-  const key = (company || "").trim().toLowerCase() || null;
+  const key = normalizeCompanyName(company) || null;
   if (!key) return;
   siblingsPanelCompany = siblingsPanelCompany === key ? null : key;
   renderDossier();
@@ -1748,6 +2012,8 @@ function toggleResumePanel(jobId) {
   if (!jobId) return;
   const job = jobs.find(j => j.id === jobId);
   if (!jobHasDiskResume(job)) return;
+  resumeLatexPanelJobId = null;
+  copyKitPanelJobId = null;
   resumePanelJobId = resumePanelJobId === jobId ? null : jobId;
   renderDossier();
 }
@@ -1757,9 +2023,189 @@ function collapseResumePanel() {
   renderDossier();
 }
 
+function snapshotResumeLatexDraft() {
+  const editor = document.getElementById("resume-latex-editor");
+  if (!editor || !resumeLatexPanelJobId) return;
+  const draft = resumeLatexDrafts.get(resumeLatexPanelJobId);
+  if (!draft || draft.loading || draft.saving) return;
+  const val = editor.value;
+  // Poll/re-render can run after fetch fills draft.source but before the
+  // textarea is replaced — never copy that empty placeholder over the body.
+  if (!draft.dirty && val !== draft.source) return;
+  draft.source = val;
+}
+
+function closeResumeLatexEditor() {
+  snapshotResumeLatexDraft();
+  resumeLatexPanelJobId = null;
+  renderDossier();
+}
+
+async function openResumeLatexEditor(jobId) {
+  const job = jobs.find(j => j.id === jobId);
+  if (!job) return;
+  if (ACTIVE_PROGRESS_STATUSES.has(job.status)) {
+    alert("Resume editing is blocked while fill/tailor is running. Cancel first.");
+    return;
+  }
+  resumePanelJobId = null;
+  copyKitPanelJobId = null;
+  resumeLatexPanelJobId = jobId;
+  document.getElementById("resume-wrap")?.classList.remove("open");
+  resumeLatexDrafts.set(jobId, {
+    source: "",
+    isSample: false,
+    isWorkspaceMaster: false,
+    sourceLabel: "",
+    loadedFor: "",
+    loading: true,
+    saving: false,
+    dirty: false,
+    error: "",
+    status: "Loading resume.tex…",
+  });
+  renderDossier();
+  try {
+    const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/resume-latex`);
+    const data = await res.json().catch(() => ({}));
+    const draft = resumeLatexDrafts.get(jobId);
+    if (!draft) return;
+    draft.loading = false;
+    const latest = jobs.find(j => j.id === jobId) || job;
+    const latex = typeof data.latex === "string" ? data.latex : "";
+    const missingTex = !!(data.missing_tex || data.ok === false);
+    if (!res.ok || missingTex) {
+      draft.error = data.error || `Could not load LaTeX (${res.status})`;
+      draft.source = latex;
+      draft.isSample = false;
+      draft.isWorkspaceMaster = false;
+      draft.sourceLabel = data.source_label || data.path || "";
+      draft.status = draft.error;
+      draft.loadedFor = resumePreviewIdentity(latest);
+    } else if (!latex.trim() && !data.is_sample) {
+      draft.error = data.error || "LaTeX source was empty.";
+      draft.source = "";
+      draft.status = draft.error;
+      draft.loadedFor = resumePreviewIdentity(latest);
+    } else {
+      draft.source = latex;
+      draft.isSample = !!data.is_sample;
+      draft.isWorkspaceMaster = !!data.is_workspace_master;
+      draft.sourceLabel = data.source_label || data.path || "";
+      draft.error = "";
+      draft.loadedFor = resumePreviewIdentity(latest);
+      if (data.is_sample) {
+        draft.status = "Sample starter loaded — replace the dummy details and sections.";
+      } else if (data.is_workspace_master) {
+        draft.status = "Loaded workspace resume.tex (not a job-specific tailored file).";
+      } else {
+        draft.status = "Loaded " + (draft.sourceLabel || ("resumes/" + jobId + "/resume.tex"));
+      }
+    }
+  } catch (e) {
+    const draft = resumeLatexDrafts.get(jobId);
+    if (draft) {
+      draft.loading = false;
+      draft.error = `Could not load LaTeX: ${e}`;
+    }
+  }
+  if (resumeLatexPanelJobId === jobId && selectedId === jobId) {
+    renderDossier();
+    requestAnimationFrame(() => document.getElementById("resume-latex-editor")?.focus());
+  }
+}
+
+async function saveResumeLatex(jobId) {
+  snapshotResumeLatexDraft();
+  const draft = resumeLatexDrafts.get(jobId);
+  if (!draft || draft.loading || draft.saving) return;
+  if (!draft.source.trim()) {
+    draft.error = "Paste or enter LaTeX before compiling.";
+    renderDossier();
+    return;
+  }
+  draft.saving = true;
+  draft.error = "";
+  draft.status = "Running tectonic and the two-page layout fit…";
+  renderDossier();
+  try {
+    const { data, ok } = await apiPost(
+      `/api/jobs/${encodeURIComponent(jobId)}/resume-latex`,
+      { latex: draft.source },
+      { alertOnError: false },
+    );
+    if (!ok) {
+      draft.error = data.error || "Resume compile failed.";
+      draft.status = "Nothing was replaced. Fix the LaTeX and try again.";
+    } else {
+      if (data.job) {
+        const job = jobs.find(j => j.id === jobId);
+        if (job) Object.assign(job, data.job);
+      }
+      draft.source = typeof data.latex === "string" && data.latex ? data.latex : draft.source;
+      draft.isSample = false;
+      draft.isWorkspaceMaster = false;
+      draft.sourceLabel = data.source_label || data.path || ("resumes/" + jobId + "/resume.tex");
+      draft.dirty = false;
+      draft.error = "";
+      draft.loadedFor = resumePreviewIdentity(jobs.find(j => j.id === jobId) || { id: jobId, resume_path: data.resume_path });
+      if (data.warning) {
+        draft.status = "Saved resume.tex + resume.pdf · fit was best-effort.";
+        draft.error = data.warning;
+      } else {
+        draft.status = "Saved resume.tex + resume.pdf · fitted to two pages.";
+      }
+      treatResumeOnFile.delete(jobId);
+      saveTreatResumeOnFile();
+      setSelectedFillMode(jobId, "with-resume");
+    }
+  } catch (e) {
+    draft.error = `Resume compile failed: ${e}`;
+    draft.status = "Nothing was replaced. Fix the LaTeX and try again.";
+  } finally {
+    draft.saving = false;
+  }
+  if (resumeLatexPanelJobId === jobId && selectedId === jobId) renderDossier();
+  await poll();
+}
+
+function clearTimelineAutoCollapse() {
+  if (_timelineAutoCollapseTimer != null) {
+    clearTimeout(_timelineAutoCollapseTimer);
+    _timelineAutoCollapseTimer = null;
+  }
+}
+
+/** True while the pointer or focus is still in the timeline (don't auto-collapse). */
+function timelineHasUserAttention() {
+  const pane = document.getElementById("timeline-pane");
+  if (!pane || timelineCollapsed) return false;
+  try {
+    return pane.matches(":hover") || pane.matches(":focus-within");
+  } catch (_) {
+    return false;
+  }
+}
+
+function scheduleTimelineAutoCollapse() {
+  clearTimelineAutoCollapse();
+  _timelineAutoCollapseTimer = setTimeout(() => {
+    _timelineAutoCollapseTimer = null;
+    if (timelineCollapsed) return;
+    // Still scrolling / hovering / focusing the list — defer, don't race-collapse.
+    if (timelineHasUserAttention()) {
+      scheduleTimelineAutoCollapse();
+      return;
+    }
+    setTimelineCollapsed(true);
+  }, TL_AUTO_COLLAPSE_MS);
+}
+
 function setTimelineCollapsed(collapsed) {
   timelineCollapsed = collapsed;
-  localStorage.setItem(TL_KEY, collapsed ? "1" : "0");
+  try {
+    localStorage.setItem(TL_KEY, collapsed ? "1" : "0");
+  } catch (_) { /* private mode / storage blocked */ }
   document.getElementById("ops-body")?.classList.toggle("tl-collapsed", collapsed);
   document.getElementById("timeline-pane")?.classList.toggle("collapsed", collapsed);
   const btn = document.getElementById("tl-toggle");
@@ -1767,15 +2213,34 @@ function setTimelineCollapsed(collapsed) {
     btn.textContent = collapsed ? "▶" : "◀";
     btn.title = collapsed ? "Expand timeline" : "Collapse timeline";
   }
+  if (collapsed) {
+    clearTimelineAutoCollapse();
+  } else {
+    scheduleTimelineAutoCollapse();
+  }
 }
 
-function countBucket(bucket) {
+/** True when the event target is inside the timeline pane (or the pane itself). */
+function eventInsideTimeline(target) {
+  const pane = document.getElementById("timeline-pane");
+  if (!pane || !(target instanceof Node)) return false;
+  return pane === target || pane.contains(target);
+}
+
+/** Re-arm the 10s auto-collapse while the user is still using the timeline. */
+function armTimelineAutoCollapseOnInteraction() {
+  if (!timelineCollapsed) scheduleTimelineAutoCollapse();
+}
+
+function countBucket(bucket, applyFilters = true) {
+  const family = filterFamilyForBucket(bucket);
   return jobs.filter(j =>
     j.status !== "deleted"
     && !LEGACY_SKIPPED_STATUSES.has(j.status)
     && !isHiddenUntouchedListing(j)
-    && jobMatchesRegion(j)
+    && !(bucket === "open" && isNeedsUrlListing(j))
     && queueBucket(j.status) === bucket
+    && (!applyFilters || jobMatchesListFiltersForFamily(family, j))
   ).length;
 }
 
@@ -1790,12 +2255,25 @@ function renderStats() {
   const deletedN = jobs.filter(j =>
     j.status === "deleted" || LEGACY_SKIPPED_STATUSES.has(j.status)
   ).length;
-  const set = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = String(n); };
-  set("stat-stuck", stuck);
-  set("stat-ready", ready);
-  set("stat-progress", progress);
-  set("stat-open", open);
-  set("stat-applied", applied);
+  const set = (id, n, queueKey, label) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = String(n);
+    const wrap = document.querySelector(`#mission-stats .mstat[data-queue="${queueKey}"]`);
+    if (!wrap) return;
+    const familyState = filterStateForFamily(filterFamilyForBucket(queueKey));
+    const familyFiltered = filterStateActivity(familyState) > 0;
+    if (familyFiltered) {
+      const total = countBucket(queueKey, false);
+      wrap.title = total !== n ? `${label}: ${n} of ${total} match filters` : label;
+    } else {
+      wrap.title = label;
+    }
+  };
+  set("stat-stuck", stuck, "stuck", "Stuck / CAPTCHA");
+  set("stat-ready", ready, "ready", "Ready for review");
+  set("stat-progress", progress, "progress", "In progress");
+  set("stat-open", open, "open", "Open / discovered");
+  set("stat-applied", applied, "applied", "Applied tracking");
 
   document.querySelectorAll("#mission-stats .mstat").forEach(el => {
     el.classList.toggle("active", el.getAttribute("data-queue") === queue);
@@ -1934,9 +2412,10 @@ function renderSiblingPanel(job) {
 function renderResumePanel(job) {
   if (!jobHasDiskResume(job) || resumePanelJobId !== job.id) return "";
   const href = `/resume/${encodeURIComponent(job.id)}`;
+  const name = resumeDisplayName(job) || "Resume";
   return `<div class="resume-panel">
     <div class="resume-head">
-      <span class="micro">Resume · full preview</span>
+      <span class="micro">${escapeHtml(name)} · full preview</span>
       <span class="resume-head-actions">
         <a class="resume-open-tab" href="${escapeHtml(href)}" target="_blank" rel="noopener">Open in new tab</a>
         <button type="button" class="resume-hide" onclick="collapseResumePanel()">Hide</button>
@@ -1946,29 +2425,385 @@ function renderResumePanel(job) {
   </div>`;
 }
 
-/** Keep the PDF iframe across dossier re-renders (poll) so scroll/view stay put. */
+function renderResumeLatexPanel(job) {
+  if (resumeLatexPanelJobId !== job.id) return "";
+  const draft = resumeLatexDrafts.get(job.id) || {
+    source: "",
+    loading: true,
+    saving: false,
+    isSample: false,
+    isWorkspaceMaster: false,
+    sourceLabel: "",
+    error: "",
+    status: "Loading resume.tex…",
+  };
+  const jid = jsStringEscape(job.id);
+  const busy = !!(draft.loading || draft.saving || ACTIVE_PROGRESS_STATUSES.has(job.status));
+  const badge = draft.isSample
+    ? `<span class="resume-latex-badge">Sample · dummy details</span>`
+    : draft.isWorkspaceMaster
+      ? `<span class="resume-latex-badge">Workspace resume.tex</span>`
+      : "";
+  return `<div class="resume-latex-panel">
+    <div class="resume-latex-head">
+      <div>
+        <span class="micro">Resume · LaTeX editor</span>
+        ${badge}
+      </div>
+      <div class="resume-latex-actions">
+        <button type="button" class="resume-latex-save"
+          ${busy ? "disabled" : ""}
+          onclick="${escapeAttr(`saveResumeLatex('${jid}')`)}">${
+            draft.saving ? "Fitting & compiling…" : "Fit, recompile & save"
+          }</button>
+        <button type="button" class="resume-hide" onclick="closeResumeLatexEditor()">Hide</button>
+      </div>
+    </div>
+    <div class="resume-latex-copy">
+      Complete <code>.tex</code> source · tectonic compile · layout-only fit to 2 pages.
+      Saving replaces this job's available resume only after both steps succeed.
+    </div>
+    <textarea id="resume-latex-editor" class="resume-latex-editor"
+      spellcheck="false" ${draft.loading ? "disabled" : ""}
+      placeholder="Paste a complete LaTeX document here…">${escapeHtml(draft.source)}</textarea>
+    <div class="resume-latex-foot">
+      <span class="resume-latex-status">${escapeHtml(draft.status || "")}</span>
+      ${draft.error ? `<pre class="resume-latex-error">${escapeHtml(draft.error)}</pre>` : ""}
+    </div>
+  </div>`;
+}
+
+function copyKitRowByKey(kit, key) {
+  if (!kit || !key) return null;
+  for (const g of kit.groups || []) {
+    for (const row of g.rows || []) {
+      if (row.key === key) return row;
+    }
+    for (const role of g.roles || []) {
+      for (const row of role.rows || []) {
+        if (row.key === key) return row;
+      }
+    }
+    for (const edu of g.education || []) {
+      for (const row of edu.rows || []) {
+        if (row.key === key) return row;
+      }
+    }
+  }
+  return null;
+}
+
+function copyKitAllText(kit) {
+  if (!kit) return "";
+  const lines = [];
+  for (const g of kit.groups || []) {
+    if (g.label) lines.push(g.label);
+    for (const row of g.rows || []) {
+      lines.push(`${row.label}: ${row.value}`);
+    }
+    for (const role of g.roles || []) {
+      const head = [role.company, role.title, role.location, role.period].filter(Boolean).join(" · ");
+      if (head) lines.push(head);
+      for (const row of role.rows || []) {
+        lines.push(`${row.label}: ${row.value}`);
+      }
+      if (role.bulk_bullets) lines.push(role.bulk_bullets);
+      lines.push("");
+    }
+    for (const edu of g.education || []) {
+      const head = [edu.school, edu.degree, edu.period].filter(Boolean).join(" · ");
+      if (head) lines.push(head);
+      for (const row of edu.rows || []) {
+        lines.push(`${row.label}: ${row.value}`);
+      }
+      lines.push("");
+    }
+    lines.push("");
+  }
+  return lines.join("\n").trim();
+}
+
+function copyKitRowHtml(jobId, row) {
+  if (!row) return "";
+  const copied = copyKitCopiedKey === row.key;
+  const jid = jsStringEscape(jobId);
+  const display = row.value || "";
+  return `<button type="button" class="copy-kit-row${copied ? " copied" : ""}"
+    title="${escapeAttr("Copy " + (row.label || "value"))}"
+    onclick="${escapeAttr(`event.stopPropagation(); copyKitCopyRow('${jid}', '${jsStringEscape(row.key)}')`)}">
+    <span class="copy-kit-row-label">${escapeHtml(row.label || "")}</span>
+    <span class="copy-kit-row-value">${escapeHtml(display)}</span>
+    <span class="copy-kit-row-tick" aria-hidden="true">${copied ? JD_COPIED_ICON_SVG : ""}</span>
+  </button>`;
+}
+
+function copyKitRoleByIndex(kit, roleIndex) {
+  if (!kit || roleIndex == null) return null;
+  for (const g of kit.groups || []) {
+    const roles = g.roles || [];
+    if (g.id === "roles" && roles[roleIndex]) return roles[roleIndex];
+  }
+  return null;
+}
+
+function copyKitBulletsHtml(jobId, role, roleIndex) {
+  const bullets = (role.bullets || []).map(b => String(b || "").trim()).filter(Boolean);
+  if (!bullets.length) return "";
+  const key = `role-${roleIndex}-bullets-all`;
+  const copied = copyKitCopiedKey === key;
+  const jid = jsStringEscape(jobId);
+  const items = bullets.map(b => `<li>${escapeHtml(b)}</li>`).join("");
+  return `<button type="button" class="copy-kit-bullets${copied ? " copied" : ""}"
+    title="Copy bullets"
+    onclick="${escapeAttr(`event.stopPropagation(); copyKitCopyRoleBullets('${jid}', ${roleIndex})`)}">
+    <span class="copy-kit-row-label">Bullets</span>
+    <ul class="copy-kit-bullets-list">${items}</ul>
+    <span class="copy-kit-row-tick" aria-hidden="true">${copied ? JD_COPIED_ICON_SVG : ""}</span>
+  </button>`;
+}
+
+function renderCopyKitPanel(job) {
+  if (copyKitPanelJobId !== job.id) return "";
+  // Group labels (CONTACT, ADDRESS, LINKS, RESUME FILE, RESUME ROLES, EDUCATION, …) come from /copy-kit.
+  const cached = copyKitCache.get(job.id) || { loading: true, error: "", kit: null };
+  const jid = jsStringEscape(job.id);
+  const kit = cached.kit;
+  const dummy = kit ? !!kit.test_mode : !!testModeEnabled;
+  const badge = dummy
+    ? `<span class="resume-latex-badge">Dummy · Test Mode</span>`
+    : `<span class="resume-latex-badge copy-kit-badge-real">Real profile</span>`;
+  let body;
+  if (cached.loading && !kit) {
+    body = `<div class="copy-kit-status">Loading form kit…</div>`;
+  } else if (cached.error && !kit) {
+    body = `<div class="copy-kit-status copy-kit-error">${escapeHtml(cached.error)}</div>`;
+  } else {
+    const groups = (kit && kit.groups) || [];
+    if (!groups.length) {
+      body = `<div class="copy-kit-status">No copyable values for this job.</div>`;
+    } else {
+      body = groups.map(g => {
+        let rows = (g.rows || []).map(r => copyKitRowHtml(job.id, r)).join("");
+        const roles = (g.roles || []).map((role, idx) => {
+          const head = [role.company, role.title, role.location, role.period].filter(Boolean).join(" · ") || `Role ${idx + 1}`;
+          return `<div class="copy-kit-role">
+            <div class="copy-kit-role-head">${escapeHtml(head)}</div>
+            ${(role.rows || []).map(r => copyKitRowHtml(job.id, r)).join("")}
+            ${copyKitBulletsHtml(job.id, role, idx)}
+          </div>`;
+        }).join("");
+        const education = (g.education || []).map((edu, idx) => {
+          const head = [edu.school, edu.degree, edu.period].filter(Boolean).join(" · ") || `Education ${idx + 1}`;
+          return `<div class="copy-kit-role">
+            <div class="copy-kit-role-head">${escapeHtml(head)}</div>
+            ${(edu.rows || []).map(r => copyKitRowHtml(job.id, r)).join("")}
+          </div>`;
+        }).join("");
+        return `<div class="copy-kit-group">
+          <div class="copy-kit-group-label">${escapeHtml(g.label || "")}</div>
+          ${rows}${roles}${education}
+        </div>`;
+      }).join("");
+    }
+  }
+  const allBusy = !!(cached.loading && !kit);
+  return `<div class="resume-latex-panel copy-kit-panel">
+    <div class="resume-latex-head">
+      <div>
+        <span class="micro">Fast copy · form kit</span>
+        ${badge}
+      </div>
+      <div class="resume-latex-actions">
+        <button type="button" class="resume-latex-save" ${allBusy ? "disabled" : ""}
+          onclick="${escapeAttr(`copyKitCopyAll('${jid}')`)}">Copy all</button>
+        <button type="button" class="resume-hide" onclick="closeCopyKitPanel()" aria-label="Close">✕</button>
+      </div>
+    </div>
+    <div class="resume-latex-copy">Click a row to copy that value, paste into ATS, next row.</div>
+    <div class="copy-kit-body">${body}</div>
+  </div>`;
+}
+
+function closeCopyKitPanel() {
+  copyKitPanelJobId = null;
+  renderDossier();
+}
+
+function toggleCopyKitPanel(jobId) {
+  if (!jobId) return;
+  if (copyKitPanelJobId === jobId) {
+    copyKitPanelJobId = null;
+    renderDossier();
+    return;
+  }
+  resumePanelJobId = null;
+  resumeLatexPanelJobId = null;
+  copyKitPanelJobId = jobId;
+  fetchCopyKit(jobId);
+}
+
+async function fetchCopyKit(jobId) {
+  const prev = copyKitCache.get(jobId);
+  copyKitCache.set(jobId, {
+    loading: true,
+    error: "",
+    kit: prev && prev.testMode === testModeEnabled ? prev.kit : null,
+    testMode: testModeEnabled,
+  });
+  if (copyKitPanelJobId === jobId && selectedId === jobId) renderDossier();
+  try {
+    const res = await fetch(
+      `/api/jobs/${encodeURIComponent(jobId)}/copy-kit?test_mode=${testModeEnabled ? "true" : "false"}`
+    );
+    const data = await res.json().catch(() => ({}));
+    const cur = copyKitCache.get(jobId) || {};
+    cur.loading = false;
+    if (!res.ok) {
+      cur.error = data.error || `Could not load form kit (${res.status})`;
+    } else {
+      cur.kit = data;
+      cur.error = "";
+      cur.testMode = !!data.test_mode;
+    }
+    copyKitCache.set(jobId, cur);
+  } catch (e) {
+    copyKitCache.set(jobId, {
+      loading: false,
+      error: `Could not load form kit: ${e}`,
+      kit: null,
+      testMode: testModeEnabled,
+    });
+  }
+  if (copyKitPanelJobId === jobId && selectedId === jobId) renderDossier();
+}
+
+async function copyKitCopyRow(jobId, key) {
+  const cached = copyKitCache.get(jobId);
+  const row = copyKitRowByKey(cached && cached.kit, key);
+  if (!row || !row.value) return;
+  await copyKitWrite(jobId, key, row.value);
+}
+
+async function copyKitCopyRoleBullets(jobId, roleIndex) {
+  const cached = copyKitCache.get(jobId);
+  const role = copyKitRoleByIndex(cached && cached.kit, roleIndex);
+  const text = role && role.bulk_bullets;
+  if (!text) return;
+  await copyKitWrite(jobId, `role-${roleIndex}-bullets-all`, text);
+}
+
+async function copyKitCopyAll(jobId) {
+  const cached = copyKitCache.get(jobId);
+  const text = copyKitAllText(cached && cached.kit);
+  if (!text) return;
+  await copyKitWrite(jobId, "__all__", text);
+}
+
+async function copyKitWrite(jobId, key, text) {
+  const ok = await writeClipboardText(text);
+  if (!ok) return;
+  if (copyKitCopiedTimer) clearTimeout(copyKitCopiedTimer);
+  copyKitCopiedKey = key;
+  if (copyKitPanelJobId === jobId && selectedId === jobId) renderDossier();
+  copyKitCopiedTimer = setTimeout(() => {
+    copyKitCopiedKey = null;
+    copyKitCopiedTimer = null;
+    if (copyKitPanelJobId === jobId && selectedId === jobId) renderDossier();
+  }, 1500);
+}
+
+function resumePreviewUrl(jobId) {
+  return `/resume/${encodeURIComponent(jobId)}`;
+}
+
+function resumePreviewIdentity(job) {
+  if (!job || !job.id) return "";
+  return `${job.id}::${job.resume_path || ""}`;
+}
+
+function canReuseResumePreviewFrame(frame, job) {
+  if (!frame || !job || !job.id) return false;
+  if (frame.getAttribute("data-job") !== String(job.id)) return false;
+  if (frame.getAttribute("data-resume-identity") !== resumePreviewIdentity(job)) return false;
+  const have = String(frame.getAttribute("src") || frame.src || "").split("?")[0];
+  return have === resumePreviewUrl(job.id);
+}
+
+/** Stable slots so poll innerHTML cannot destroy/move the PDF iframe. */
+function ensureDossierPreviewShell(root) {
+  let main = document.getElementById("dossier-main");
+  let host = document.getElementById("resume-preview-host");
+  let tail = document.getElementById("dossier-tail");
+  if (
+    main && host && tail
+    && main.parentNode === root
+    && host.parentNode === root
+    && tail.parentNode === root
+  ) {
+    return { main, host, tail };
+  }
+  root.innerHTML = "";
+  main = document.createElement("div");
+  main.id = "dossier-main";
+  host = document.createElement("div");
+  host.id = "resume-preview-host";
+  tail = document.createElement("div");
+  tail.id = "dossier-tail";
+  root.appendChild(main);
+  root.appendChild(host);
+  root.appendChild(tail);
+  return { main, host, tail };
+}
+
+function paintResumePreview(job, resumeHtml, resumeOpen) {
+  const host = document.getElementById("resume-preview-host");
+  if (!host) return;
+  if (!resumeOpen || !job) {
+    if (host.firstChild) host.innerHTML = "";
+    return;
+  }
+  const frame = document.getElementById("resume-preview-frame");
+  const mount = document.getElementById("resume-preview-mount");
+  if (
+    frame && mount
+    && host.contains(mount) && mount.contains(frame)
+    && canReuseResumePreviewFrame(frame, job)
+  ) {
+    return;
+  }
+  host.innerHTML = resumeHtml || "";
+  mountResumePreview(job);
+}
+
+/** Keep the PDF iframe across dossier re-renders (poll) so Chrome does not flash white. */
 function mountResumePreview(job) {
   const mount = document.getElementById("resume-preview-mount");
   if (!mount || !jobHasDiskResume(job) || resumePanelJobId !== job.id) return;
-  const src = `/resume/${encodeURIComponent(job.id)}`;
+  const src = resumePreviewUrl(job.id);
+  const identity = resumePreviewIdentity(job);
   let frame = mount.querySelector("#resume-preview-frame");
-  if (frame && frame.getAttribute("data-job") === job.id) return;
+  if (frame && canReuseResumePreviewFrame(frame, job)) return;
   if (!frame) {
     frame = document.createElement("iframe");
     frame.id = "resume-preview-frame";
     frame.className = "resume-preview-frame";
-    frame.title = "Resume preview";
+    frame.title = `${resumeDisplayName(job) || "Resume"} preview`;
     frame.setAttribute("data-job", job.id);
+    frame.setAttribute("data-resume-identity", identity);
     frame.src = src;
     mount.appendChild(frame);
-  } else {
-    frame.setAttribute("data-job", job.id);
-    frame.src = src;
+    return;
   }
+  frame.setAttribute("data-job", job.id);
+  frame.setAttribute("data-resume-identity", identity);
+  const have = String(frame.getAttribute("src") || frame.src || "").split("?")[0];
+  if (have !== src) frame.src = src;
 }
 
 function renderJobRow(job, { nested = false, showCompany = true } = {}) {
   const bucket = queueBucket(job.status);
+  const activity = jobActivityDot(job);
+  const activityCls = activity ? ` activity-${activity}` : "";
   const outcome = fillOutcome(job);
   const tags = [];
   if (job.multi_opening) tags.push(`<span class="tag multi" title="Multiple openings in JD — filter/sort only">Multi</span>`);
@@ -1995,9 +2830,9 @@ function renderJobRow(job, { nested = false, showCompany = true } = {}) {
   const selected = job.id === selectedId ? " selected" : "";
   const nestedCls = nested ? " nested" : "";
   return `<div class="job-row${selected}${nestedCls}" role="button" tabindex="0" data-id="${escapeHtml(job.id)}">
-    <div class="status-rail ${bucket}" title="${escapeHtml(statusLabel(job.status))}"></div>
+    <div class="status-rail ${bucket}${activityCls}" title="${escapeHtml(statusLabel(job.status))}"></div>
     <div>
-      ${showCompany ? `<div class="co">${escapeHtml(job.company) || "(fetching…)"}</div>` : ""}
+      ${showCompany ? `<div class="co">${escapeHtml(job.company) || "(fetching…)"}${companyApplyCountBadgeHtml(job)}</div>` : ""}
       <div class="ttl">${escapeHtml(job.title) || ""}</div>
       ${tags.length ? `<div class="meta-line">${tags.join("")}</div>` : ""}
       ${outcome && (bucket === "stuck" || bucket === "ready")
@@ -2041,8 +2876,8 @@ function renderList() {
   if (!list) return;
   document.getElementById("list-boot-msg")?.remove();
   populateSourceFilter();
-  updateFiltersChrome();
   const visible = visibleJobs();
+  updateFiltersChrome(visible.length);
   const emptyEl = document.getElementById("filter-empty");
   if (!visible.length) {
     list.innerHTML = "";
@@ -2079,7 +2914,7 @@ function renderList() {
   } else {
     const groupKeyFn = groupBy === "source"
       ? (j => j.source || "(unknown source)")
-      : (j => j.company || "(unknown)");
+      : (j => companyKey(j));
     const groups = new Map();
     for (const j of visible) {
       const key = groupKeyFn(j);
@@ -2142,6 +2977,8 @@ function renderList() {
             ? `latest ${jobPostedDisplay(latest).approx ? "~" : ""}${formatDate(jobPostedDisplay(latest).iso)}`
             : ""].filter(Boolean);
       if (hasMultiOpening) metaParts.push("multi");
+      const activity = jobActivityDot({ status: priorityStatus });
+      const activityCls = activity ? ` activity-${activity}` : "";
       const dotColor = STATUS_COLORS[priorityStatus] || "#7a828c";
       return `
         <div class="job-row group-header${groupActive ? " selected" : ""}" role="button" tabindex="0" data-group="${escapeHtml(key)}">
@@ -2149,9 +2986,9 @@ function renderList() {
           <div>
             <div class="co">
               ${!expanded && priorityStatus
-                ? `<span class="status-dot" style="background:${dotColor}" title="${escapeHtml(statusLabel(priorityStatus))}"></span>`
+                ? `<span class="status-dot${activityCls}"${activity ? "" : ` style="background:${dotColor}"`} title="${escapeHtml(statusLabel(priorityStatus))}"></span>`
                 : ""}
-              ${escapeHtml(key) || "(fetching…)"} <span class="count">${items.length} roles</span>
+              ${escapeHtml(groupBy === "company" ? (latest.company || key) : key) || "(fetching…)"}${groupBy === "company" ? companyApplyCountBadgeHtml(key) : ""} <span class="count">${items.length} roles</span>
             </div>
             ${metaParts.length ? `<div class="group-meta">${metaParts.map(m => escapeHtml(m)).join(" · ")}</div>` : ""}
           </div>
@@ -2168,10 +3005,10 @@ function renderList() {
     const id = row.getAttribute("data-id");
     row.addEventListener("click", e => {
       e.stopPropagation();
-      selectJob(id);
+      selectJob(id, { appliedFocus: true });
     });
     row.addEventListener("keydown", e => {
-      if (e.key === "Enter") selectJob(id);
+      if (e.key === "Enter") selectJob(id, { appliedFocus: true });
     });
   });
   list.querySelectorAll(".job-row.group-header[data-group]").forEach(row => {
@@ -2184,7 +3021,7 @@ function renderList() {
   syncListSelection();
 }
 
-function selectJob(id) {
+function selectJob(id, opts = {}) {
   selectedId = id;
   const job = jobs.find(j => j.id === id);
   if (job) {
@@ -2195,6 +3032,12 @@ function selectJob(id) {
     }
     if (resumePanelJobId && resumePanelJobId !== job.id) {
       resumePanelJobId = null;
+    }
+    if (queue === "applied") {
+      // Sidebar pick → dossier-only focus; tracking-table row keeps table visible.
+      if (opts.appliedFocus) appliedTableHidden = true;
+      // Scroll so action buttons (Fill / Resume / Fast copy) stay in view.
+      scrollToAppliedDetail = true;
     }
   }
   activityEvents = synthesizeTimelineFromJob(job);
@@ -2211,6 +3054,30 @@ function isAggregatorHost(url) {
   } catch (_) {
     return false;
   }
+}
+
+function isEasyApplyJob(job) {
+  if (!job) return false;
+  if (job.easy_apply === true) return true;
+  if (job.deleted_reason === "easy_apply") return true;
+  if (job.status === "skipped_easy_apply") return true;
+  const kind = String(job.apply_kind || "").trim().toLowerCase().replace(/-/g, "_");
+  if (kind === "easy_apply") return true;
+  const detail = String(job.status_detail || "").toLowerCase();
+  if (detail.includes("easy apply") && (job.status === "deleted" || job.status === "skipped_easy_apply")) {
+    return true;
+  }
+  return false;
+}
+
+/** True when the visible apply link is still LinkedIn/Indeed/etc. (not resolved to company ATS). */
+function applyUrlNeedsResolution(job) {
+  if (!job || isEasyApplyJob(job)) return false;
+  const href = applicationHref(job);
+  if (!href || !isAggregatorHost(href)) return false;
+  const res = job.apply_url_resolution;
+  if (res && res.confidence === "high" && res.url && !isAggregatorHost(res.url)) return false;
+  return true;
 }
 
 function applicationHref(job) {
@@ -2367,6 +3234,29 @@ const JD_COPY_ICON_SVG = `<svg viewBox="0 0 16 16" aria-hidden="true" focusable=
 const JD_COPIED_ICON_SVG = `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
   <path fill="currentColor" d="M13.53 4.22a.75.75 0 0 1 0 1.06l-6.5 6.5a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 1 1 1.06-1.06L6.5 10.19l5.97-5.97a.75.75 0 0 1 1.06 0z"/>
 </svg>`;
+
+const MARK_APPLIED_ICON_SVG = `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+  <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M3.1 8.15 6.45 11.5 12.9 4.4"/>
+</svg>`;
+
+const DELETE_ICON_SVG = `<svg class="icon-trash" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+  <path fill="currentColor" d="M5 1.25h6v1.1H5V1.25zM1.75 3.5h12.5v1.35H1.75V3.5zM3.6 5.9h8.8v7.35A1.65 1.65 0 0 1 10.75 14.9h-5.5A1.65 1.65 0 0 1 3.6 13.25V5.9zm2 1.5v5.1h1.35V7.4H5.6zm3.45 0v5.1H10.4V7.4H9.05z"/>
+</svg>`;
+
+const CANCEL_ICON_SVG = `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+  <circle cx="8" cy="8" r="5.75" fill="none" stroke="currentColor" stroke-width="1.65"/>
+  <path fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" d="M4.75 4.75 11.25 11.25"/>
+</svg>`;
+
+/** Icon-only dossier action button (Fast copy, Mark applied, Delete, Cancel). */
+function dossierIconBtnHtml({ id, theme, open, title, ariaLabel, onclick, icon }) {
+  const openCls = open ? " open" : "";
+  return `<button type="button" class="act btn-icon btn-icon-${theme}${openCls}"
+    ${id ? `id="${id}"` : ""}
+    title="${escapeAttr(title)}"
+    aria-label="${escapeAttr(ariaLabel || title)}"
+    onclick="${escapeAttr(onclick)}">${icon}</button>`;
+}
 
 /** Raw JD source text (same field the renderer consumes), for clipboard copy. */
 function jdCopySourceText(job) {
@@ -2531,7 +3421,10 @@ function jobHasResumeOnFile(job) {
 
 function resumeDisplayName(job) {
   if (!job) return "";
-  const p = job.resume_path || "";
+  if (job.resume_display_name && jobHasDiskResume(job)) {
+    return String(job.resume_display_name);
+  }
+  const p = job.resume_by_company_path || "";
   if (p && jobHasDiskResume(job)) {
     const base = p.split(/[/\\]/).pop();
     if (base) return base;
@@ -2602,7 +3495,7 @@ function idMetaHtml(job, appHref) {
   const push = (html) => { if (html) parts.push(html); };
   const sep = `<span class="sep">·</span>`;
 
-  push(escapeHtml(job.company || "(fetching…)"));
+  push(escapeHtml(job.company || "(fetching…)") + companyApplyCountBadgeHtml(job));
   if (job.location) push(escapeHtml(job.location));
 
   const { mode, approx: modeApprox } = jobWorkModeDisplay(job);
@@ -2631,7 +3524,17 @@ function idMetaHtml(job, appHref) {
   if (appHref) {
     let host = appHref;
     try { host = new URL(appHref).hostname.replace(/^www\./, ""); } catch (_) { /* keep */ }
-    hostHtml = `<a class="meta-host" href="${escapeHtml(appHref)}" target="_blank" rel="noopener" title="${escapeHtml(appHref)}">${escapeHtml(host)}</a>`;
+    const unresolved = applyUrlNeedsResolution(job);
+    const hostTitle = unresolved
+      ? `${appHref} — company ATS apply link not resolved yet (LinkedIn/aggregator)`
+      : appHref;
+    const hostCls = unresolved ? "meta-host unresolved" : "meta-host";
+    hostHtml = `<a class="${hostCls}" href="${escapeHtml(appHref)}" target="_blank" rel="noopener" title="${escapeHtml(hostTitle)}">${escapeHtml(host)}</a>`;
+    if (unresolved && job.id) {
+      hostHtml += ` <button type="button" class="linkish resolve-apply-btn"
+        title="Search for the company ATS apply URL (does not submit, does not sign in to LinkedIn)"
+        onclick="${escapeAttr(`event.stopPropagation(); resolveApplyUrl('${jsStringEscape(job.id)}')`)}">Resolve ATS</button>`;
+    }
   }
   if (hostHtml) push(hostHtml);
 
@@ -2684,6 +3587,11 @@ function renderFillPopover(job) {
       ? "Force PartyRock Testing, then dummy fill (overrides PartyRock off only for this run)"
       : "Forces PartyRock for this run even though header toggle is off")
     : "Regenerate tailored resume, then fill";
+  const resumeOnlyBlocked = ACTIVE_PROGRESS_STATUSES.has(job.status)
+    || HOLD_BUSY_STATUSES.has(job.status)
+    || queueBucket(job.status) === "applied"
+    || queueBucket(job.status) === "deleted";
+  const jid = jsStringEscape(job.id);
   return `<div class="dossier-popover" id="fill-pop" role="menu">
     <div class="pop-title" data-pin-toggle title="Click to pin/unpin this menu">Fill options · pin</div>
     <label class="opt${withResumeDisabled ? " disabled" : ""}">
@@ -2694,6 +3602,11 @@ function renderFillPopover(job) {
       <input type="radio" name="fill-mode" value="tailor"${mode === "tailor" || withResumeDisabled ? " checked" : ""}>
       <span>Tailor + fill<span class="opt-desc">${tailorDesc}</span></span>
     </label>
+    <div class="divider"></div>
+    <button type="button" class="pop-btn" ${resumeOnlyBlocked ? "disabled" : ""}
+      title="PartyRock + compile PDF, then stop — no form fill"
+      onclick="${escapeAttr(`event.stopPropagation(); executeResumeOnly('${jid}')`)}">Generate resume only</button>
+    <div class="opt-desc" style="padding:4px 2px 0">PartyRock + compile PDF, then stop — no form fill</div>
   </div>`;
 }
 
@@ -2709,12 +3622,14 @@ function renderResumePopover(job) {
       ? "Skip PartyRock (no PDF)"
       : "No resume on file";
   const jid = jsStringEscape(job.id);
-  const midFill = PROGRESS_STATUSES.has(job.status);
+  const midFill = ACTIVE_PROGRESS_STATUSES.has(job.status);
   // UI-011: hide Skip-no-PDF when PartyRock header is already OFF (same outcome).
   const showTreatToggle = testModeEnabled && partyRockEnabled;
   return `<div class="dossier-popover" id="resume-pop" role="menu">
     <div class="pop-title" data-pin-toggle title="Click to pin/unpin this menu">Resume · pin</div>
-    <div class="resume-status ${statusCls}" id="resume-status">${escapeHtml(statusText)}</div>
+    <div class="resume-status ${statusCls}" id="resume-status"${onDisk
+      ? ` role="button" tabindex="0" title="${escapeAttr(`Preview ${name || "resume"}`)}" onclick="${escapeAttr(`event.stopPropagation(); previewJobResume('${jid}')`)}"`
+      : ""}>${escapeHtml(statusText)}</div>
     <div class="pop-actions">
       <label class="pop-btn" style="cursor:pointer${midFill ? ";opacity:.5" : ""}" title="${midFill ? "Blocked while fill/tailor is running" : ""}">
         Upload
@@ -2723,17 +3638,8 @@ function renderResumePopover(job) {
           ${midFill ? "disabled" : ""}
           onchange="uploadJobResume('${jid}', this)" />
       </label>
-      <button type="button" class="pop-btn" id="resume-preview-btn"
-        ${onDisk ? "" : "disabled"}
-        onclick="${escapeAttr(`previewJobResume('${jid}')`)}">Preview</button>
-      <button type="button" class="pop-btn" id="resume-docs-btn"
-        ${onDisk || job.resume_by_company_path ? "" : "disabled"}
-        title="${job.resume_by_company_path
-          ? "Copy Command Center Documents/Resumes path"
-          : "Open the on-disk resume PDF in a new tab"}"
-        onclick="${escapeAttr(`openJobResumeDocuments('${jid}')`)}">${
-          job.resume_by_company_path ? "Copy path" : "Open PDF"
-        }</button>
+      <button type="button" class="pop-btn" ${midFill ? "disabled" : ""}
+        onclick="${escapeAttr(`openResumeLatexEditor('${jid}')`)}">Edit LaTeX</button>
       <button type="button" class="pop-btn danger" id="resume-clear-btn"
         ${onDisk && !midFill ? "" : "disabled"}
         onclick="${escapeAttr(`clearJobResume('${jid}')`)}">Clear</button>
@@ -2751,6 +3657,7 @@ function renderResumePopover(job) {
 }
 
 function renderDossier() {
+  snapshotResumeLatexDraft();
   const root = document.getElementById("dossier");
   if (!root) return;
 
@@ -2771,19 +3678,24 @@ function renderDossier() {
   if (resumePanelJobId && (!jobHasDiskResume(job) || resumePanelJobId !== job.id)) {
     resumePanelJobId = null;
   }
+  if (resumeLatexPanelJobId && resumeLatexPanelJobId !== job.id) {
+    resumeLatexPanelJobId = null;
+  }
+  if (copyKitPanelJobId && copyKitPanelJobId !== job.id) {
+    copyKitPanelJobId = null;
+  }
   const resumeOpen = !!(jobHasDiskResume(job) && resumePanelJobId === job.id);
   const appliedInfo = companyAppliedInfo(job.company);
   const outcome = fillOutcome(job, { full: true });
   const appHref = applicationHref(job);
-  const runInProgress = PROGRESS_STATUSES.has(job.status);
-  const canCancel = runInProgress || STUCK_STATUSES.has(job.status);
+  const runInProgress = ACTIVE_PROGRESS_STATUSES.has(job.status);
+  const canCancel = bucket === "progress" || bucket === "stuck" || bucket === "ready";
   const holdBusySame = HOLD_BUSY_STATUSES.has(job.status);
   const jid = jsStringEscape(job.id);
   // UI-002: never Fill while Ready/CAPTCHA (hold or not — use Mark applied).
   const canFill = !runInProgress && !holdBusySame
     && bucket !== "applied" && bucket !== "deleted";
   const needsRestore = bucket === "deleted";
-  const canSkip = !runInProgress && bucket !== "applied" && bucket !== "deleted";
   const canMarkApplied = bucket !== "applied" && bucket !== "deleted";
   const markAppliedTitle = bucket === "ready"
     ? "Mark applied after you submit on the employer site"
@@ -2796,7 +3708,17 @@ function renderDossier() {
       ? "This job is already running"
       : "Run selected fill option · hover for alternatives · click menu title to pin";
 
-  let html = showAppliedTable ? renderAppliedTableHtml() + '<div id="job-detail-anchor">' : "";
+  const appliedAnchorOpen = showAppliedTable && !appliedTableHidden;
+  let html = "";
+  if (showAppliedTable && !appliedTableHidden) html += renderAppliedTableHtml();
+  if (showAppliedTable && appliedTableHidden) {
+    html += `<div class="applied-focus-bar">
+      <button type="button" class="applied-table-back icon-btn"
+        onclick="setAppliedTableHidden(false)"
+        title="Show applied tracking table"
+        aria-expanded="false">▶ Show applied table</button>
+    </div>`;
+  }
 
   const delReasonsLong = bucket === "deleted" ? formatDeletedReasons(job, { short: false }) : null;
   const delReasonsShort = bucket === "deleted" ? formatDeletedReasons(job, { short: true }) : null;
@@ -2804,7 +3726,7 @@ function renderDossier() {
     ? (delReasonsShort ? `Deleted · ${delReasonsShort}` : "Deleted")
     : statusLabel(job.status);
 
-  html += `<header class="id-band">
+  html += `<header class="id-band"${appliedAnchorOpen ? ' id="job-detail-anchor"' : ""}>
     <div class="id-title-row">
       <h2>${escapeHtml(job.title) || ""}</h2>
       <span class="status-pill ${bucket}">${escapeHtml(statusPillText)}</span>
@@ -2819,7 +3741,7 @@ function renderDossier() {
       ? `<div class="fill-outcome${bucket === "ready" ? " ok" : ""}">${escapeHtml(outcome)}</div>` : ""}
     ${ashbySpamHintHtml(job)}
     ${bucket === "ready"
-      ? `<div class="ready-exit-hint">Exit Ready: Mark as applied after you submit on the employer site, or close the fill browser when done reviewing (we never auto-submit). Cancel is unavailable on Ready.</div>`
+      ? `<div class="ready-exit-hint">Exit Ready: Mark as applied after you submit on the employer site, or close the fill browser when done reviewing (we never auto-submit). Cancel stops the run and keeps this job in Ready.</div>`
       : ""}
     ${bucket === "deleted" && delReasonsLong
       ? `<div class="id-meta" style="margin-top:6px;margin-bottom:0">Deleted reason · ${escapeHtml(delReasonsLong)}${job.deleted_at ? ` · ${escapeHtml(formatDate(job.deleted_at))}` : ""}</div>`
@@ -2860,27 +3782,62 @@ function renderDossier() {
               onclick="${escapeAttr(`event.stopPropagation(); executeFillFace('${jid}')`)}">
               <span id="fill-label">${escapeHtml(fillLabel)}</span>
             </button>
+            <button type="button" class="act fill-menu-btn" id="fill-menu-btn"
+              ${canFill ? "" : "disabled"}
+              aria-label="Fill options" aria-haspopup="menu"
+              title="Fill options — including generate resume only"
+              onclick="toggleFillMenu(event)"><span aria-hidden="true">▾</span></button>
             ${renderFillPopover(job)}
           </div>`}
       <div class="hover-pop" id="resume-wrap">
         <button type="button" class="act ${resumeColorCls}" id="resume-btn"
-          title="${resumeOn ? (jobHasDiskResume(job) ? "Toggle resume preview · hover for options · click menu title to pin" : "Skip PartyRock (no PDF) · hover for options · click menu title to pin") : "No resume · hover to upload · click menu title to pin"}"
+          title="${resumeOn ? (jobHasDiskResume(job) ? `Preview ${escapeAttr(resumeDisplayName(job) || "resume")}` : "Skip PartyRock (no PDF)") : "No resume · click to upload"}"
           onclick="${escapeAttr(`event.stopPropagation(); executeResumeFace('${jid}')`)}">Resume</button>
+        <button type="button" class="act resume-menu-btn" id="resume-menu-btn"
+          aria-label="Resume options" aria-haspopup="menu"
+          title="Upload, edit LaTeX, or clear resume"
+          onclick="toggleResumeMenu(event)"><span aria-hidden="true">▾</span></button>
         ${renderResumePopover(job)}
       </div>
+      ${dossierIconBtnHtml({
+        id: "copy-kit-btn",
+        theme: "fastcopy",
+        open: copyKitPanelJobId === job.id,
+        title: "Fast copy",
+        ariaLabel: "Fast copy",
+        onclick: `event.stopPropagation(); toggleCopyKitPanel('${jid}')`,
+        icon: JD_COPY_ICON_SVG,
+      })}
       ${canMarkApplied
-        ? `<button class="act" type="button" onclick="${escapeAttr(`markSubmitted('${jid}')`)}"
-            title="${escapeAttr(markAppliedTitle)}">Mark as applied</button>`
-        : ""}
-      ${canSkip
-        ? `<button class="act quiet" type="button" onclick="${escapeAttr(`skipJob('${jid}')`)}"
-            title="Soft-delete — moves to Deleted (Restore anytime)">Skip</button>`
+        ? dossierIconBtnHtml({
+          theme: "applied",
+          title: markAppliedTitle,
+          ariaLabel: "Mark as applied",
+          onclick: `markSubmitted('${jid}')`,
+          icon: MARK_APPLIED_ICON_SVG,
+        })
         : ""}
       ${canCancel
-        ? `<button class="act danger" type="button" onclick="${escapeAttr(`cancelJob('${jid}')`)}">Cancel</button>` : ""}
-      <button class="act quiet" type="button" onclick="${escapeAttr(`deleteJob('${jid}')`)}"
-        title="${bucket === "applied" ? "Soft-delete an applied record (asks for confirmation)" : "Move to Deleted"}">Delete</button>
+        ? dossierIconBtnHtml({
+          theme: "danger",
+          title: "Cancel",
+          ariaLabel: "Cancel",
+          onclick: `cancelJob('${jid}')`,
+          icon: CANCEL_ICON_SVG,
+        })
+        : ""}
+      ${dossierIconBtnHtml({
+        theme: "danger",
+        title: bucket === "applied"
+          ? "Soft-delete an applied record (asks for confirmation)"
+          : "Move to Deleted",
+        ariaLabel: "Delete",
+        onclick: `deleteJob('${jid}')`,
+        icon: DELETE_ICON_SVG,
+      })}
     </div>
+    ${renderCopyKitPanel(job)}
+    ${renderResumeLatexPanel(job)}
     ${otherN > 0
       ? `<div class="same-co-link">
           <button type="button" class="linkish"
@@ -2891,10 +3848,9 @@ function renderDossier() {
         </div>`
       : `<div class="same-co-link muted">No other roles at ${escapeHtml(job.company || "this company")}.</div>`}
     ${renderSiblingPanel(job)}
-    ${renderResumePanel(job)}
   </section>`;
 
-  html += `<div class="section" style="border-bottom:0">
+  let afterHtml = `<div class="section" style="border-bottom:0">
     <div class="sec-head">
       <span class="micro">Evidence · JD</span>
       <div class="sec-head-right">
@@ -2905,31 +3861,44 @@ function renderDossier() {
   </div>`;
 
   if (job.qa_log && job.qa_log.length) {
-    html += `<div class="section"><div class="sec-head"><span class="micro">Q&amp;A history</span></div><div class="qa-log">`;
+    afterHtml += `<div class="section"><div class="sec-head"><span class="micro">Q&amp;A history</span></div><div class="qa-log">`;
     for (const qa of job.qa_log) {
-      html += `<div class="item"><div class="q">${escapeHtml(qa.question || "")}</div><div class="a">→ ${escapeHtml(qa.answer)}</div></div>`;
+      afterHtml += `<div class="item"><div class="q">${escapeHtml(qa.question || "")}</div><div class="a">→ ${escapeHtml(qa.answer)}</div></div>`;
     }
-    html += `</div></div>`;
+    afterHtml += `</div></div>`;
   }
 
-  if (showAppliedTable) html += "</div>";
+  const { main, tail } = ensureDossierPreviewShell(root);
+  main.innerHTML = html;
+  tail.innerHTML = afterHtml;
+  paintResumePreview(job, renderResumePanel(job), resumeOpen);
 
-  // Preserve PDF iframe across poll re-renders so scroll position stays put.
-  const heldFrame = document.getElementById("resume-preview-frame");
-  const heldJob = heldFrame?.getAttribute("data-job") || null;
-  if (heldFrame) heldFrame.remove();
+  const latexEditor = document.getElementById("resume-latex-editor");
+  if (latexEditor) {
+    latexEditor.addEventListener("input", () => {
+      const draft = resumeLatexDrafts.get(job.id);
+      if (!draft) return;
+      draft.source = latexEditor.value;
+      draft.dirty = true;
+      draft.error = "";
+    });
+  }
 
-  root.innerHTML = html;
-
-  if (resumeOpen) {
-    const mount = document.getElementById("resume-preview-mount");
-    if (mount) {
-      if (heldFrame && heldJob === job.id) {
-        mount.appendChild(heldFrame);
-      } else {
-        mountResumePreview(job);
-      }
-    }
+  const latexDraft = resumeLatexDrafts.get(job.id);
+  const resumeIdent = resumePreviewIdentity(job);
+  if (
+    resumeLatexPanelJobId === job.id
+    && !ACTIVE_PROGRESS_STATUSES.has(job.status)
+    && latexDraft
+    && !latexDraft.loading
+    && !latexDraft.saving
+    && !latexDraft.dirty
+    && latexDraft.loadedFor
+    && latexDraft.loadedFor !== resumeIdent
+  ) {
+    queueMicrotask(() => {
+      if (resumeLatexPanelJobId === job.id) openResumeLatexEditor(job.id);
+    });
   }
 
   bindDossierPopoverHandlers(job);
@@ -2937,7 +3906,10 @@ function renderDossier() {
   if (scrollToAppliedDetail) {
     scrollToAppliedDetail = false;
     requestAnimationFrame(() => {
-      document.getElementById("job-detail-anchor")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const el = document.getElementById("job-detail-anchor")
+        || document.querySelector(".path-band")
+        || document.getElementById("dossier");
+      el?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   }
 }
@@ -2970,20 +3942,6 @@ function bindDossierPopoverHandlers(job) {
     wrap.querySelector(".dossier-popover")?.addEventListener("mousedown", e => {
       e.stopPropagation();
     });
-    // Touch / no-hover: first face click pins instead of executing.
-    if (window.matchMedia && window.matchMedia("(hover: none)").matches) {
-      const face = wrap.querySelector(":scope > .act");
-      if (face && !face.dataset.touchPinBound) {
-        face.dataset.touchPinBound = "1";
-        face.addEventListener("click", e => {
-          if (!wrap.classList.contains("open")) {
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            wrap.classList.add("open");
-          }
-        }, true);
-      }
-    }
   }
 }
 
@@ -2993,7 +3951,7 @@ function executeFillFace(jobId) {
   if (_fillFaceBusyJobs.has(jobId)) return;
   const job = jobs.find(j => j.id === jobId);
   if (!job) return;
-  if (PROGRESS_STATUSES.has(job.status) || HOLD_BUSY_STATUSES.has(job.status)) {
+  if (ACTIVE_PROGRESS_STATUSES.has(job.status) || HOLD_BUSY_STATUSES.has(job.status)) {
     alert("Fill blocked — this job is already running or held Ready/CAPTCHA.");
     return;
   }
@@ -3007,17 +3965,44 @@ function executeFillFace(jobId) {
 function executeResumeFace(jobId) {
   const job = jobs.find(j => j.id === jobId);
   if (!job) return;
-  if (PROGRESS_STATUSES.has(job.status)) {
-    alert("Resume upload/clear blocked while fill/tailor is running. Cancel first.");
+  // Preview is read-only — never block while fill/tailor is running.
+  if (jobHasDiskResume(job)) {
+    previewJobResume(jobId);
     return;
   }
-  if (jobHasDiskResume(job)) {
-    // Toggle preview panel: show if hidden, hide if shown.
-    toggleResumePanel(jobId);
+  if (ACTIVE_PROGRESS_STATUSES.has(job.status)) {
+    alert("Resume upload/clear blocked while fill/tailor is running. Cancel first.");
     return;
   }
   // No PDF — open file picker (hover menu also offers upload / treat-as-on-file).
   document.getElementById("resume-upload-input")?.click();
+}
+
+function toggleFillMenu(event) {
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  document.getElementById("fill-wrap")?.classList.toggle("open");
+}
+
+function toggleResumeMenu(event) {
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  document.getElementById("resume-wrap")?.classList.toggle("open");
+}
+
+function executeResumeOnly(jobId) {
+  if (_fillFaceBusyJobs.has(jobId)) return;
+  const job = jobs.find(j => j.id === jobId);
+  if (!job) return;
+  if (ACTIVE_PROGRESS_STATUSES.has(job.status) || HOLD_BUSY_STATUSES.has(job.status)) {
+    alert("Generate resume blocked — this job is already running or held Ready/CAPTCHA.");
+    return;
+  }
+  document.getElementById("fill-wrap")?.classList.remove("open");
+  _fillFaceBusyJobs.add(jobId);
+  Promise.resolve(startJobFillMode(jobId, "resume-only")).finally(() => {
+    _fillFaceBusyJobs.delete(jobId);
+  });
 }
 
 function toggleTreatResumeOnFile(jobId, on) {
@@ -3044,30 +4029,15 @@ function toggleTreatResumeOnFile(jobId, on) {
 function previewJobResume(jobId) {
   const job = jobs.find(j => j.id === jobId);
   if (!jobHasDiskResume(job)) return;
+  resumeLatexPanelJobId = null;
+  copyKitPanelJobId = null;
   resumePanelJobId = jobId;
   renderDossier();
 }
 
-function openJobResumeDocuments(jobId) {
-  const job = jobs.find(j => j.id === jobId);
-  if (!job) return;
-  // UI-030: by-company path → copy Finder path; else open on-disk PDF.
-  if (job.resume_by_company_path) {
-    const path = job.resume_by_company_path;
-    try {
-      navigator.clipboard?.writeText(path);
-    } catch (_) { /* ignore */ }
-    alert(`Copied Documents/Resumes path:\n${path}\n\nFinder: Command Center → Documents → Resumes`);
-    return;
-  }
-  if (jobHasDiskResume(job)) {
-    window.open(`/resume/${encodeURIComponent(jobId)}`, "_blank", "noopener");
-  }
-}
-
 async function clearJobResume(jobId) {
   const job = jobs.find(j => j.id === jobId);
-  if (job && PROGRESS_STATUSES.has(job.status)) {
+  if (job && ACTIVE_PROGRESS_STATUSES.has(job.status)) {
     alert("Clear resume blocked while fill/tailor is running. Cancel first.");
     return;
   }
@@ -3084,9 +4054,20 @@ async function startJobFillMode(jobId, mode) {
   // Test Mode can bypass (dummy fill). Real mode without PDF must not claim
   // skip — use Tailor instead (UI-006).
   // tailor → force PartyRock even if a resume is already on disk
-  let normalized = mode === "tailor" || mode === "with-resume" ? mode : "tailor";
+  // resume-only → PartyRock + compile/publish, then stop (no form fill)
+  let normalized = mode === "tailor" || mode === "with-resume" || mode === "resume-only"
+    ? mode
+    : "tailor";
   if (normalized === "retry") normalized = "with-resume";
   const job = jobs.find(j => j.id === jobId);
+  if (normalized === "resume-only") {
+    await startJob(jobId, {
+      skipPartyrock: false,
+      forcePartyrock: true,
+      resumeOnly: true,
+    });
+    return;
+  }
   if (normalized === "with-resume" && !jobHasDiskResume(job) && !testModeEnabled) {
     alert("No resume on disk — upload a PDF or choose Tailor + fill.");
     return;
@@ -3137,7 +4118,7 @@ function synthesizeTimelineFromJob(job) {
       reconstructed: true,
     });
   }
-  if (job.resume_path && ["ready_for_review", "applied", "filling", "navigating", "tailoring", "stuck", "blocked_captcha"].includes(status)) {
+  if (job.resume_path && ["ready_for_review", "applied", "filling", "navigating", "tailoring", "resume_ready", "stuck", "blocked_captcha"].includes(status)) {
     events.push({
       time: "—",
       event: "resume",
@@ -3192,6 +4173,7 @@ function renderTimeline() {
 
 function render() {
   try {
+    rebuildCompanyAppliedCounts();
     renderStats();
     renderList();
     renderDossier();
@@ -3276,6 +4258,7 @@ function bindOpsChrome() {
   const clearFilters = () => clearListFilters();
   document.getElementById("clear-filters-btn")?.addEventListener("click", clearFilters);
   document.getElementById("filters-popover-clear")?.addEventListener("click", clearFilters);
+  document.getElementById("filters-today")?.addEventListener("click", applyTodayFilterPreset);
 
   // Hover/focus-within shows add-URL panel; click pins for touch/keyboard.
   document.getElementById("add-job-btn")?.addEventListener("click", e => {
@@ -3345,6 +4328,23 @@ function bindOpsChrome() {
   document.getElementById("timeline-head")?.addEventListener("click", () => {
     if (timelineCollapsed) setTimelineCollapsed(false);
   });
+  // Re-arm the 10s timer while the user is still interacting with the timeline
+  // (pointer, scroll, wheel) — pointerdown alone misses scroll-through reading.
+  const tlPane = document.getElementById("timeline-pane");
+  tlPane?.addEventListener("pointerdown", armTimelineAutoCollapseOnInteraction);
+  tlPane?.addEventListener("scroll", armTimelineAutoCollapseOnInteraction, true);
+  tlPane?.addEventListener("wheel", armTimelineAutoCollapseOnInteraction, { passive: true });
+  // Collapse when focus / click moves outside the timeline.
+  document.addEventListener("pointerdown", e => {
+    if (timelineCollapsed) return;
+    if (eventInsideTimeline(e.target)) return;
+    setTimelineCollapsed(true);
+  }, true);
+  document.addEventListener("focusin", e => {
+    if (timelineCollapsed) return;
+    if (eventInsideTimeline(e.target)) return;
+    setTimelineCollapsed(true);
+  }, true);
 
   document.getElementById("add-job-url")?.addEventListener("keydown", e => {
     if (e.key === "Enter") { e.preventDefault(); addJobByUrl(); }
@@ -3396,6 +4396,31 @@ async function apiPost(url, body, opts = {}) {
     }
   }
   return { res, data, ok: res.ok, status: res.status };
+}
+
+async function resolveApplyUrl(jobId) {
+  const { ok, data } = await apiPost(
+    `/api/jobs/${encodeURIComponent(jobId)}/resolve-apply`,
+    { write: true },
+    { failLabel: "Resolve apply" },
+  );
+  if (!ok) return;
+  const conf = data.confidence || "low";
+  const url = data.url || "";
+  if (conf === "medium") {
+    alert(
+      "Found a possible ATS link but confidence is medium — not overwriting apply URL.\n"
+      + (url || "")
+    );
+  } else if (conf !== "high") {
+    const reason = data.reason || "";
+    let msg = "Could not resolve a company ATS apply URL.";
+    if (reason === "easy_apply") msg = "Easy Apply listings are left on LinkedIn.";
+    else if (reason === "no_ats_host") msg = "Search did not find a known ATS apply URL.";
+    else if (reason === "not_needed") msg = "This job already has a company/ATS apply URL.";
+    alert(msg);
+  }
+  await poll();
 }
 
 async function submitAnswer(jobId) {
@@ -3471,8 +4496,16 @@ function applyFillStartLocally(jobId, { skipPartyrock, testMode }) {
     ? `${prefix}Starting fill…`
     : `${prefix}Tailoring resume via PartyRock…`;
   job.updated_at = new Date().toISOString();
-  if (queue !== "progress" && queue !== "all") setQueue("progress");
+  // Stay on the current tab (usually Open). Status change drops the job from
+  // the Open list; the dossier still shows this selectedId so tailoring is visible.
+  syncPollTimers();
   render();
+}
+
+/** Drop list ETag + JSON cache so the next poll must fetch a body (not 304). */
+function invalidateJobsListCache() {
+  lastJobsJSON = null;
+  lastJobsEtag = null;
 }
 
 async function startJob(jobId, opts = {}) {
@@ -3481,9 +4514,10 @@ async function startJob(jobId, opts = {}) {
     const ok = await confirmTestModeFill();
     if (!ok) return;
   }
-  const forcePartyrock = !!opts.forcePartyrock;
+  const resumeOnly = !!opts.resumeOnly;
+  const forcePartyrock = !!opts.forcePartyrock || resumeOnly;
   let skipPartyrock;
-  if (forcePartyrock) {
+  if (forcePartyrock || resumeOnly) {
     skipPartyrock = false;
   } else if (typeof opts.skipPartyrock === "boolean") {
     skipPartyrock = opts.skipPartyrock;
@@ -3499,14 +4533,17 @@ async function startJob(jobId, opts = {}) {
       skip_partyrock: skipPartyrock,
       partyrock: !skipPartyrock,
       force_partyrock: forcePartyrock,
+      resume_only: resumeOnly,
     }),
   });
   if (res.status === 409) {
     const d = await res.json().catch(() => ({}));
     alert(d.error || "Can't start — this job is already running.");
+    invalidateJobsListCache(); // force poll to drop optimistic status (not 304)
   } else if (!res.ok) {
     const d = await res.json().catch(() => ({}));
     alert(d.error || `Fill failed (${res.status})`);
+    invalidateJobsListCache(); // force poll to drop optimistic status (not 304)
   } else {
     try {
       const d = await res.json();
@@ -3535,6 +4572,7 @@ function toggleTestMode() {
   }
   invalidateFillModeDefaults();
   syncTestModeToggleUI();
+  if (copyKitPanelJobId) fetchCopyKit(copyKitPanelJobId);
   render();
 }
 
@@ -3558,7 +4596,7 @@ function syncTestModeToggleUI() {
     el.classList.toggle("test-off", !testModeEnabled);
     el.setAttribute("aria-pressed", testModeEnabled ? "true" : "false");
     el.setAttribute("aria-label", testModeEnabled ? "Test mode on" : "Test mode off");
-    el.title = testModeEnabled
+    el.dataset.tooltip = testModeEnabled
       ? "Test mode ON: dummy profile + dummy resume. Fill never auto-submits."
       : "Test mode OFF: real profile. Fill never auto-submits.";
   }
@@ -3601,20 +4639,17 @@ function surfaceDeletedJob(jobId) {
   const inDeleted = job.status === "deleted" || LEGACY_SKIPPED_STATUSES.has(job.status);
   if (!inDeleted) return;
   selectedId = jobId;
-  if (queue !== "deleted") setQueue("deleted");
-  else render();
+  render();
 }
 
 function surfaceOpenJob(jobId) {
   selectedId = jobId;
-  if (queue !== "open" && queue !== "all") setQueue("open");
-  else render();
+  render();
 }
 
 function surfaceAppliedJob(jobId) {
   selectedId = jobId;
-  if (queue !== "applied") setQueue("applied");
-  else render();
+  render();
 }
 
 function applyMarkedAppliedLocally(jobId) {
@@ -3631,7 +4666,6 @@ function applyMarkedAppliedLocally(jobId) {
 async function cancelJob(jobId) {
   await apiPost(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {}, { failLabel: "Cancel" });
   await poll();
-  surfaceOpenJob(jobId);
 }
 
 async function skipJob(jobId, reason) {
@@ -3650,7 +4684,7 @@ async function skipJob(jobId, reason) {
     return;
   }
   await poll();
-  // Duplicate merge may keep this job as survivor — stay on Open.
+  // Duplicate merge may keep this job as survivor — stay on the current tab.
   if (d.merged_into && d.deleted_id && d.deleted_id !== jobId) {
     surfaceOpenJob(jobId);
   } else {
@@ -3666,8 +4700,7 @@ async function restoreJob(jobId) {
   }
   await poll();
   selectedId = jobId;
-  if (queue === "deleted") setQueue("open");
-  else render();
+  render();
 }
 
 async function markSubmitted(jobId) {
@@ -3677,7 +4710,7 @@ async function markSubmitted(jobId) {
   let msg;
   if (status === "ready_for_review") {
     msg = "Mark this job as applied? (You submit on the employer site — we never auto-submit.)";
-  } else if (PROGRESS_STATUSES.has(status) || STUCK_STATUSES.has(status)) {
+  } else if (ACTIVE_PROGRESS_STATUSES.has(status) || STUCK_STATUSES.has(status)) {
     msg = `This job is ${statusLabel(status) || status}.\n\n`
       + "Mark as applied? This cancels any running fill/tailor for this job. "
       + "Only do this if you already submitted on the employer site. We never auto-submit.";
@@ -3705,7 +4738,7 @@ async function uploadJobResume(jobId, inputEl) {
   const file = inputEl && inputEl.files && inputEl.files[0];
   if (!file) return;
   const job = jobs.find(j => j.id === jobId);
-  if (job && PROGRESS_STATUSES.has(job.status)) {
+  if (job && ACTIVE_PROGRESS_STATUSES.has(job.status)) {
     alert("Resume upload blocked while fill/tailor is running. Cancel first.");
     try { inputEl.value = ""; } catch (_) { /* ignore */ }
     return;
@@ -3767,7 +4800,7 @@ async function emptyDeleted() {
     if (!ok) return;
     jobs = jobs.filter(j => j.status !== "deleted");
     if (selectedId && !jobs.some(j => j.id === selectedId)) selectedId = null;
-    lastJobsJSON = null; // force poll to accept server list
+    invalidateJobsListCache(); // force poll to accept server list (not 304)
     render();
     await poll();
   } finally {
@@ -3899,7 +4932,7 @@ async function runDiscover(fresh = false) {
   const startLabel = fresh
     ? "Starting fresh…"
     : ((discoveryState && discoveryState.resume_available) ? "Continuing previous run…" : "Discovering…");
-  btn.title = startLabel;
+  btn.dataset.tooltip = startLabel;
   btn.setAttribute("aria-label", startLabel);
   const res = await fetch("/api/discover", {
     method: "POST",
@@ -4134,14 +5167,14 @@ function syncDiscoverUI() {
       btn.disabled = false;
       btn.classList.add("running");
       btn.innerHTML = `${DISCOVER_ABORT_ICON_SVG}<span class="btn-spinner" aria-hidden="true"></span>`;
-      btn.title = "Abort discovery (stop)";
+      btn.dataset.tooltip = "Abort discovery (stop)";
       btn.setAttribute("aria-label", "Abort discovery");
     } else {
       btn.disabled = false;
       btn.classList.remove("running");
       btn.innerHTML = DISCOVER_ICON_SVG;
       btn.setAttribute("aria-label", "Start discovery");
-      btn.title = "Start discovery";
+      btn.dataset.tooltip = "Start discovery";
     }
   }
   if (wrap) wrap.classList.toggle("discovering", running);
@@ -4155,6 +5188,7 @@ function updateStatusBar(runtime) {
   if (!bar || !text) return;
   const disc = runtime && runtime.discovery;
   const jobs = (runtime && runtime.running_jobs) || [];
+  bar.classList.remove("activity-ready", "activity-active");
   if (disc && disc.running) {
     bar.classList.add("visible", "discovery");
     text.textContent = disc.phase_label
@@ -4168,6 +5202,8 @@ function updateStatusBar(runtime) {
     bar.classList.add("visible");
     bar.classList.remove("discovery");
     const j = jobs[0];
+    const activity = jobActivityDot(j);
+    if (activity) bar.classList.add(`activity-${activity}`);
     text.textContent = `${j.company || "Job"} — ${statusLabel(j.status)}`;
     if (meta) meta.textContent = jobs.length > 1 ? `+${jobs.length - 1} more` : (j.title || "");
     return;
@@ -4233,31 +5269,50 @@ async function loadActivity() {
 }
 
 let lastJobsJSON = null;
-let _firstPollDone = false;
 
-/** If the active queue section is empty but another has work, jump there once. */
-function maybeAutoSelectQueue() {
-  if (_firstPollDone || !jobs.length) return;
-  if (visibleJobs().length) {
-    _firstPollDone = true;
+let _pollSeq = 0;
+let lastJobsEtag = null;
+
+const POLL_JOBS_MS_ACTIVE = 3000;
+const POLL_JOBS_MS_IDLE = 10000;
+const POLL_STATUS_MS_ACTIVE = 1500;
+const POLL_STATUS_MS_IDLE = 5000;
+
+let _jobsPollTimer = null;
+let _statusPollTimer = null;
+/** null = not yet scheduled; true/false = active vs idle cadence */
+let _pollTimersActive = null;
+
+function hasActivePipelineJobs(list) {
+  for (const j of list || []) {
+    const b = queueBucket(j && j.status);
+    if (b === "progress" || b === "stuck" || b === "ready") return true;
+  }
+  return false;
+}
+
+/** Slow /api/jobs + /api/status when nothing is in progress/stuck/ready. */
+function syncPollTimers(forceActive) {
+  const active = forceActive != null ? !!forceActive : hasActivePipelineJobs(jobs);
+  if (
+    _pollTimersActive === active
+    && _jobsPollTimer != null
+    && _statusPollTimer != null
+  ) {
     return;
   }
-  const buckets = ["stuck", "ready", "progress", "open", "applied"];
-  for (const q of buckets) {
-    if (q === queue) continue;
-    const prev = queue;
-    queue = q;
-    const n = visibleJobs().length;
-    queue = prev;
-    if (n > 0) {
-      setQueue(q);
-      _firstPollDone = true;
-      return;
-    }
-  }
-  _firstPollDone = true;
+  _pollTimersActive = active;
+  if (_jobsPollTimer != null) clearInterval(_jobsPollTimer);
+  if (_statusPollTimer != null) clearInterval(_statusPollTimer);
+  _jobsPollTimer = setInterval(
+    poll,
+    active ? POLL_JOBS_MS_ACTIVE : POLL_JOBS_MS_IDLE,
+  );
+  _statusPollTimer = setInterval(
+    pollStatus,
+    active ? POLL_STATUS_MS_ACTIVE : POLL_STATUS_MS_IDLE,
+  );
 }
-let _pollSeq = 0;
 
 
 function appliedDateKey(job) {
@@ -4329,6 +5384,15 @@ function setAppliedSortFromSelect(value) {
 function toggleAppliedSortDir() {
   appliedSortDir = appliedSortDir === "asc" ? "desc" : "asc";
   render();
+}
+
+function setAppliedTableHidden(hidden) {
+  appliedTableHidden = !!hidden;
+  renderDossier();
+}
+
+function toggleAppliedTableHidden() {
+  setAppliedTableHidden(!appliedTableHidden);
 }
 
 function trackingSortHeader(key, label) {
@@ -4434,9 +5498,9 @@ function renderAppliedTableHtml() {
       const href = applicationHref(job);
       const selected = job.id === selectedId ? " selected" : "";
       const address = appliedAddressText(job);
-      // Label "Resume" (not the path/id); same /resume/<id> open as before. Path stays in title.
+      const resumeName = resumeDisplayName(job) || "Resume";
       const resumeCell = job.resume_path
-        ? `<a href="/resume/${encodeURIComponent(job.id)}" target="_blank" rel="noopener" title="${escapeHtml(job.resume_path)}" onclick="event.stopPropagation()">Resume</a>`
+        ? `<a href="/resume/${encodeURIComponent(job.id)}" target="_blank" rel="noopener" title="${escapeHtml(resumeName)}" onclick="event.stopPropagation()">${escapeHtml(resumeName)}</a>`
         : '<span class="cell-muted">—</span>';
       const editRow = editingAppliedId === job.id ? renderAppliedEditorHtml(job) : "";
       return `
@@ -4473,23 +5537,33 @@ function renderAppliedTableHtml() {
     </div>`;
   }
 
+  const metaHint = appliedTableHidden ? "" : " · click a row for details";
+  const toggleLabel = appliedTableHidden ? "▶ Show table" : "▼ Hide table";
+  const toggleTitle = appliedTableHidden ? "Show tracking table" : "Hide tracking table";
+
   return `
-    <div class="applied-tracking">
+    <div class="applied-tracking${appliedTableHidden ? " applied-tracking-hidden" : ""}">
       <div class="applied-tracking-header">
         <div>
           <h2>Applied applications</h2>
-          <div class="applied-tracking-meta">${countText} · click a row for details</div>
+          <div class="applied-tracking-meta">${countText}${metaHint}</div>
         </div>
-        <div class="applied-tracking-sort">
-          <label>Sort
-            <select onchange="setAppliedSortFromSelect(this.value)" aria-label="Sort applied applications">
-              ${sortOptions}
-            </select>
-          </label>
-          <button type="button" onclick="toggleAppliedSortDir()" title="Toggle sort direction">${dirLabel}</button>
+        <div class="applied-tracking-actions">
+          ${appliedTableHidden ? "" : `<div class="applied-tracking-sort">
+            <label>Sort
+              <select onchange="setAppliedSortFromSelect(this.value)" aria-label="Sort applied applications">
+                ${sortOptions}
+              </select>
+            </label>
+            <button type="button" onclick="toggleAppliedSortDir()" title="Toggle sort direction">${dirLabel}</button>
+          </div>`}
+          <button type="button" class="applied-table-toggle icon-btn"
+            onclick="toggleAppliedTableHidden()"
+            title="${escapeAttr(toggleTitle)}"
+            aria-expanded="${appliedTableHidden ? "false" : "true"}">${toggleLabel}</button>
         </div>
       </div>
-      ${body}
+      ${appliedTableHidden ? "" : body}
     </div>`;
 }
 
@@ -4558,9 +5632,27 @@ function checkReadyForReviewAnnouncements(jobList) {
 async function poll() {
   const seq = ++_pollSeq;
   try {
-    const res = await fetch("/api/jobs");
+    const headers = {};
+    if (lastJobsEtag) headers["If-None-Match"] = lastJobsEtag;
+    let res = await fetch("/api/jobs", { headers });
     if (seq !== _pollSeq) return;
+    if (res.status === 304) {
+      // A forced refresh (failed Start, empty-deleted) clears lastJobsJSON so
+      // we must not keep optimistic/partial local jobs behind a 304.
+      if (lastJobsJSON == null) {
+        lastJobsEtag = null;
+        res = await fetch("/api/jobs");
+        if (seq !== _pollSeq) return;
+      } else {
+        lastPollAt = Date.now();
+        setSyncState("live");
+        syncPollTimers();
+        return;
+      }
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const etag = res.headers.get("ETag");
+    if (etag) lastJobsEtag = etag;
     const data = await res.json();
     if (seq !== _pollSeq) return;
     lastPollAt = Date.now();
@@ -4568,13 +5660,14 @@ async function poll() {
     const newJobsJSON = JSON.stringify(data.jobs || []);
     if (newJobsJSON === lastJobsJSON && hold === fillHoldActive) {
       setSyncState("live");
+      syncPollTimers();
       return;
     }
     fillHoldActive = hold;
     lastJobsJSON = newJobsJSON;
     jobs = data.jobs || [];
     checkReadyForReviewAnnouncements(jobs);
-    maybeAutoSelectQueue();
+    syncPollTimers();
     // Keep unsaved inline edits intact if another job changes during polling.
     if (editingAppliedId) {
       setSyncState("live");
@@ -4750,8 +5843,8 @@ if (typeof compareByPosted !== "function") {
 }
 if (typeof datePostedSortKey !== "function") {
   globalThis.datePostedSortKey = (job) => {
-    const t = Date.parse((job && (job.date_posted || job.date_posted_fallback)) || "");
-    return Number.isNaN(t) ? -Infinity : t;
+    const t = datePostedTime(job);
+    return t == null ? -Infinity : t;
   };
 }
 if (typeof jobPostedDisplay !== "function") {
@@ -4765,6 +5858,11 @@ if (typeof jobPostedDisplay !== "function") {
     if (fb != null && fb !== "") {
       const t = Date.parse(fb);
       if (!Number.isNaN(t)) return { time: t, iso: fb, approx: true };
+    }
+    const discovered = job && job.created_at;
+    if (discovered != null && discovered !== "") {
+      const t = Date.parse(discovered);
+      if (!Number.isNaN(t)) return { time: t, iso: discovered, approx: false };
     }
     return { time: null, iso: null, approx: false };
   };
@@ -4788,8 +5886,7 @@ try {
   loadPruneSettings();
   renderDiscoverPopover(null);
   syncTestModeToggleUI();
-  setInterval(poll, 3000);
-  setInterval(pollStatus, 1500);
+  syncPollTimers();
   setInterval(pollFillMetrics, 15000);
   setInterval(loadCron, 15000);
   window.addEventListener("online", () => {

@@ -210,7 +210,20 @@ def launch_cft_with_openclaw_profile(
         "--disable-sync",
     ]
     if url:
+        try:
+            from window_geometry import chromium_window_args, work_window_plan
+
+            outer = work_window_plan(role="fill")
+            if outer is not None:
+                cmd.extend(chromium_window_args(outer))
+        except Exception:
+            pass
         cmd.append(url)
+    else:
+        # Tailor/resume path: CDP up without raising CfT (PartyRock tabs via
+        # Target.createTarget background=true in partyrock_tabs.py). Window
+        # bounds are applied when the first tab is created/shown.
+        cmd.append("--no-startup-window")
     subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,

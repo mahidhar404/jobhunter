@@ -27,6 +27,8 @@ WRITE_SCRIPT = ROOT / "scripts" / "write_discovered_jobs.py"
 
 sys.path.insert(0, str(ROOT / "scripts"))
 from jobs_lock import backup_jobs_file, locked_jobs_for_write  # noqa: E402
+from blocked_urls import load_blocked_id_set  # noqa: E402
+from text_normalize import stamp_company_key  # noqa: E402
 
 
 def _slug_title_from_id(job_id: str) -> tuple[str, str]:
@@ -50,6 +52,7 @@ def _now_iso() -> str:
 def _add_resume_dir_stubs(dry_run: bool) -> int:
     with locked_jobs_for_write() as data:
         existing = {j.get("id") for j in data.get("jobs") or [] if j.get("id")}
+        blocked_ids = load_blocked_id_set()
         added = 0
         if not RESUMES_DIR.is_dir():
             return 0
@@ -57,7 +60,7 @@ def _add_resume_dir_stubs(dry_run: bool) -> int:
             if not job_dir.is_dir() or job_dir.name.startswith("."):
                 continue
             job_id = job_dir.name
-            if job_id in existing:
+            if job_id in existing or job_id in blocked_ids:
                 continue
             if not (job_dir / "jd_full.txt").is_file() and not (job_dir / "jd.txt").is_file():
                 continue
@@ -70,6 +73,7 @@ def _add_resume_dir_stubs(dry_run: bool) -> int:
                 "source": "recovered",
                 "status": "discovered",
                 "status_detail": "Recovered from resumes/<id>/ on disk after jobs.json loss.",
+                "needs_url": True,
                 "question": None,
                 "pending_command": None,
                 "session_key": f"agent:job-hunter:job-{job_id}",
@@ -78,6 +82,7 @@ def _add_resume_dir_stubs(dry_run: bool) -> int:
                 "updated_at": _now_iso(),
                 "qa_log": [],
             }
+            stamp_company_key(entry)
             pdf = job_dir / "resume.pdf"
             if pdf.is_file():
                 try:

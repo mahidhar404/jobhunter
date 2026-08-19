@@ -2,10 +2,13 @@
 
 Hard rules:
   - Never submit; never CAPTCHA solve; control UI is review-only
-  - Pause is cooperative: takes effect between fill actions (not mid-widget /
-    mid-select / mid-upload). FILL3-009 — UX must not promise near-immediate stop.
-  - Continue resumes; callers should rely on already_correct skips so
-    human-filled / previously filled values are not thrashed
+  - Pause is instant: overlay/HUD click sets a thread-safe flag that aborts
+    in-flight type/click as soon as possible (do not finish the rest of the
+    form while paused). Continue resumes; callers rely on already_correct
+    skips so human-filled / previously filled values are not thrashed.
+  - Pause click IPC: native HUD writes a dedicated control file + sentinel
+    (never clobbered by activity persist); DOM overlay also calls the
+    Playwright ``__jhFillPauseSet`` binding.
   - CAPTCHA wait: overlay stays **visible** with play (▶) / aria **Continue**
     (human solved → click to resume). Same resume path as Enter /
     ``.captcha_continue``. Challenge gone → resume; 2nd Continue force-resumes
@@ -18,9 +21,10 @@ Hard rules:
     aria **Pause fill**. Mid-fill pause (not hold/CAPTCHA) uses ▶ /
     aria **Continue fill**.
   - Default (headed macOS): floating native HUD **outside** the browser via
-    ``fill_pause_hud.py`` (no ``#jh-fill-pause-overlay`` on ATS pages — avoids
-    Ashby bot detection). Status: ``L1 · filling Email``, hold, CAPTCHA, etc.
-  - Legacy in-page overlay: opt-in ``FASTFILL_DOM_OVERLAY=1`` only.
+    ``fill_pause_hud.py``, pinned to the fill Chrome window top-right
+    (below the titlebar). In-page overlay: opt-in ``FASTFILL_DOM_OVERLAY=1``
+    (``position:fixed; top/right`` of the fill viewport).
+  - Live activity log (last ~50 lines, PII-redacted) in the HUD / overlay.
   - FILL3-017: throttle DOM overlay re-inject when DOM mode is on
   - Never auto-close the fill browser while Pause is engaged, or after a
     terminal fill when headed ``--hold-open`` (indefinite) is active — only the
@@ -35,17 +39,30 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover — non-Unix
+    fcntl = None  # type: ignore[assignment]
+
+
+class FillPausedAbort(Exception):
+    """Raised when Pause is clicked mid-action. Do not finish the current fill."""
 
 # Overlay root id — keep stable for tests / CSS.
 OVERLAY_ID = "jh-fill-pause-overlay"
 CONTROL_GLOBAL = "__jhFillControl"
 CAPTCHA_GATE_GLOBAL = "__jhCaptchaGate"
 ACTIVITY_GLOBAL = "__jhFillActivity"
+PAUSE_BINDING = "__jhFillPauseSet"
+LOG_MAX_LINES = 50
 
 # Visible control glyphs (aria-label / title keep full Pause fill / Continue words).
 SYM_PAUSE = "❚❚"
@@ -118,6 +135,64 @@ _COMPACT_ACTION = {
     "upload": "uploading",
 }
 
+_PASSWORD_ASSIGN_RE = re.compile(
+    r"(?i)((?:passwords?|passwd|secret|token|api[_-]?key)\s*[:=]\s*)\S+"
+)
+_ACTIVITY_LOG: list[dict[str, Any]] = []
+_PAUSE_LOCK = threading.Lock()
+_PAUSE_EVENT = threading.Event()
+_CONTROL_KEYS = (
+    "paused",
+    "hold_mode",
+    "captcha_gated",
+    "pause_count",
+    "continue_count",
+    "hud_action",
+)
+
+
+def sanitize_fill_log_line(text: Any) -> str:
+    """Redact emails / phones / SSNs / secrets. Never log real PII values."""
+    raw = str(text or "")
+    try:
+        from tracing import mask_pii
+
+        raw = str(mask_pii(raw))
+    except Exception:
+        pass
+    raw = _PASSWORD_ASSIGN_RE.sub(r"\1{{SECRET}}", raw)
+    return raw.replace("\n", " ").strip()[:220]
+
+
+def get_fill_log() -> list[dict[str, Any]]:
+    return list(_ACTIVITY_LOG)
+
+
+def append_fill_log(
+    message: str,
+    *,
+    kind: str = "info",
+    persist: bool = True,
+) -> str:
+    """Append one PII-safe line (newest at bottom). Dedupes consecutive repeats."""
+    line = sanitize_fill_log_line(message)
+    if not line:
+        return ""
+    if _ACTIVITY_LOG and str(_ACTIVITY_LOG[-1].get("line") or "") == line:
+        return line
+    _ACTIVITY_LOG.append(
+        {
+            "ts": round(time.time(), 3),
+            "line": line,
+            "kind": str(kind or "info")[:24],
+        }
+    )
+    del _ACTIVITY_LOG[:-LOG_MAX_LINES]
+    _NATIVE_STATE["log"] = list(_ACTIVITY_LOG)
+    if persist and (use_native_hud() or not use_dom_overlay()):
+        _persist_activity_state()
+    return line
+
 
 def note_fill_activity(
     *,
@@ -140,9 +215,11 @@ def note_fill_activity(
     if detail is not None:
         _CURRENT_ACTIVITY["detail"] = str(detail).strip()[:160]
     _CURRENT_ACTIVITY["updated_at"] = time.time()
+    compact = format_fill_activity_compact(_CURRENT_ACTIVITY)
+    append_fill_log(compact, kind=str(_CURRENT_ACTIVITY.get("action") or "info"), persist=False)
     if use_native_hud() or not use_dom_overlay():
         _merge_native_activity()
-        _persist_native_state()
+        _persist_activity_state()
     return dict(_CURRENT_ACTIVITY)
 
 
@@ -233,7 +310,8 @@ _OVERLAY_CSS = f"""
   z-index: 2147483646 !important;
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif !important;
   pointer-events: auto !important;
-  max-width: 260px !important;
+  max-width: 320px !important;
+  width: 300px !important;
 }}
 #{OVERLAY_ID}.jh-captcha-gated {{
   /* CAPTCHA wait: keep play/Continue visible/clickable (top-right; never hide).
@@ -251,7 +329,8 @@ _OVERLAY_CSS = f"""
   border: 1px solid rgba(0,0,0,0.25) !important;
   border-radius: 8px !important;
   padding: 8px 10px !important;
-  max-width: 260px !important;
+  max-width: 320px !important;
+  width: 100% !important;
   font-size: 13px !important;
   font-weight: 600 !important;
   letter-spacing: 0.01em !important;
@@ -276,7 +355,7 @@ _OVERLAY_CSS = f"""
 #{OVERLAY_ID} .jh-status {{
   flex: 1 1 auto !important;
   min-width: 0 !important;
-  max-width: 200px !important;
+  max-width: 240px !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
   white-space: nowrap !important;
@@ -293,9 +372,26 @@ _OVERLAY_CSS = f"""
   background: rgba(255,255,255,0.92) !important;
   border-radius: 6px !important;
   padding: 4px 8px !important;
-  max-width: 240px !important;
+  max-width: 320px !important;
   line-height: 1.35 !important;
   box-shadow: 0 2px 8px rgba(0,0,0,0.12) !important;
+}}
+#{OVERLAY_ID} .jh-log {{
+  margin-top: 6px !important;
+  max-height: 180px !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  font-family: ui-monospace, Menlo, Monaco, Consolas, monospace !important;
+  font-size: 10px !important;
+  font-weight: 500 !important;
+  line-height: 1.35 !important;
+  color: #e2e8f0 !important;
+  background: rgba(15,23,42,0.94) !important;
+  border-radius: 6px !important;
+  padding: 6px 8px !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.16) !important;
 }}
 #{OVERLAY_ID} .jh-activity-tip {{
   display: none !important;
@@ -409,7 +505,7 @@ _SYNC_UI_JS = f"""
         }} else if (c.holdMode) {{
           hint.textContent = 'On hold — Continue resumes fill / Next (never submits).';
         }} else {{
-          hint.textContent = 'PAUSED between actions — edit fields, then Continue (skips already filled).';
+          hint.textContent = 'PAUSED — filling stopped. Edit fields, then Continue (skips already filled). Never submit.';
         }}
       }}
     }} else {{
@@ -421,9 +517,24 @@ _SYNC_UI_JS = f"""
       btn.classList.remove('jh-paused');
       c.holdMode = false;
       if (hint) {{
-        hint.textContent = 'Pause takes effect between fill actions (not mid-widget).';
+        hint.textContent = 'Pause stops filling immediately. Continue resumes. Never submit.';
       }}
     }}
+  }};
+  const renderLog = () => {{
+    const logEl = document.getElementById(OID + '-log');
+    if (!logEl) return;
+    const a = window[AGID] || {{}};
+    const rows = Array.isArray(a.log) ? a.log : [];
+    const lines = rows.map((row) => (row && row.line) ? String(row.line) : String(row || '')).filter(Boolean);
+    logEl.textContent = lines.join('\\n');
+    logEl.scrollTop = logEl.scrollHeight;
+  }};
+  const notifyPythonPause = (paused) => {{
+    try {{
+      const fn = window[{PAUSE_BINDING!r}];
+      if (typeof fn === 'function') fn(!!paused);
+    }} catch (_) {{}}
   }};
 """
 
@@ -453,6 +564,7 @@ _INSTALL_OVERLAY_JS = f"""
       detail: '',
       text: 'idle',
       compact: '— · idle',
+      log: [],
       updated_at: 0,
     }};
   }}
@@ -476,6 +588,7 @@ _INSTALL_OVERLAY_JS = f"""
       const btn = document.getElementById(OID + '-btn');
       const hint = document.getElementById(OID + '-hint');
       if (btn) syncButton(btn, hint);
+      renderLog();
       return root;
     }}
     root = document.createElement('div');
@@ -494,7 +607,12 @@ _INSTALL_OVERLAY_JS = f"""
     const hint = document.createElement('div');
     hint.className = 'jh-hint';
     hint.id = OID + '-hint';
-    hint.textContent = 'Pause takes effect between actions (not mid-field).';
+    hint.textContent = 'Pause stops filling immediately. Continue resumes. Never submit.';
+    const logBox = document.createElement('pre');
+    logBox.className = 'jh-log';
+    logBox.id = OID + '-log';
+    logBox.setAttribute('aria-label', 'Fill activity log');
+    logBox.setAttribute('role', 'log');
     const tip = document.createElement('div');
     tip.className = 'jh-activity-tip';
     tip.id = OID + '-tip';
@@ -504,6 +622,7 @@ _INSTALL_OVERLAY_JS = f"""
     const refreshStatus = () => {{
       tip.textContent = activityText();
       syncButton(btn, hint);
+      renderLog();
     }};
     const openTip = () => {{
       if (window[CGATE]) return;
@@ -523,6 +642,7 @@ _INSTALL_OVERLAY_JS = f"""
     const sync = () => {{
       syncButton(btn, hint);
       tip.textContent = activityText();
+      renderLog();
     }};
     btn.addEventListener('click', (ev) => {{
       ev.preventDefault();
@@ -540,6 +660,7 @@ _INSTALL_OVERLAY_JS = f"""
           c.pauseCount = (c.pauseCount || 0) + 1;
           if (window[CGATE]) c.holdMode = true;
         }}
+        notifyPythonPause(!!c.paused);
         sync();
         return;
       }}
@@ -549,10 +670,12 @@ _INSTALL_OVERLAY_JS = f"""
         c.continueCount = (c.continueCount || 0) + 1;
         c.holdMode = false;
       }}
+      notifyPythonPause(!!c.paused);
       sync();
     }}, true);
     root.appendChild(btn);
     root.appendChild(hint);
+    root.appendChild(logBox);
     root.appendChild(tip);
     sync();
     const mount = () => {{
@@ -681,6 +804,13 @@ _PUSH_ACTIVITY_JS = f"""
     const st = status ? status.textContent : (a.compact || '');
     if (st) btn.setAttribute('title', a11y + ' — ' + st);
   }}
+  const logEl = document.getElementById(OID + '-log');
+  if (logEl) {{
+    const rows = Array.isArray(a.log) ? a.log : [];
+    const lines = rows.map((row) => (row && row.line) ? String(row.line) : String(row || '')).filter(Boolean);
+    logEl.textContent = lines.join('\\n');
+    logEl.scrollTop = logEl.scrollHeight;
+  }}
   return {{
     ok: true,
     text: (window[AGID] && window[AGID].text) || '',
@@ -697,6 +827,8 @@ _DEFAULT_CONTINUE_SENTINEL = _RESULTS_DIR / ".fill_continue"
 _NATIVE_STATE_PATH = _RESULTS_DIR / ".fill_pause_state.json"
 
 # Python-side pause state (native HUD + sentinel path). DOM overlay uses page globals.
+# Activity (log/status/pid) lives in the state file; Pause clicks live in a *separate*
+# control file so status writes cannot clobber a HUD Pause click.
 _NATIVE_STATE: dict[str, Any] = {
     "paused": False,
     "hold_mode": False,
@@ -707,6 +839,7 @@ _NATIVE_STATE: dict[str, Any] = {
     "hud_stop": 0,
     "fill_chrome_pid": None,
     "job_id": None,
+    "log": [],
 }
 _hud_proc: subprocess.Popen | None = None
 _last_hud_action_seen: str | None = None
@@ -715,6 +848,197 @@ _last_hud_action_seen: str | None = None
 def fill_pause_state_path() -> Path:
     env = (os.environ.get("FASTFILL_FILL_PAUSE_STATE") or "").strip()
     return Path(env).expanduser() if env else _NATIVE_STATE_PATH
+
+
+def fill_pause_control_path() -> Path:
+    """Dedicated Pause/Continue file — never overwritten by activity persist."""
+    return fill_pause_state_path().parent / ".fill_pause_control.json"
+
+
+def _flock_json_update(path: Path, updater) -> dict[str, Any]:
+    """Atomically read-modify-write JSON under an exclusive flock."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+", encoding="utf-8") as fh:
+        if fcntl is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                pass
+        fh.seek(0)
+        raw = fh.read()
+        try:
+            data = json.loads(raw) if raw.strip() else {}
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        updater(data)
+        fh.seek(0)
+        fh.truncate()
+        fh.write(json.dumps(data, indent=2))
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except Exception:
+            pass
+        return data
+
+
+def _read_json_file(path: Path) -> dict[str, Any]:
+    try:
+        if not path.is_file():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_pause_sentinel(paused: bool) -> None:
+    path = fill_pause_force_sentinel_path()
+    try:
+        if paused:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("paused\n", encoding="utf-8")
+        else:
+            path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _apply_control_dict(data: dict[str, Any]) -> None:
+    if not data:
+        return
+    for key in _CONTROL_KEYS:
+        if key in data:
+            _NATIVE_STATE[key] = data[key]
+    paused = bool(_NATIVE_STATE.get("paused"))
+    if paused:
+        _PAUSE_EVENT.set()
+    else:
+        _PAUSE_EVENT.clear()
+
+
+def _persist_control_state() -> None:
+    def _upd(data: dict[str, Any]) -> None:
+        for key in _CONTROL_KEYS:
+            data[key] = _NATIVE_STATE.get(key)
+        data["updated_at"] = time.time()
+
+    try:
+        _flock_json_update(fill_pause_control_path(), _upd)
+    except Exception:
+        pass
+
+
+def _persist_activity_state() -> None:
+    def _upd(data: dict[str, Any]) -> None:
+        data["activity"] = _NATIVE_STATE.get("activity")
+        data["text"] = _NATIVE_STATE.get("text")
+        data["compact"] = _NATIVE_STATE.get("compact")
+        data["log"] = list(_ACTIVITY_LOG)
+        data["updated_at"] = time.time()
+        if _NATIVE_STATE.get("fill_chrome_pid") is not None:
+            data["fill_chrome_pid"] = _NATIVE_STATE.get("fill_chrome_pid")
+        if _NATIVE_STATE.get("job_id") is not None:
+            data["job_id"] = _NATIVE_STATE.get("job_id")
+        data["hud_stop"] = _NATIVE_STATE.get("hud_stop") or 0
+        # Preserve HUD-owned drag margins.
+
+    try:
+        _flock_json_update(fill_pause_state_path(), _upd)
+    except Exception:
+        pass
+
+
+def _persist_native_state() -> None:
+    """Write activity (+ hud_stop / pid). Pause flags go to the control file."""
+    _persist_activity_state()
+
+
+def request_fill_pause(
+    paused: bool,
+    *,
+    via: str = "api",
+    hold_mode: bool | None = None,
+) -> dict[str, Any]:
+    """Thread-safe Pause/Continue. HUD, CDP binding, and tests all go through here."""
+    with _PAUSE_LOCK:
+        was = bool(_NATIVE_STATE.get("paused"))
+        want = bool(paused)
+        _NATIVE_STATE["paused"] = want
+        if hold_mode is not None:
+            _NATIVE_STATE["hold_mode"] = bool(hold_mode) if want else False
+        elif not want:
+            _NATIVE_STATE["hold_mode"] = False
+        if want and not was:
+            _NATIVE_STATE["pause_count"] = int(_NATIVE_STATE.get("pause_count") or 0) + 1
+            _NATIVE_STATE["hud_action"] = "pause"
+            _PAUSE_EVENT.set()
+        elif (not want) and was:
+            _NATIVE_STATE["continue_count"] = int(_NATIVE_STATE.get("continue_count") or 0) + 1
+            _NATIVE_STATE["hud_action"] = "continue"
+            _PAUSE_EVENT.clear()
+        elif want:
+            _PAUSE_EVENT.set()
+        else:
+            _PAUSE_EVENT.clear()
+        _write_pause_sentinel(want)
+        _persist_control_state()
+    if want and not was:
+        append_fill_log("paused — filling stopped", kind="paused")
+    elif (not want) and was:
+        append_fill_log("resumed — continue fill", kind="resumed")
+    return _native_pause_snapshot() | {"via": via}
+
+
+def is_fill_paused_now(*, sync_disk: bool = True) -> bool:
+    """Instant cooperative flag. Checks sentinel + control file + memory."""
+    if force_pause_sentinel_present():
+        _NATIVE_STATE["paused"] = True
+        _PAUSE_EVENT.set()
+        return True
+    if sync_disk:
+        try:
+            ctrl = _read_json_file(fill_pause_control_path())
+            if ctrl:
+                _apply_control_dict(ctrl)
+        except Exception:
+            pass
+    if _PAUSE_EVENT.is_set() or bool(_NATIVE_STATE.get("paused")):
+        return True
+    return False
+
+
+def abort_if_paused() -> None:
+    """Raise ``FillPausedAbort`` if Pause is engaged — call in tight fill loops."""
+    if is_fill_paused_now():
+        raise FillPausedAbort("fill paused")
+
+
+async def run_cancellable(coro, *, poll_s: float = 0.05):
+    """Await *coro* but cancel it as soon as Pause is clicked."""
+    task = asyncio.ensure_future(coro)
+    try:
+        while True:
+            if task.done():
+                return task.result()
+            if is_fill_paused_now():
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=0.2)
+                except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                    pass
+                raise FillPausedAbort("paused during in-flight action")
+            done, _pending = await asyncio.wait({task}, timeout=max(0.03, float(poll_s)))
+            if done:
+                return task.result()
+    except FillPausedAbort:
+        raise
+    except asyncio.CancelledError:
+        if is_fill_paused_now():
+            raise FillPausedAbort("paused during in-flight action") from None
+        raise
 
 
 def use_dom_overlay() -> bool:
@@ -816,48 +1140,47 @@ def _merge_native_activity() -> None:
     _NATIVE_STATE["activity"] = act
     _NATIVE_STATE["text"] = act["text"]
     _NATIVE_STATE["compact"] = act["compact"]
+    act["log"] = list(_ACTIVITY_LOG)
+    _NATIVE_STATE["log"] = act["log"]
     _NATIVE_STATE["updated_at"] = time.time()
 
 
-def _persist_native_state() -> None:
-    path = fill_pause_state_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {k: v for k, v in _NATIVE_STATE.items() if not str(k).startswith("_")}
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        tmp.replace(path)
-    except Exception:
-        pass
-
-
 def _load_native_state_from_disk() -> None:
-    path = fill_pause_state_path()
-    try:
-        if not path.is_file():
-            return
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return
+    """Load activity from the state file and Pause flags from the control file."""
+    data = _read_json_file(fill_pause_state_path())
+    if data:
         for key in (
-            "paused",
-            "hold_mode",
-            "captcha_gated",
-            "pause_count",
-            "continue_count",
-            "hud_action",
             "fill_chrome_pid",
             "job_id",
             "hud_margin_right",
             "hud_margin_top",
+            "hud_stop",
+            "text",
+            "compact",
         ):
             if key in data:
                 _NATIVE_STATE[key] = data[key]
         act = data.get("activity")
         if isinstance(act, dict):
             _CURRENT_ACTIVITY.update(act)
-    except Exception:
-        pass
+        log = data.get("log")
+        if isinstance(log, list):
+            _ACTIVITY_LOG.clear()
+            for row in log[-LOG_MAX_LINES:]:
+                if isinstance(row, dict) and row.get("line"):
+                    _ACTIVITY_LOG.append(row)
+                elif isinstance(row, str) and row.strip():
+                    _ACTIVITY_LOG.append({"ts": 0, "line": row, "kind": "info"})
+            _NATIVE_STATE["log"] = list(_ACTIVITY_LOG)
+        # Backward compat: old HUDs wrote paused into the state file.
+        if any(k in data for k in _CONTROL_KEYS) and not fill_pause_control_path().is_file():
+            _apply_control_dict(data)
+    ctrl = _read_json_file(fill_pause_control_path())
+    if ctrl:
+        _apply_control_dict(ctrl)
+    if force_pause_sentinel_present():
+        _NATIVE_STATE["paused"] = True
+        _PAUSE_EVENT.set()
 
 
 def _native_pause_snapshot() -> dict[str, Any]:
@@ -879,7 +1202,7 @@ def _consume_hud_action() -> str | None:
         return None
     _last_hud_action_seen = str(action)
     _NATIVE_STATE["hud_action"] = None
-    _persist_native_state()
+    _persist_control_state()
     return str(action)
 
 
@@ -957,9 +1280,18 @@ def reset_native_pause_state() -> None:
         }
     )
     _last_hud_action_seen = None
+    _PAUSE_EVENT.clear()
+    _ACTIVITY_LOG.clear()
+    _NATIVE_STATE["log"] = []
+    _write_pause_sentinel(False)
+    try:
+        fill_pause_control_path().unlink(missing_ok=True)
+    except Exception:
+        pass
     note_fill_activity(layer=None, action="idle", label="", detail="")
     _merge_native_activity()
-    _persist_native_state()
+    _persist_activity_state()
+    _persist_control_state()
 
 
 def resolve_fill_pause(*, headed: bool, fill_pause: bool | None = None) -> bool:
@@ -1045,8 +1377,10 @@ async def set_fill_pause_captcha_gate(page, active: bool) -> dict[str, Any]:
             )
         else:
             _NATIVE_STATE["hold_mode"] = False
+        _write_pause_sentinel(bool(_NATIVE_STATE.get("paused")))
         _merge_native_activity()
-        _persist_native_state()
+        _persist_control_state()
+        _persist_activity_state()
         return {
             "captcha_gated": bool(active),
             "paused": bool(_NATIVE_STATE.get("paused")),
@@ -1104,7 +1438,15 @@ async def enter_hold_continue_mode(
 
 
 async def install_fill_pause_on_context(context) -> None:
-    """Survive navigations: inject on every new document (DOM mode only)."""
+    """CDP pause binding on every context; DOM overlay init-script when opted in."""
+    async def _on_pause(_source, paused=None):
+        request_fill_pause(bool(paused), via="cdp_binding")
+        return {"ok": True, "paused": bool(paused)}
+
+    try:
+        await context.expose_binding(PAUSE_BINDING, _on_pause)
+    except Exception:
+        pass
     if not use_dom_overlay():
         return
     try:
@@ -1120,6 +1462,7 @@ async def push_fill_activity(page, act: dict[str, Any] | None = None) -> dict[st
     payload = dict(act or _CURRENT_ACTIVITY)
     payload["text"] = format_fill_activity_text(payload)
     payload["compact"] = format_fill_activity_compact(payload)
+    payload["log"] = list(_ACTIVITY_LOG)
     if use_native_hud() or not use_dom_overlay():
         _CURRENT_ACTIVITY.update(payload)
         _merge_native_activity()
@@ -1181,30 +1524,11 @@ async def set_fill_paused(
     page, paused: bool, *, hold_mode: bool = False
 ) -> dict[str, Any]:
     """Programmatic pause/resume (tests / sentinel / hold)."""
+    snap = request_fill_pause(bool(paused), via="set_fill_paused", hold_mode=hold_mode)
+    if page is not None:
+        _last_paused_known[_page_inject_key(page)] = bool(paused)
     if use_native_hud() or not use_dom_overlay():
-        was = bool(_NATIVE_STATE.get("paused"))
-        _NATIVE_STATE["paused"] = bool(paused)
-        if paused:
-            _NATIVE_STATE["hold_mode"] = hold_mode or bool(_NATIVE_STATE.get("hold_mode"))
-        else:
-            _NATIVE_STATE["hold_mode"] = False
-        if _NATIVE_STATE["paused"] and not was:
-            _NATIVE_STATE["pause_count"] = int(_NATIVE_STATE.get("pause_count") or 0) + 1
-        if (not _NATIVE_STATE["paused"]) and was:
-            _NATIVE_STATE["continue_count"] = int(_NATIVE_STATE.get("continue_count") or 0) + 1
-        _merge_native_activity()
-        _persist_native_state()
-        if page is not None:
-            key = _page_inject_key(page)
-            _last_paused_known[key] = bool(paused)
-        return {
-            "paused": bool(_NATIVE_STATE["paused"]),
-            "holdMode": bool(_NATIVE_STATE.get("hold_mode")),
-            "pauseCount": _NATIVE_STATE.get("pause_count"),
-            "continueCount": _NATIVE_STATE.get("continue_count"),
-            "captcha_gated": bool(_NATIVE_STATE.get("captcha_gated")),
-            "via": "native_hud",
-        }
+        return snap
     js = f"""
     (payload) => {{
       const want = !!(payload && payload.paused);
@@ -1217,7 +1541,7 @@ async def set_fill_paused(
         paused: false, holdMode: false, pauseCount: 0, continueCount: 0
       }};
       if (!window[AGID]) {{
-        window[AGID] = {{ layer: null, action: 'idle', label: '', detail: '', text: '', compact: '' }};
+        window[AGID] = {{ layer: null, action: 'idle', label: '', detail: '', text: '', compact: '', log: [] }};
       }}
       const c = window[GID];
       const was = !!c.paused;
@@ -1230,6 +1554,7 @@ async def set_fill_paused(
       const btn = document.getElementById(OID + '-btn');
       const hint = document.getElementById(OID + '-hint');
       syncButton(btn, hint);
+      renderLog();
       return {{
         paused: !!c.paused,
         holdMode: !!c.holdMode,
@@ -1244,10 +1569,10 @@ async def set_fill_paused(
         out = await page.evaluate(
             js, {"paused": bool(paused), "hold_mode": bool(hold_mode)}
         ) or {}
-        _last_paused_known[_page_inject_key(page)] = bool(paused)
         return out
     except Exception as e:
-        return {"paused": bool(paused), "holdMode": bool(hold_mode), "error": str(e)[:120]}
+        snap["error"] = str(e)[:120]
+        return snap
 
 
 def _note_pause(report: dict | None, **kwargs: Any) -> None:
@@ -1276,7 +1601,7 @@ async def wait_while_paused(
     report: dict | None = None,
     *,
     enabled: bool | None = None,
-    poll_s: float = 0.25,
+    poll_s: float = 0.08,
 ) -> dict[str, Any]:
     """Block while the in-page Pause button (or pause sentinel) is active.
 
@@ -1457,10 +1782,10 @@ async def wait_while_paused(
                 pauseCount=st.get("pauseCount"),
             )
             print(
-                "\n*** FILL PAUSED (between actions) — edit the form in Chrome, "
-                "then click ▶ / Continue on the floating Job Hunter HUD "
-                "(outside the browser — never auto-closes while paused). "
-                "Pause is not mid-widget. During CAPTCHA the HUD shows "
+                "\n*** FILL PAUSED — filling stopped immediately. "
+                "Edit the form in Chrome, then click ▶ / Continue on the "
+                "Job Hunter HUD (top-right of the fill window — never auto-closes "
+                "while paused). Never submit. During CAPTCHA the HUD shows "
                 "▶ / Continue (same as Enter / .captcha_continue). ***\n",
                 flush=True,
             )
@@ -1521,10 +1846,13 @@ async def drain_pause_before_close(
 
 
 async def ensure_fill_pause_ready(page, report: dict | None = None) -> None:
-    """Start native HUD or inject DOM overlay when headed fill starts."""
+    """Start native HUD or inject DOM overlay when headed fill starts.
+
+    Does **not** reset Pause — navigations must not wipe a human Pause click.
+    Call ``reset_native_pause_state`` once at fill-run start.
+    """
     if report is not None and not report.get("fill_pause_enabled", True):
         return
-    reset_native_pause_state()
     info: dict[str, Any]
     if use_native_hud():
         info = start_native_hud()

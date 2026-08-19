@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import random
 from typing import Any
@@ -51,16 +52,26 @@ def stealth_action_jitter_ms() -> int:
 
 
 async def stealth_field_pause(page, report: dict | None) -> None:
-    """Small random delay before touching the next field."""
+    """Small random delay before touching the next field. Aborts if Pause is on."""
     if not report or not report.get("stealth_enabled"):
         return
     ms = stealth_action_jitter_ms()
     if ms <= 0 or page is None:
         return
-    try:
-        await page.wait_for_timeout(ms)
-    except Exception:
-        pass
+    remaining = ms / 1000.0
+    while remaining > 0:
+        try:
+            from fill_pause import abort_if_paused
+
+            abort_if_paused()
+        except ImportError:
+            pass
+        slice_s = min(0.05, remaining)
+        try:
+            await page.wait_for_timeout(int(slice_s * 1000))
+        except Exception:
+            await asyncio.sleep(slice_s)
+        remaining -= slice_s
 
 
 async def stealth_fill_visible_text(
@@ -93,17 +104,37 @@ async def stealth_fill_visible_text(
 
     delay = stealth_typing_delay_ms()
     try:
-        await loc.click(timeout=3000)
+        from fill_pause import FillPausedAbort, abort_if_paused, run_cancellable
+    except ImportError:
+        FillPausedAbort = Exception  # type: ignore[misc,assignment]
+        abort_if_paused = None  # type: ignore[assignment]
+        run_cancellable = None  # type: ignore[assignment]
+
+    try:
+        if abort_if_paused:
+            abort_if_paused()
+        click = loc.click(timeout=3000)
+        await (run_cancellable(click) if run_cancellable else click)
+    except FillPausedAbort:
+        raise
     except Exception:
         pass
     try:
+        if abort_if_paused:
+            abort_if_paused()
         await loc.fill("", timeout=3000)
+    except FillPausedAbort:
+        raise
     except Exception:
         try:
             await loc.clear(timeout=3000)
         except Exception:
             pass
-    await loc.type(str(value)[:2000], delay=delay)
+    type_coro = loc.type(str(value)[:2000], delay=delay)
+    if run_cancellable is not None:
+        await run_cancellable(type_coro)
+    else:
+        await type_coro
     return {"algorithm": "stealth_type", "stealth_delay_ms": delay}
 
 

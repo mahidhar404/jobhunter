@@ -24,6 +24,23 @@ from discovery_filters import (
 )
 
 
+def test_senior_engineer_keeps():
+    """IC 'Senior Engineer' is not management_track; managers still prune."""
+    assert not is_excluded_title("Senior Engineer")
+    assert not is_excluded_title("Senior Software Engineer")
+    assert not is_excluded_title("Senior Machine Learning Engineer")
+    assert should_keep_listing(title="Senior Engineer", location="Remote, US")
+    assert auto_delete_reason(
+        title="Senior Engineer",
+        location="Remote, US",
+    ) is None
+    assert is_excluded_title("Engineering Manager")
+    assert auto_delete_reason(
+        title="Engineering Manager",
+        location="Remote, US",
+    ) == "management_track"
+
+
 def test_senior_allowed():
     assert not is_excluded_title("Senior Machine Learning Engineer")
     assert not is_excluded_title("Senior Data Scientist")
@@ -124,6 +141,13 @@ def test_iso2_country_tail_drops_non_us():
     # Indian state names on their own
     assert is_clearly_non_us_location("Karnataka, India")
     assert is_clearly_non_us_location("Telangana")
+    # Kazakhstan / other ISO-2 tails that do not collide with US states
+    assert is_clearly_non_us_location("Almaty, kz")
+    assert is_clearly_non_us_location("Almaty, KZ")
+    assert is_clearly_non_us_location("Almaty, Almaty Region, kz")
+    assert is_clearly_non_us_location("Almaty")
+    assert is_clearly_non_us_location("San Salvador, sv")
+    assert is_clearly_non_us_location("Antananarivo, MG")
 
 
 def test_sandisk_listing_auto_deletes():
@@ -145,6 +169,55 @@ def test_sandisk_listing_auto_deletes():
         company="Sandisk",
         location="Milpitas, CA, us",
     )
+
+
+def test_almaty_kz_still_prunes():
+    """Kazakhstan city + ISO-2 tail must stay a non-US prune (not re-admitted)."""
+    for loc in ("Almaty, kz", "Almaty, KZ", "Almaty, Almaty Region, kz", "Almaty"):
+        assert is_clearly_non_us_location(loc), loc
+        assert not location_matches_regions(loc, ["us"]), loc
+        assert auto_delete_reason(
+            title="Data Analyst",
+            location=loc,
+            regions=["us"],
+        ) == "non_us_location", loc
+        assert not should_keep_listing(
+            title="Data Analyst",
+            location=loc,
+            regions=["us"],
+        ), loc
+    # Bare ISO-2 country tail without a US veto
+    assert is_clearly_non_us_location("Remote, kz")
+    assert auto_delete_reason(
+        title="ML Engineer",
+        location="Remote, kz",
+        regions=["us"],
+    ) == "non_us_location"
+    # US remotes must not be dropped by the same ISO-2 path
+    assert not is_clearly_non_us_location("Remote, US")
+    assert auto_delete_reason(
+        title="ML Engineer",
+        location="Remote, US",
+        regions=["us"],
+    ) is None
+
+
+def test_delivery_hero_almaty_auto_deletes():
+    """Regression: SmartRecruiters Kazakhstan tail stayed in Open as US-undetermined."""
+    assert auto_delete_reason(
+        title="Sr. Data Analyst (Commercial team)",
+        company="Delivery Hero",
+        location="Almaty, kz",
+        url="https://jobs.smartrecruiters.com/DeliveryHero/744000143867906-sr-data-analyst-commercial-team-",
+        regions=["us"],
+    ) == "non_us_location"
+    assert not should_keep_listing(
+        title="Sr. Data Analyst (Commercial team)",
+        company="Delivery Hero",
+        location="Almaty, kz",
+        regions=["us"],
+    )
+    assert not location_matches_regions("Almaty, kz", ["us"])
 
 
 def test_non_us_location_drop():
@@ -172,6 +245,16 @@ def test_non_us_location_drop():
     assert is_clearly_non_us_location("Czech Republic - Prague")
     assert is_clearly_non_us_location("Middle East - Doha")
     assert is_clearly_non_us_location("Goiás, BRA")
+    # Every clearly-India token must be non-US under a US-only gate, even
+    # when it was added to the India-region vocabulary after NON_US.
+    assert is_clearly_non_us_location("Bihar")
+    assert is_clearly_non_us_location("Surat")
+    assert not location_matches_regions("Bihar", ["us"])
+    assert not location_matches_regions("Surat", ["us"])
+    # Georgia country disambiguation: named Georgian cities beat the US state.
+    assert is_clearly_non_us_location("Tbilisi, Georgia")
+    assert is_clearly_non_us_location("Batumi, Georgia")
+    assert not is_clearly_non_us_location("Atlanta, Georgia")
 
 
 def test_clearance_and_intel_excluded():
@@ -255,6 +338,18 @@ def test_clearance_and_intel_excluded():
     assert not requires_security_clearance(
         description="**Clearance Required** |  None\n**What You Will Do**",
     )
+    assert not requires_security_clearance(
+        description="No clearance required for this position.",
+    )
+    assert not requires_security_clearance(
+        description="This role does not require a security clearance.",
+    )
+    assert not requires_security_clearance(
+        description="Employment does not require a clearance.",
+    )
+    assert not requires_security_clearance(
+        description="A clearance is not required.",
+    )
     # Required: No but TYPE is Secret / truncated TYPE — still drop
     assert requires_security_clearance(
         description="CLEARANCE REQUIRED FOR START: No\nCLEARANCE TYPE: Secret",
@@ -274,6 +369,80 @@ def test_clearance_and_intel_excluded():
     assert not requires_security_clearance(
         description="Research that informs national policy and earns public trust.",
     )
+
+
+def test_clearance_not_required_keeps():
+    """Negated clearance labels must not prune as a positive requirement.
+
+    ``Clearance Not Required`` historically survived incomplete stripping and
+    then matched CLEARANCE_REQUIREMENT_RE's ``clearance.{0,24}required``.
+    """
+    keep_blobs = (
+        "Clearance Not Required",
+        "CLEARANCE NOT REQUIRED",
+        "Security Clearance Not Required",
+        "Clearance: Not Required",
+        "CLEARANCE REQUIRED FOR START: No",
+        "No security clearance required",
+        "This role does not require a security clearance.",
+    )
+    for desc in keep_blobs:
+        assert not requires_security_clearance(description=desc), desc
+        assert should_keep_listing(
+            title="Data Scientist",
+            location="Remote, US",
+            description=desc,
+        ), desc
+        assert auto_delete_reason(
+            title="Data Scientist",
+            location="Remote, US",
+            description=desc,
+        ) is None, desc
+    assert not requires_security_clearance(
+        title="ML Engineer - Clearance Not Required",
+        location="Austin, TX",
+    )
+    # Explicit not-required wins unless a separate positive *level* remains.
+    assert requires_security_clearance(
+        description="Clearance Not Required\nClearance Type: Secret",
+    )
+    assert requires_security_clearance(
+        description="Clearance Required: Secret",
+    )
+    assert requires_security_clearance(
+        description="This role requires an active TS/SCI clearance.",
+    )
+    assert requires_security_clearance(
+        description="Candidates must complete a polygraph.",
+    )
+    assert requires_security_clearance(
+        title="Research Scientist",
+        company="National Security Agency",
+    )
+
+
+def test_security_engineer_without_clearance_keeps():
+    """Civilian product-security titles stay keepable without clearance language."""
+    assert not requires_security_clearance(
+        title="Security Engineer",
+        company="Acme",
+        location="Remote, US",
+        description="Build detection and response for consumer products.",
+    )
+    assert should_keep_listing(
+        title="Security Engineer",
+        company="Acme",
+        location="Remote, US",
+        description="Build detection and response for consumer products.",
+    )
+    assert auto_delete_reason(
+        title="Security Engineer",
+        company="Acme",
+        location="Remote, US",
+        description="Build detection and response for consumer products.",
+    ) is None
+    # Title-only "Security Engineer" is not a clearance signal.
+    assert not requires_security_clearance(title="Security Engineer")
 
 
 def test_civilian_security_engineer_kept():
@@ -341,6 +510,18 @@ def test_yoe_extract_and_excessive():
     assert not requires_excessive_experience(description="5-7 years of experience")
     assert requires_excessive_experience(description="7+ years of experience")
     assert requires_excessive_experience(description="minimum of 10 years experience")
+    assert not requires_excessive_experience(
+        description="Preferred qualifications: 8+ years of experience."
+    )
+    assert not requires_excessive_experience(
+        description="Nice to have: 10+ years of experience."
+    )
+    assert not requires_excessive_experience(
+        description="Our team has 12 years of experience building data products."
+    )
+    assert not requires_excessive_experience(
+        description="We have 15 years of experience serving customers."
+    )
     assert should_keep_listing(
         title="Data Scientist",
         location="Remote, US",
@@ -436,6 +617,9 @@ def test_citizenship_and_greencard():
     )
     assert not requires_us_citizen_or_greencard(
         description="EEO: citizenship status is never considered."
+    )
+    assert not requires_us_citizen_or_greencard(
+        description="Citizens only may participate in this overseas program."
     )
     assert not should_keep_listing(
         title="ML Engineer",
@@ -652,7 +836,81 @@ def test_region_aware_auto_delete():
     ) == "non_us_location"
 
 
+def test_yoe_fallback_does_not_prune():
+    """Display-only fallback YOE (UI ``~``) must never move a job to Deleted."""
+    fallback_only = "7+ years of professional software/ML engineering exper"
+    assert extract_min_required_yoe(description=fallback_only) is None
+    assert extract_min_required_yoe_fallback(description=fallback_only) == 7
+    assert not requires_excessive_experience(description=fallback_only)
+    assert auto_delete_reason(
+        title="Data Scientist",
+        location="Remote, US",
+        description=fallback_only,
+    ) is None
+    assert should_keep_listing(
+        title="Data Scientist",
+        location="Remote, US",
+        description=fallback_only,
+    )
+    # Strict required floor ≥7 still prunes
+    assert auto_delete_reason(
+        title="Data Scientist",
+        location="Remote, US",
+        description="7+ years of experience required",
+    ) == "excessive_yoe"
+
+
+def test_approx_yoe_never_prunes_via_auto_delete_reason():
+    """Narrative / preferred / fallback-only YOE must not prune; strict required does.
+
+    UI may show ``~7`` from extract_min_required_yoe_fallback; that path is
+    display-only. auto_delete_reason / requires_excessive_experience use
+    extract_min_required_yoe (strict) only.
+    """
+    preferred = "Preferred qualifications: 8+ years of experience."
+    assert extract_min_required_yoe(description=preferred) is None
+    # Preferred prefix is treated as tenure/soft — no strict or fallback prune signal
+    assert extract_min_required_yoe_fallback(description=preferred) is None
+    assert auto_delete_reason(
+        title="Data Scientist",
+        location="Remote, US",
+        description=preferred,
+    ) is None
+
+    narrative = "Our team has 12 years of experience building data products."
+    assert extract_min_required_yoe(description=narrative) is None
+    assert auto_delete_reason(
+        title="Data Scientist",
+        location="Remote, US",
+        description=narrative,
+    ) is None
+
+    # Strict miss, fallback hit at N>6 (truncated exper / hyphenated junk)
+    approx_only = "7+ years of professional software/ML engineering exper"
+    assert extract_min_required_yoe(description=approx_only) is None
+    assert extract_min_required_yoe_fallback(description=approx_only) == 7
+    assert not requires_excessive_experience(description=approx_only)
+    assert auto_delete_reason(
+        title="Data Scientist",
+        location="Remote, US",
+        description=approx_only,
+    ) is None
+
+    # Explicit required floor ≥7 → prune
+    assert auto_delete_reason(
+        title="Data Scientist",
+        location="Remote, US",
+        description="7+ years of experience required",
+    ) == "excessive_yoe"
+    assert auto_delete_reason(
+        title="Data Scientist",
+        location="Remote, US",
+        description="Requires 8+ years of experience in ML.",
+    ) == "excessive_yoe"
+
+
 if __name__ == "__main__":
+    test_senior_engineer_keeps()
     test_senior_allowed()
     test_above_senior_excluded()
     test_staff_not_staffing()
@@ -660,8 +918,12 @@ if __name__ == "__main__":
     test_iso2_country_tail_keeps_us()
     test_iso2_country_tail_drops_non_us()
     test_sandisk_listing_auto_deletes()
+    test_almaty_kz_still_prunes()
+    test_delivery_hero_almaty_auto_deletes()
     test_non_us_location_drop()
     test_clearance_and_intel_excluded()
+    test_clearance_not_required_keeps()
+    test_security_engineer_without_clearance_keeps()
     test_civilian_security_engineer_kept()
     test_should_keep_listing()
     test_yoe_extract_and_excessive()
@@ -677,4 +939,6 @@ if __name__ == "__main__":
     test_location_matches_regions()
     test_region_for_location()
     test_region_aware_auto_delete()
+    test_yoe_fallback_does_not_prune()
+    test_approx_yoe_never_prunes_via_auto_delete_reason()
     print("ok")

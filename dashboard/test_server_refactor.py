@@ -20,6 +20,7 @@ No real applicant PII is used — jobs are synthetic fixtures.
 from __future__ import annotations
 
 import sys
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -43,14 +44,21 @@ def _base_patches(jobs, *, existing_resume, aborted=False):
         "_job_fill_aborted": mock.MagicMock(return_value=aborted),
         "_pipeline_stop_if_aborted": mock.MagicMock(return_value=aborted),
     }
+
+    @contextmanager
+    def _fake_locked(**_kwargs):
+        yield {"jobs": jobs}
+
     patches = [mock.patch.object(srv, name, m) for name, m in rec.items()]
+    patches.append(mock.patch.object(srv, "locked_jobs_for_write", _fake_locked))
     return rec, patches
 
 
 def _run(rec_patches, **kwargs):
     _, patches = rec_patches
-    with patches[0], patches[1], patches[2], patches[3], patches[4], \
-         patches[5], patches[6], patches[7], patches[8], patches[9]:
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
         srv._run_tailor_then_fill_body(**kwargs)
 
 
@@ -89,7 +97,7 @@ def test_skip_partyrock_test_mode_no_resume_hands_to_fill():
     assert ck.kwargs["preserve_activity"] is True
     assert ck.kwargs["restore_status"] == srv._dummy_restore_status("discovered")
     # No address is picked on the Test-Mode skip path.
-    assert "address_text" not in ck.kwargs
+    assert ck.kwargs.get("address_text") is None
 
 
 def test_existing_resume_skips_partyrock_and_fills():
@@ -98,8 +106,6 @@ def test_existing_resume_skips_partyrock_and_fills():
     rp = _base_patches([job], existing_resume=resume)
     _run(rp, job_id="j1", test_mode=True, skip_partyrock=False)
     rec = rp[0]
-    # resume_path persisted under lock, then handed to the fill engine.
-    rec["write_jobs"].assert_called()
     rec["_publish_resume_by_company"].assert_called_once()
     rec["run_hybrid_fill_dummy"].assert_called_once()
     ms_events = [c.kwargs.get("event") for c in rec["pipeline_milestone"].call_args_list]

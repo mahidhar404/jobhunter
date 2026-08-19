@@ -98,6 +98,41 @@ def test_system_timezone_nonempty():
     assert "/" in system_timezone_id() or system_timezone_id()
 
 
+def test_headed_kwargs_place_right_two_thirds():
+    from window_geometry import ScreenMetrics, chromium_window_args, right_two_thirds_outer
+
+    metrics = ScreenMetrics(
+        screen_x=0,
+        screen_y=0,
+        screen_width=1512,
+        screen_height=982,
+        visible_x=0,
+        visible_y=25,
+        visible_width=1512,
+        visible_height=887,
+        scale=2.0,
+        is_primary=True,
+    )
+    d = resolve_fill_profile_dir(job_id="geom", run_token="t3")
+    prev = os.environ.pop("FASTFILL_VIEWPORT", None)
+    try:
+        kw = build_persistent_context_kwargs(
+            profile_dir=d, headless=False, screen_metrics=metrics
+        )
+    finally:
+        if prev is None:
+            os.environ.pop("FASTFILL_VIEWPORT", None)
+        else:
+            os.environ["FASTFILL_VIEWPORT"] = prev
+    outer = right_two_thirds_outer(metrics)
+    blob = " ".join(kw.get("args") or [])
+    for flag in chromium_window_args(outer):
+        assert flag in blob
+    assert kw["_jh_window_outer"] == outer
+    assert kw["viewport"]["width"] == outer.width
+    assert kw["headless"] is False
+
+
 def test_resolve_viewport_default():
     vp = resolve_viewport()
     assert vp["width"] == 1440
@@ -243,6 +278,7 @@ if __name__ == "__main__":
     test_chrome_user_agent_matches_detected_version()
     test_system_timezone_nonempty()
     test_resolve_viewport_default()
+    test_headed_kwargs_place_right_two_thirds()
     test_wipe_profile_default_on()
     test_fill_profile_marker()
     test_exclude_markers_protect_dashboard_and_partyrock()

@@ -1,5 +1,5 @@
 {
-  "_comment": "Synthetic privacy placeholders keyed by the exact city shown in the resume header. Never sourced from profile.json. Remote/US defaults to Chicago, IL. Unknown City, ST pairs are deterministically generated and persisted by address_resolver.py.",
+  "_comment": "Privacy placeholders keyed by the exact city shown in the resume header. Never sourced from profile.json. Remote/US defaults to Chicago, IL. Unknown City, ST pairs are deterministically generated and persisted by address_resolver.py. Streets and ZIP5 codes are real publicly known apartment-style locations; unit numbers are synthetic.",
   "remote_default": {
     "city": "Chicago",
     "state": "IL"
@@ -8,8 +8,8 @@
     {
       "city": "San Francisco",
       "state": "CA",
-      "zip": "94105",
-      "street": "320 Mission Street",
+      "zip": "94103",
+      "street": "855 Brannan Street",
       "unit": "Unit 9"
     },
     {
@@ -23,120 +23,190 @@
       "city": "Seattle",
       "state": "WA",
       "zip": "98101",
-      "street": "56 Alaskan Way",
+      "street": "819 Virginia Street",
       "unit": "Apt 3C"
     },
     {
       "city": "Austin",
       "state": "TX",
       "zip": "78701",
-      "street": "742 Maple Avenue",
+      "street": "360 Nueces Street",
       "unit": "Apt 3B"
     },
     {
       "city": "Boston",
       "state": "MA",
-      "zip": "02110",
-      "street": "230 Congress Street",
+      "zip": "02108",
+      "street": "45 Province Street",
       "unit": "Apt 2B"
     },
     {
       "city": "Chicago",
       "state": "IL",
-      "zip": "60661",
-      "street": "410 West Monroe Street",
+      "zip": "60601",
+      "street": "420 East Waterside Drive",
       "unit": "Apt 9C"
     },
     {
       "city": "Denver",
       "state": "CO",
       "zip": "80202",
-      "street": "455 Pine Avenue",
+      "street": "1555 Blake Street",
       "unit": "Unit 7"
     },
     {
       "city": "Atlanta",
       "state": "GA",
       "zip": "30303",
-      "street": "540 Peachtree Street",
+      "street": "249 Peters Street SW",
       "unit": "Apt 2A"
     },
     {
       "city": "Dallas",
       "state": "TX",
       "zip": "75201",
-      "street": "215 Oak Street",
+      "street": "1500 Jackson Street",
       "unit": "Unit 12"
     },
     {
       "city": "Springfield",
       "state": "IL",
       "zip": "62701",
-      "street": "100 Example Avenue",
+      "street": "521 East Capitol Avenue",
       "unit": "Apt 1A"
     },
     {
       "city": "Orlando",
       "state": "FL",
-      "zip": "32248",
-      "street": "7091 Parkview Drive",
-      "unit": "Apt 18D",
-      "generated": true
+      "zip": "32801",
+      "street": "400 South Orange Avenue",
+      "unit": "Apt 18D"
     },
     {
       "city": "Chandler",
       "state": "AZ",
-      "zip": "85467",
-      "street": "7862 Maple Avenue",
-      "unit": "Apt 4E",
-      "generated": true
+      "zip": "85224",
+      "street": "2475 West Pecos Road",
+      "unit": "Apt 4E"
     },
     {
       "city": "Alexandria",
       "state": "VA",
-      "zip": "22540",
-      "street": "4321 Riverside Avenue",
-      "unit": "Apt 12F",
-      "generated": true
+      "zip": "22314",
+      "street": "400 North Washington Street",
+      "unit": "Apt 12F"
     },
     {
       "city": "Jersey City",
       "state": "NJ",
-      "zip": "07378",
-      "street": "8466 Riverside Avenue",
-      "unit": "Unit 6C",
-      "generated": true
+      "zip": "07302",
+      "street": "35 Hudson Street",
+      "unit": "Unit 6C"
     },
     {
       "city": "Aurora",
       "state": "CO",
-      "zip": "80553",
-      "street": "2448 Parkview Drive",
-      "unit": "Unit 17D",
-      "generated": true
+      "zip": "80014",
+      "street": "13705 East Linvale Drive",
+      "unit": "Unit 17D"
     },
     {
       "city": "San Jose",
       "state": "CA",
-      "zip": "90871",
-      "street": "7124 Oak Lane",
-      "unit": "Unit 2E",
-      "generated": true
+      "zip": "95110",
+      "street": "188 West Saint James Street",
+      "unit": "Unit 2E"
     },
     {
       "city": "Arlington",
       "state": "VA",
-      "zip": "22504",
-      "street": "6493 Cedar Street",
-      "unit": "Apt 10E",
-      "generated": true
+      "zip": "22204",
+      "street": "1200 South Scott Street",
+      "unit": "Apt 10E"
     },
     {
       "city": "Plano",
       "state": "TX",
-      "zip": "75804",
-      "street": "4074 Market Street",
-      "unit": "Apt 5F",
+      "zip": "75024",
+      "street": "5701 Granite Parkway",
+      "unit": "Apt 5F"
+    },
+    {
+      "city": "Fort Lauderdale",
+      "state": "FL",
+      "zip": "33301",
+      "street": "301 Northeast 1st Avenue",
+      "unit": "Apt 9F"
+    },
+    {
+      "city": "Broken Arrow",
+      "state": "OK",
+      "zip": "74012",
+      "street": "2808 South Aspen Avenue",
+      "unit": "Apt 2B"
+    },
+    {
+      "city": "Chula Vista",
+      "state": "CA",
+      "zip": "91911",
+      "street": "1155 Broadway",
+      "unit": "Apt 14E"
+    },
+    {
+      "city": "Oakland",
+      "state": "CA",
+      "zip": "94612",
+      "street": "388 19th Street",
+      "unit": "Apt 15E"
+    },
+    {
+      "city": "Rogers",
+      "state": "AR",
+      "zip": "72756",
+      "street": "2100 West Walnut Street",
+      "unit": "Apt 2D"
+    },
+    {
+      "city": "Hoboken",
+      "state": "NJ",
+      "zip": "07030",
+      "street": "77 Park Avenue",
+      "unit": "Apt 5B"
+    },
+    {
+      "city": "Wilmington",
+      "state": "NC",
+      "zip": "28401",
+      "street": "220 North Front Street",
+      "unit": "Apt 3C"
+    },
+    {
+      "city": "Kansas City",
+      "state": "MO",
+      "zip": "64106",
+      "street": "414 East 12th Street",
+      "unit": "Apt 2B"
+    },
+    {
+      "city": "Riverside",
+      "state": "CA",
+      "zip": "92501",
+      "street": "3900 Main Street",
+      "unit": "Unit 6"
+    },
+    {
+      "city": "Somerville",
+      "state": "MA",
+      "zip": "02143",
+      "street": "45 Union Square",
+      "unit": "Unit 3"
+    },
+    {
+      "city": "West Palm Beach",
+      "state": "FL",
+      "zip": "33301",
+      "street": "1615 Parkview Drive",
+      "unit": "Unit 14C",
       "generated": true
     }
   ]

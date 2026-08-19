@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#000000">
-<title>JOB HUNT · OPS</title>
+<title>OmniDex</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700&text=OmniDex&display=swap" rel="stylesheet">
 <style>
   :root {
     color-scheme: dark;
@@ -190,12 +193,16 @@
   }
   .brand .mark {
     flex: 0 0 auto;
-    font-family: var(--mono);
-    font-size: 11px;
+    font-family: "Orbitron", "Avenir Next Condensed", "DIN Alternate", "Futura", var(--mono), sans-serif;
+    font-size: 13px;
     font-weight: 700;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.14em;
+    line-height: 1.1;
     color: var(--cyan);
+    text-shadow: 0 0 16px var(--blue-mid);
     white-space: nowrap;
+    text-transform: none;
+    font-variant-ligatures: none;
   }
   .sync-dot {
     flex: none;
@@ -204,15 +211,19 @@
   }
   .sync-dot.warn { background: var(--amber); }
   .sync-dot.err { background: var(--red); }
+  .mission-center {
+    align-self: stretch;
+    justify-self: center;
+    width: min(50vw, 760px);
+    min-width: 0;
+    padding: 4px 0;
+  }
   .mission-stats {
     display: flex;
     align-items: stretch;
     gap: 6px;
-    max-width: 50vw;
-    margin: 0 auto;
-    justify-self: center;
     width: 100%;
-    padding: 4px 0;
+    padding: 0;
     box-sizing: border-box;
   }
   .mstat {
@@ -354,7 +365,7 @@
     background: var(--cyan-dim);
     box-shadow: 0 0 0 1px var(--blue-edge);
   }
-  .filters-toggle-label { flex: 0 1 auto; text-align: center; }
+  .filters-toggle-label { flex: 0 1 auto; text-align: center; white-space: nowrap; }
   .filters-popover {
     display: none;
     position: absolute;
@@ -466,6 +477,21 @@
     display: block;
   }
   .list-search-icon svg { width: 14px; height: 14px; display: block; }
+  .filters-popover-today {
+    width: 100%;
+    background: var(--cyan);
+    border: 1px solid var(--cyan);
+    color: var(--bg);
+    padding: 6px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    font-family: var(--mono);
+    border-radius: var(--radius-sm);
+  }
+  .filters-popover-today:hover { filter: brightness(1.08); }
   .filters-popover-clear {
     width: 100%;
     background: transparent;
@@ -582,7 +608,7 @@
   }
   .trash-badge:empty, .trash-badge[data-n="0"] { display: none; }
 
-  /* Mode = green; YOE = orange; salary = blood-orange; sources = blue. */
+  /* Mode = green; YOE = orange; salary = blood-orange; applied-count = blood-orange; sources = blue. */
   .tag.work-mode,
   .tag.mode-tag {
     color: var(--green);
@@ -590,10 +616,19 @@
     background: var(--green-dim);
   }
   .tag.yoe { color: var(--orange); border-color: var(--orange-edge); background: var(--orange-dim); }
-  .tag.salary {
+  .tag.salary,
+  .tag.applied-count {
     color: var(--blood-orange);
     border-color: var(--blood-orange-edge);
     background: var(--blood-orange-dim);
+  }
+  .tag.applied-count {
+    text-transform: none;
+    letter-spacing: 0.02em;
+    font-family: var(--mono);
+    font-weight: 700;
+    margin-left: 6px;
+    vertical-align: middle;
   }
   .tag.deleted-reason {
     color: var(--red);
@@ -686,6 +721,8 @@
   .status-rail.skipped { background: var(--text-mute); }
   .status-rail.applied { background: var(--green); }
   .status-rail.deleted { background: var(--red); }
+  .status-rail.activity-active { background: var(--orange); }
+  .status-rail.activity-ready { background: var(--green); }
   .job-row .co {
     font-weight: 600;
     font-size: 12px;
@@ -775,6 +812,8 @@
     margin-right: 5px;
     vertical-align: middle;
   }
+  .status-dot.activity-active { background: var(--orange); }
+  .status-dot.activity-ready { background: var(--green); }
   .tag {
     font-size: 9px;
     letter-spacing: 0.03em;
@@ -885,7 +924,29 @@
     white-space: nowrap;
     text-decoration: none;
   }
+  .id-meta .meta-host.unresolved {
+    color: var(--red);
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 2px;
+  }
   .id-meta .meta-host:hover { text-decoration: underline; }
+  .id-meta .meta-host.unresolved:hover { text-decoration-style: solid; }
+  .id-meta .resolve-apply-btn {
+    background: none;
+    border: 0;
+    padding: 0;
+    margin-left: 0.35em;
+    font: inherit;
+    font-size: 11px;
+    color: var(--cyan);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .id-meta .resolve-apply-btn:hover { color: #5aadff; }
 
   .source-chips {
     display: flex;
@@ -1095,6 +1156,59 @@
     padding: 4px 6px;
   }
   .act:disabled { opacity: 0.4; cursor: not-allowed; }
+  .act.btn-icon {
+    padding: 0;
+    width: 28px;
+    height: 28px;
+    justify-content: center;
+    text-transform: none;
+    letter-spacing: 0;
+    line-height: 0;
+    flex-shrink: 0;
+  }
+  .act.btn-icon svg {
+    width: 14px;
+    height: 14px;
+    display: block;
+  }
+  .act.btn-icon svg.icon-trash {
+    width: 16px;
+    height: 16px;
+  }
+  .btn-icon-fastcopy {
+    color: var(--cyan);
+    border-color: var(--blue-edge);
+    background: var(--cyan-dim);
+  }
+  .btn-icon-fastcopy:hover:not(:disabled) {
+    color: var(--cyan);
+    border-color: var(--cyan);
+    background: var(--cyan-mid);
+  }
+  .btn-icon-fastcopy.open {
+    border-color: var(--cyan);
+    box-shadow: 0 0 0 1px var(--cyan);
+  }
+  .btn-icon-applied {
+    color: var(--green);
+    border-color: var(--green-edge);
+    background: var(--green-dim);
+  }
+  .btn-icon-applied:hover:not(:disabled) {
+    color: var(--green);
+    border-color: var(--green);
+    background: var(--green-dim);
+  }
+  .btn-icon-danger {
+    color: var(--red);
+    border-color: var(--red-edge);
+    background: var(--red-dim);
+  }
+  .btn-icon-danger:hover:not(:disabled) {
+    color: var(--red);
+    border-color: var(--red);
+    background: var(--red-dim);
+  }
   .act .caret {
     font-size: 9px;
     opacity: 0.8;
@@ -1109,7 +1223,7 @@
     display: none;
   }
 
-  /* Hover-driven Fill / Resume option popovers (no caret / split button) */
+  /* Hover-driven Fill / Resume option popovers (split caret on both) */
   .hover-pop {
     position: relative;
     display: inline-flex;
@@ -1140,6 +1254,25 @@
     color: var(--red);
     border-color: var(--red);
     background: var(--red-dim);
+  }
+  #resume-wrap > #resume-btn,
+  #fill-wrap > #fill-btn {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  .act.resume-menu-btn,
+  .act.fill-menu-btn {
+    min-width: 24px;
+    justify-content: center;
+    padding: 5px 6px;
+    margin-left: -1px;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
+  #resume-wrap.open > .resume-menu-btn,
+  #fill-wrap.open > .fill-menu-btn {
+    border-color: var(--cyan);
+    background: var(--cyan-dim);
   }
   .dossier-popover {
     display: none;
@@ -1250,7 +1383,7 @@
     text-transform: none;
     letter-spacing: 0;
   }
-  .resume-status.on-file { color: var(--green); }
+  .resume-status.on-file { color: var(--green); cursor: pointer; }
   .resume-status.missing { color: var(--orange); }
 
   .same-co-link {
@@ -1362,6 +1495,8 @@
     margin-top: 8px;
     border: 1px solid var(--blue-edge);
     background: var(--cyan-dim);
+    border-radius: var(--radius-md);
+    overflow: hidden;
   }
   .resume-head {
     display: flex;
@@ -1399,6 +1534,252 @@
     font-family: var(--mono);
   }
   .resume-hide:hover { background: #1a355050; }
+  .resume-latex-panel {
+    margin-top: 8px;
+    border: 1px solid var(--blue-edge);
+    background: #071018;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    box-shadow: inset 0 1px 0 #ffffff08;
+  }
+  .resume-latex-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 38px;
+    padding: 6px 8px 6px 10px;
+    border-bottom: 1px solid var(--blue-edge);
+    background: #0b1823;
+  }
+  .resume-latex-head .micro { color: var(--cyan); }
+  .resume-latex-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 6px;
+    border: 1px solid var(--orange-edge);
+    border-radius: 999px;
+    color: var(--amber);
+    background: var(--amber-dim);
+    font-family: var(--mono);
+    font-size: 8px;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+  .resume-latex-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .resume-latex-save {
+    border: 1px solid var(--cyan);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    background: var(--cyan-dim);
+    color: var(--cyan);
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .045em;
+    text-transform: uppercase;
+  }
+  .resume-latex-save:hover:not(:disabled) {
+    background: #15374b;
+    box-shadow: 0 0 14px #20c8ff24;
+  }
+  .resume-latex-save:disabled {
+    opacity: .5;
+    cursor: wait;
+  }
+  .resume-latex-copy {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-mute);
+    font-size: 10px;
+    line-height: 1.45;
+  }
+  .resume-latex-copy code {
+    color: var(--text-dim);
+    font-family: var(--mono);
+  }
+  .resume-latex-editor {
+    display: block;
+    width: 100%;
+    min-height: 440px;
+    max-height: 72vh;
+    box-sizing: border-box;
+    resize: vertical;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    outline: 0;
+    padding: 14px;
+    background: #05080b;
+    color: #c9d6df;
+    caret-color: var(--cyan);
+    font: 12px/1.55 var(--mono);
+    tab-size: 2;
+  }
+  .resume-latex-editor:focus {
+    background: #060b0f;
+    box-shadow: inset 3px 0 0 var(--cyan);
+  }
+  .resume-latex-editor:disabled { opacity: .55; }
+  .resume-latex-foot {
+    padding: 7px 10px 9px;
+    background: #081018;
+  }
+  .resume-latex-status {
+    color: var(--text-mute);
+    font-family: var(--mono);
+    font-size: 9px;
+  }
+  .resume-latex-error {
+    max-height: 180px;
+    margin: 7px 0 0;
+    overflow: auto;
+    white-space: pre-wrap;
+    border: 1px solid var(--red-edge);
+    border-radius: var(--radius-sm);
+    padding: 8px;
+    background: var(--red-dim);
+    color: #ff9b9b;
+    font: 10px/1.45 var(--mono);
+  }
+  .copy-kit-badge-real {
+    border-color: var(--blue-edge);
+    color: var(--cyan);
+    background: var(--cyan-dim);
+  }
+  .copy-kit-panel {
+    overflow: visible;
+  }
+  .copy-kit-body {
+    padding: 6px 8px 10px;
+    background: #05080b;
+  }
+  .copy-kit-status {
+    padding: 10px 4px;
+    color: var(--text-mute);
+    font-size: 11px;
+  }
+  .copy-kit-status.copy-kit-error { color: #ff9b9b; }
+  .copy-kit-group {
+    margin-top: 8px;
+  }
+  .copy-kit-group:first-child { margin-top: 2px; }
+  .copy-kit-group-label {
+    color: var(--orange);
+    font-family: var(--mono);
+    font-size: 8px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: 4px 4px 5px;
+  }
+  .copy-kit-role {
+    margin: 4px 0 10px;
+    border: 1px solid #132230;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+  .copy-kit-role-head {
+    padding: 5px 8px;
+    background: #0b1823;
+    color: var(--text);
+    font-size: 10px;
+    letter-spacing: .02em;
+  }
+  .copy-kit-row {
+    display: grid;
+    grid-template-columns: 92px minmax(0, 1fr) 22px;
+    gap: 8px;
+    align-items: start;
+    width: 100%;
+    margin: 0;
+    padding: 7px 8px;
+    border: 0;
+    border-bottom: 1px solid #12202c;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .copy-kit-row:last-child { border-bottom: 0; }
+  .copy-kit-row:hover {
+    background: #0d1c28;
+  }
+  .copy-kit-row.copied {
+    background: #0d2418;
+  }
+  .copy-kit-row-label {
+    color: var(--cyan);
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    padding-top: 1px;
+  }
+  .copy-kit-row-value {
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .copy-kit-row-tick {
+    display: inline-flex;
+    width: 16px;
+    height: 16px;
+    color: var(--green);
+    margin-top: 1px;
+  }
+  .copy-kit-row-tick:empty { visibility: hidden; }
+  .copy-kit-row-tick svg { width: 16px; height: 16px; display: block; }
+  .copy-kit-copy { display: none; }
+  .copy-kit-bullets {
+    display: grid;
+    grid-template-columns: 92px minmax(0, 1fr) 22px;
+    gap: 8px;
+    align-items: start;
+    width: 100%;
+    margin: 0;
+    padding: 8px;
+    border: 0;
+    border-top: 1px solid #1a3d2e;
+    border-radius: 0;
+    background: #0a1a14;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .copy-kit-bullets:hover {
+    background: #0d2418;
+  }
+  .copy-kit-bullets.copied {
+    background: #0d2418;
+  }
+  .copy-kit-bullets-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .copy-kit-bullets-list li {
+    margin: 0 0 5px;
+    padding: 0;
+    word-break: break-word;
+  }
+  .copy-kit-bullets-list li:last-child { margin-bottom: 0; }
+  .copy-kit-bullets-list li::before {
+    content: "• ";
+  }
+
   .resume-preview-mount {
     width: 100%;
     height: min(85vh, 1600px);
@@ -1410,7 +1791,16 @@
     width: 100%;
     height: 100%;
     border: 0;
-    background: #fff;
+    background: #0a0a0a;
+  }
+  #resume-preview-host:empty { display: none; }
+  #resume-preview-host:not(:empty) {
+    padding: 0 16px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  #dossier-main:has(+ #resume-preview-host:not(:empty)) .path-band {
+    border-bottom: none;
+    padding-bottom: 0;
   }
 
   .timeline-pane.collapsed .tl-list,
@@ -1497,30 +1887,41 @@
 
   /* Live header actions ported from classic dashboard */
   .header-actions {
-    display: flex; gap: 10px; align-items: center; flex-wrap: nowrap;
-    padding: 3px 8px; border-left: 1px solid var(--border);
+    display: flex; gap: 5px; align-items: center; flex-wrap: nowrap;
+    padding: 4px 8px; border-left: 1px solid var(--border);
     justify-content: flex-end; max-width: none;
   }
   .ops-header { grid-template-columns: minmax(160px, max-content) 1fr auto; }
   .header-actions button, .header-actions .btnish {
-    background: transparent; border: 1px solid var(--blue-edge);
-    color: var(--cyan); padding: 3px 8px; font-size: 10px;
+    background: transparent; border: 1px solid transparent;
+    color: var(--text-dim); padding: 0 9px; font-size: 10px;
     letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer;
     font-family: var(--sans);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     box-sizing: border-box;
+    height: 30px; min-height: 30px;
+    line-height: 1;
+    transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
   }
-  .header-actions button:hover { border-color: var(--cyan); background: var(--cyan-dim); color: var(--cyan); }
+  .header-actions button:hover {
+    border-color: var(--border-hi);
+    background: var(--hover);
+    color: var(--text);
+  }
+  .header-actions button:focus-visible {
+    outline: none;
+    border-color: var(--cyan);
+    box-shadow: 0 0 0 1px var(--cyan);
+  }
   .header-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
   .header-icon-btn {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 36px; height: 36px; min-width: 36px; min-height: 36px;
+    width: 30px; height: 30px; min-width: 30px; min-height: 30px;
     padding: 0 !important;
-    color: var(--cyan);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
   }
-  .header-icon-btn svg { width: 21px; height: 21px; display: block; }
-  .header-icon-btn .icon-glyph { font-size: 22px; line-height: 1; }
+  .header-icon-btn svg { width: 17px; height: 17px; display: block; }
+  .header-icon-btn .icon-glyph { font-size: 20px; line-height: 1; }
   #quit-btn:hover { border-color: var(--red); color: var(--red); background: var(--red-dim); }
 
   .test-mode-wrap, .discover-wrap, .add-job-wrap, .prune-wrap {
@@ -1528,13 +1929,13 @@
   }
   .test-mode-toggle {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 36px; height: 36px; min-width: 36px; min-height: 36px;
+    width: 30px; height: 30px; min-width: 30px; min-height: 30px;
     padding: 0 !important;
-    border: 1px solid var(--blue-edge);
+    border: 1px solid transparent;
     background: transparent; cursor: pointer; user-select: none;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     box-sizing: border-box;
-    color: var(--cyan);
+    color: var(--text-dim);
   }
   .cron-toggle {
     display: inline-flex; align-items: center; justify-content: center;
@@ -1544,7 +1945,7 @@
     letter-spacing: 0.04em; text-transform: uppercase;
     border-radius: var(--radius-sm);
     box-sizing: border-box;
-    height: 36px; min-height: 36px;
+    height: 30px; min-height: 30px;
   }
   .cron-toggle:hover {
     border-color: var(--cyan); background: var(--cyan-dim);
@@ -1554,17 +1955,17 @@
     width: 14px; height: 14px;
   }
   .test-mode-toggle .flask-icon {
-    display: inline-flex; width: 21px; height: 21px; color: inherit;
+    display: inline-flex; width: 17px; height: 17px; color: inherit;
   }
-  .test-mode-toggle .flask-icon svg { width: 21px; height: 21px; display: block; }
+  .test-mode-toggle .flask-icon svg { width: 17px; height: 17px; display: block; }
   .test-mode-toggle.test-on {
-    color: var(--green); border-color: var(--green-edge); background: var(--green-dim);
+    color: var(--green); border-color: transparent; background: var(--green-dim);
   }
   .test-mode-toggle.test-on:hover {
     border-color: var(--green); background: var(--green-dim); color: var(--green);
   }
   .test-mode-toggle.test-off {
-    color: var(--red); border-color: var(--red-edge); background: var(--red-dim);
+    color: var(--red); border-color: transparent; background: var(--red-dim);
   }
   .test-mode-toggle.test-off:hover {
     border-color: var(--red); background: var(--red-dim); color: var(--red);
@@ -1576,6 +1977,17 @@
     z-index: 50; padding: 10px; border: 1px solid var(--border);
     background: var(--bg-elev); box-shadow: 0 12px 32px #000a;
     font-size: 11px; color: var(--text);
+    border-radius: var(--radius-md);
+  }
+  /* Consistent rounded floating surfaces, including generated dossier menus. */
+  .filters-popover,
+  .dossier-popover,
+  .test-mode-popover,
+  .discover-popover,
+  .add-job-popover,
+  .prune-popover,
+  .toast,
+  .jh-modal {
     border-radius: var(--radius-md);
   }
   /* Hit bridge on the wrap (not popover) so overflow:auto can't clip it */
@@ -1687,10 +2099,10 @@
     border-color: var(--blue-edge); color: var(--blue); background: var(--blue-dim);
   }
   #discover-btn {
-    color: var(--red); border-color: var(--red-edge); background: var(--red-dim);
+    color: var(--blue); border-color: var(--blue-edge); background: var(--blue-dim);
   }
   #discover-btn:hover {
-    color: var(--red); border-color: var(--red); background: var(--red-dim);
+    color: var(--blue); border-color: var(--blue); background: var(--blue-mid);
   }
   #discover-btn.running {
     color: var(--orange); border-color: var(--orange-edge); background: var(--orange-dim); cursor: pointer;
@@ -1714,6 +2126,42 @@
     color: var(--blue); border: 1px solid var(--blue-edge); vertical-align: 1px;
   }
 
+  /* CSS-rendered hover hints can share the app radius (native title UI cannot).
+     Use descendant (not >) so wrap-nested header buttons match too. Tooltips
+     must never capture clicks (pointer-events: none). */
+  .header-actions [data-tooltip] {
+    position: relative;
+  }
+  .header-actions [data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    z-index: 100;
+    top: calc(100% + 7px);
+    right: 0;
+    width: max-content;
+    max-width: 260px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-hi);
+    border-radius: var(--radius-md);
+    background: #0c0c0c;
+    box-shadow: 0 8px 24px #000c;
+    color: var(--text);
+    font: 10px/1.35 var(--sans);
+    letter-spacing: 0;
+    text-align: left;
+    text-transform: none;
+    white-space: normal;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 100ms ease;
+  }
+  .header-actions [data-tooltip]:hover::after,
+  .header-actions [data-tooltip]:focus-visible::after {
+    opacity: 1;
+    visibility: visible;
+  }
+
   #status-bar {
     display: none; align-items: center; gap: 10px; flex-shrink: 0;
     padding: 5px 14px; border-bottom: 1px solid var(--border);
@@ -1724,6 +2172,8 @@
     width: 7px; height: 7px; border-radius: 50%; background: var(--orange);
     animation: pulse 1.2s ease-in-out infinite; flex-shrink: 0;
   }
+  #status-bar.activity-active .pulse { background: var(--orange); }
+  #status-bar.activity-ready .pulse { background: var(--green); }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
   #status-bar .status-meta { color: var(--text-dim); font-size: 10px; }
 
@@ -1898,6 +2348,8 @@
     position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 100vw);
     background: var(--panel); border-left: 1px solid var(--border);
     display: flex; flex-direction: column; z-index: 80;
+    border-radius: var(--radius-md) 0 0 var(--radius-md);
+    overflow: hidden;
   }
   #console-pane.hidden { display: none; }
   #util-tabs {
@@ -1922,9 +2374,19 @@
   }
   .applied-tracking-header h2 { font-size: 13px; margin: 0; font-weight: 600; }
   .applied-tracking-meta { color: var(--text-dim); font-size: 11px; }
+  .applied-tracking-actions {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end;
+  }
   .applied-tracking-sort {
     display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-dim);
   }
+  .applied-tracking-hidden .applied-tracking-header { padding-bottom: 12px; }
+  .applied-table-toggle { white-space: nowrap; }
+  .applied-focus-bar {
+    padding: 10px 16px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .applied-table-back { white-space: nowrap; }
   .applied-tracking-sort select {
     font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
     padding: 3px 6px;
@@ -1996,11 +2458,11 @@
 
 <noscript>
   <div class="jh-static-fallback" style="display:block">
-  JOB HUNT · OPS — JavaScript is required. Enable JS and reload <code>http://127.0.0.1:8787/</code>.
+  OmniDex — JavaScript is required. Enable JS and reload <code>http://127.0.0.1:8787/</code>.
   </div>
 </noscript>
 <div id="jh-static-fallback" class="jh-static-fallback" role="status">
-  <strong>JOB HUNT · OPS</strong> — loading dashboard… If this line stays visible, hard-refresh or restart the server.
+  <strong>OmniDex</strong> — loading dashboard… If this line stays visible, hard-refresh or restart the server.
 </div>
 
 <div class="ops-shell" id="ops-shell" style="position:fixed;inset:0;min-height:480px;display:flex;flex-direction:column">
@@ -2008,23 +2470,25 @@
 <header class="ops-header">
   <div class="brand">
     <span class="sync-dot" id="sync-dot" title="Sync live"></span>
-    <div class="mark">JOB HUNT · OPS</div>
+    <div class="mark">OmniDex</div>
   </div>
-  <div class="mission-stats" id="mission-stats">
-    <div class="mstat stuck" data-queue="stuck" title="Stuck / CAPTCHA"><span class="n" id="stat-stuck">—</span><span class="l">Stuck</span></div>
-    <div class="mstat ready" data-queue="ready" title="Ready for review"><span class="n" id="stat-ready">—</span><span class="l">Ready</span></div>
-    <div class="mstat progress" data-queue="progress" title="In progress"><span class="n" id="stat-progress">—</span><span class="l">In progress</span></div>
-    <div class="mstat open" data-queue="open" title="Open / discovered"><span class="n" id="stat-open">—</span><span class="l">Open</span></div>
-    <div class="mstat" data-queue="applied" title="Applied tracking"><span class="n" id="stat-applied">—</span><span class="l">Applied</span></div>
-    <div class="mstat fill-metrics" id="fill-metrics" title="Eval pass-rate ratchet (dummy fills)" data-queue="">
-      <span class="n" id="fill-metrics-rate">—</span>
-      <span class="l" id="fill-metrics-ratchet" data-ok="">Fill</span>
+  <div class="mission-center">
+    <div class="mission-stats" id="mission-stats">
+      <div class="mstat stuck" data-queue="stuck" title="Stuck / CAPTCHA"><span class="n" id="stat-stuck">—</span><span class="l">Stuck</span></div>
+      <div class="mstat ready" data-queue="ready" title="Ready for review"><span class="n" id="stat-ready">—</span><span class="l">Ready</span></div>
+      <div class="mstat progress" data-queue="progress" title="In progress"><span class="n" id="stat-progress">—</span><span class="l">In progress</span></div>
+      <div class="mstat open" data-queue="open" title="Open / discovered"><span class="n" id="stat-open">—</span><span class="l">Open</span></div>
+      <div class="mstat" data-queue="applied" title="Applied tracking"><span class="n" id="stat-applied">—</span><span class="l">Applied</span></div>
+      <div class="mstat fill-metrics" id="fill-metrics" title="Eval pass-rate ratchet (dummy fills)" data-queue="">
+        <span class="n" id="fill-metrics-rate">—</span>
+        <span class="l" id="fill-metrics-ratchet" data-ok="">Fill</span>
+      </div>
     </div>
   </div>
   <div class="header-actions" id="header-actions">
     <div class="test-mode-wrap" id="test-mode-wrap">
       <button type="button" class="header-icon-btn test-mode-toggle test-on" id="test-mode-toggle"
-        title="Test mode ON: dummy profile + dummy resume. Fill never auto-submits."
+        data-tooltip="Test mode ON: dummy profile + dummy resume. Fill never auto-submits."
         aria-label="Test mode on" aria-pressed="true" onclick="toggleTestMode()">
         <span class="flask-icon" aria-hidden="true">
           <svg viewBox="0 0 16 16" focusable="false">
@@ -2046,7 +2510,7 @@
     </div>
     <div class="add-job-wrap" id="add-job-wrap">
       <button id="add-job-btn" class="header-icon-btn" type="button"
-        title="Add apply link" aria-label="Add apply link"
+        data-tooltip="Add apply link" aria-label="Add apply link"
         aria-expanded="false" aria-controls="add-job-popover">
         <svg viewBox="0 0 21 21" aria-hidden="true" focusable="false"
           fill="none" stroke="currentColor" stroke-width="1.75"
@@ -2064,7 +2528,7 @@
     </div>
     <div class="discover-wrap" id="discover-wrap">
       <button id="discover-btn" class="header-icon-btn" type="button" onclick="toggleDiscoveryRun()"
-        title="Start discovery" aria-label="Start discovery">
+        data-tooltip="Start discovery" aria-label="Start discovery">
         <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
           <path fill="currentColor" d="M8 1a.75.75 0 0 1 .75.75V9.4l2.1-2.1a.75.75 0 1 1 1.06 1.06l-3.4 3.4a.75.75 0 0 1-1.06 0l-3.4-3.4A.75.75 0 0 1 5.1 7.3l2.15 2.15V1.75A.75.75 0 0 1 8 1zM2.5 12.25a.75.75 0 0 1 .75-.75h9.5a.75.75 0 0 1 0 1.5H3.25a.75.75 0 0 1-.75-.75z"/>
         </svg>
@@ -2075,7 +2539,7 @@
     </div>
     <div class="prune-wrap" id="prune-wrap">
       <button id="trash-btn" class="header-icon-btn trash-btn" type="button" onclick="toggleDeletedView()"
-        title="Prune and deleted jobs" aria-label="Prune and deleted jobs">
+        data-tooltip="Prune and deleted jobs" aria-label="Prune and deleted jobs">
         <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
           <path fill="currentColor" d="M6 2h4l.5 1H14v1H2V3h3.5L6 2zm1 4v6H6V6h1zm3 0v6H9V6h1zM3.5 5h9l-.7 9.1A1 1 0 0 1 10.8 15H5.2a1 1 0 0 1-1-.9L3.5 5z"/>
         </svg>
@@ -2090,6 +2554,7 @@
           <label class="prune-opt"><input type="checkbox" data-prune-reason="clearance_or_intel" checked onchange="savePruneSettings()"><span>Requires clearance</span></label>
           <label class="prune-opt"><input type="checkbox" data-prune-reason="excessive_yoe" checked onchange="savePruneSettings()"><span>Excessive YOE</span></label>
           <label class="prune-opt"><input type="checkbox" data-prune-reason="citizenship_or_greencard" checked onchange="savePruneSettings()"><span>Citizenship / green card</span></label>
+          <label class="prune-opt"><input type="checkbox" data-prune-reason="stale_listing" checked onchange="savePruneSettings()"><span>Posted over 10 days ago (prevents hidden listings accumulating forever)</span></label>
         </div>
         <label class="prune-schedule">
           <span>Automatic sweep</span>
@@ -2105,19 +2570,19 @@
       </div>
     </div>
     <button class="header-icon-btn" type="button" onclick="openUtil('profile')"
-      title="Profile" aria-label="Profile">
+      data-tooltip="Profile" aria-label="Profile">
       <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
         <path fill="currentColor" d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 1.5c-2.67 0-8 1.34-8 4V15h16v-1.5c0-2.66-5.33-4-8-4z"/>
       </svg>
     </button>
     <button id="refresh-btn" class="header-icon-btn" type="button" onclick="restartDashboard()"
-      title="Refresh dashboard" aria-label="Refresh dashboard">
+      data-tooltip="Refresh dashboard" aria-label="Refresh dashboard">
       <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
         <path fill="currentColor" d="M13.65 2.35A7.96 7.96 0 0 0 8 0C3.58 0 0 3.58 0 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 8 14A6 6 0 1 1 8 2c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z"/>
       </svg>
     </button>
     <button id="quit-btn" class="header-icon-btn" type="button" onclick="quitDashboard()"
-      title="Quit dashboard" aria-label="Quit dashboard">
+      data-tooltip="Quit dashboard" aria-label="Quit dashboard">
       <span class="icon-glyph" aria-hidden="true">×</span>
     </button>
   </div>
@@ -2132,7 +2597,7 @@
 </div>
 <div id="toast-host" aria-live="polite"></div>
 
-<div class="ops-body" id="ops-body">
+<div class="ops-body tl-collapsed" id="ops-body">
   <aside class="pane" id="queue-pane">
     <div class="list-filters" id="list-filters">
       <button type="button" class="filters-toggle" id="filters-toggle"
@@ -2140,6 +2605,8 @@
         <span class="filters-toggle-label" id="filters-toggle-label">Filters</span>
       </button>
       <div class="filters-popover" id="filters-popover" role="dialog" aria-label="List filters">
+        <button type="button" class="filters-popover-today" id="filters-today"
+          title="US · ≤5 YOE · posted last 2 days">Today</button>
         <select id="source-filter" aria-label="Filter by source" tabindex="3">
           <option value="">All sources</option>
         </select>
@@ -2194,6 +2661,9 @@
               <label for="date-filter">Posted</label>
               <select id="date-filter" aria-label="Filter by date posted" tabindex="8">
                 <option value="">All</option>
+                <option value="1d">1 day</option>
+                <option value="2d">2 days</option>
+                <option value="3d">Last 3d</option>
                 <option value="7d">Last 7d</option>
                 <option value="14d">Last 14d</option>
                 <option value="30d">Last 30d</option>
@@ -2272,11 +2742,11 @@
     </div>
   </main>
 
-  <aside class="pane timeline-pane" id="timeline-pane">
+  <aside class="pane timeline-pane collapsed" id="timeline-pane">
     <div class="pane-head" id="timeline-head">
       <span class="title">Timeline</span>
       <span class="collapse-label">Timeline</span>
-      <button type="button" class="icon-btn" id="tl-toggle" title="Collapse timeline">◀</button>
+      <button type="button" class="icon-btn" id="tl-toggle" title="Expand timeline">▶</button>
     </div>
     <div class="tl-list" id="timeline"></div>
   </aside>

@@ -165,6 +165,7 @@ from captcha_pause import (  # noqa: E402
     resolve_captcha_wait,
 )
 from fill_pause import (  # noqa: E402
+    FillPausedAbort,
     consume_fill_continue_sentinel,
     drain_pause_before_close,
     enter_hold_continue_mode,
@@ -173,6 +174,7 @@ from fill_pause import (  # noqa: E402
     note_fill_activity,
     push_fill_activity,
     read_fill_pause_state,
+    reset_native_pause_state,
     resolve_fill_pause,
     set_fill_paused,
     should_keep_fill_browser_open,
@@ -5707,12 +5709,18 @@ async def _fill_selector(
         pass
     try:
         await wait_while_paused(page, report)
+    except FillPausedAbort:
+        await wait_while_paused(page, report)
+        return {**out, "ok": False, "verified": False, "reason": "paused_abort", "paused_abort": True}
     except Exception:
         pass
     try:
         from stealth import stealth_field_pause
 
         await stealth_field_pause(page, report)
+    except FillPausedAbort:
+        await wait_while_paused(page, report)
+        return {**out, "ok": False, "verified": False, "reason": "paused_abort", "paused_abort": True}
     except Exception:
         pass
     try:
@@ -5830,6 +5838,15 @@ async def _fill_selector(
                 "readback": name[:120] or pdf.name,
                 "reason": "files_on_input",
             }
+        except FillPausedAbort:
+            await wait_while_paused(page, report)
+            return {
+                **out,
+                "ok": False,
+                "verified": False,
+                "reason": "paused_abort",
+                "paused_abort": True,
+            }
         except Exception as e:
             return {**out, "ok": False, "verified": False, "error": str(e)[:200]}
 
@@ -5879,9 +5896,24 @@ async def _fill_selector(
             )
 
         if mode == "combobox" or _looks_like_combobox_locator(await _locator_meta(page, loc)):
-            detail = await fill_custom_widget(
-                page, loc, value, field_type=ftype, label=""
-            )
+            try:
+                from fill_pause import run_cancellable
+
+                detail = await run_cancellable(
+                    fill_custom_widget(
+                        page, loc, value, field_type=ftype, label=""
+                    )
+                )
+            except FillPausedAbort:
+                await wait_while_paused(page, report)
+                return await _done(
+                    {
+                        "ok": False,
+                        "verified": False,
+                        "reason": "paused_abort",
+                        "paused_abort": True,
+                    }
+                )
             verified = bool(detail.get("verified"))
             readback = str(
                 detail.get("readback")
@@ -6015,14 +6047,25 @@ async def _fill_selector(
                 if use_stealth_type:
                     from stealth import stealth_fill_visible_text
 
-                    fiber_meta = await stealth_fill_visible_text(
-                        loc,
-                        str(value),
-                        page=page,
-                        field_type=str(ftype or ""),
-                        automation_id=aid,
-                        selector=sel,
-                    )
+                    try:
+                        fiber_meta = await stealth_fill_visible_text(
+                            loc,
+                            str(value),
+                            page=page,
+                            field_type=str(ftype or ""),
+                            automation_id=aid,
+                            selector=sel,
+                        )
+                    except FillPausedAbort:
+                        await wait_while_paused(page, report)
+                        return await _done(
+                            {
+                                "ok": False,
+                                "verified": False,
+                                "reason": "paused_abort",
+                                "paused_abort": True,
+                            }
+                        )
                 else:
                     from verified_select import (
                         fill_text_fiber_then_read,
@@ -7472,9 +7515,13 @@ async def apply_selector_pack(
 
     async def _fill_one(sel: str, ftype: str, mode: str, val: str) -> None:
         _pack_t0 = time.monotonic()
-        result = await _fill_selector(
-            page, sel, ftype, str(val), mode=mode, report=report
-        )
+        try:
+            result = await _fill_selector(
+                page, sel, ftype, str(val), mode=mode, report=report
+            )
+        except FillPausedAbort:
+            await wait_while_paused(page, report)
+            return
         _pack_dt = time.monotonic() - _pack_t0
         if os.environ.get("FASTFILL_PACK_TIMING") == "1" and _pack_dt > 1.0:
             print(f"[pack_timing] {platform} {ftype} mode={mode} {_pack_dt:.2f}s", flush=True)
@@ -10730,6 +10777,11 @@ async def run_fast_fill_async(
         headed=is_headed, captcha_wait=captcha_wait
     )
     do_fill_pause = resolve_fill_pause(headed=is_headed, fill_pause=fill_pause)
+    if do_fill_pause:
+        try:
+            reset_native_pause_state()
+        except Exception:
+            pass
     # Auto-loop by default — never block mid-pipeline on Enter for School/salary.
     # Only --refill-wait-enter opts into human babysitting between passes.
     do_refill_wait = resolve_refill_wait_enter(refill_wait_enter)
@@ -10805,6 +10857,15 @@ async def run_fast_fill_async(
         flush=True,
     )
     platform = detect_platform(url)
+    try:
+        note_fill_activity(
+            layer="entry",
+            action="detecting platform",
+            label=str(platform or "unknown")[:40],
+            detail="starting fill",
+        )
+    except Exception:
+        pass
 
     from stealth import resolve_stealth_enabled  # noqa: PLC0415
 
@@ -10898,6 +10959,7 @@ async def run_fast_fill_async(
         )
         report["fill_browser_channel"] = ctx_kwargs.get("channel") or "bundled"
         report["chrome_version_detected"] = ctx_kwargs.pop("chrome_version_detected", None)
+        window_outer = ctx_kwargs.pop("_jh_window_outer", None)
         report["browser_viewport"] = ctx_kwargs.get("viewport")
         report["browser_timezone_id"] = ctx_kwargs.get("timezone_id")
         report["browser_user_agent"] = ctx_kwargs.get("user_agent")
@@ -11001,6 +11063,20 @@ async def run_fast_fill_async(
                 )
         page = context.pages[0] if context.pages else await context.new_page()
         report["_page"] = page
+        if is_headed:
+            try:
+                from browser_launch import place_headed_fill_window
+
+                placed = await place_headed_fill_window(page, outer=window_outer)
+                if placed:
+                    report["browser_window_outer"] = {
+                        "x": placed["outer"].x,
+                        "y": placed["outer"].y,
+                        "width": placed["outer"].width,
+                        "height": placed["outer"].height,
+                    }
+            except Exception:
+                pass
         if do_fill_pause:
             try:
                 await ensure_fill_pause_ready(page, report)
@@ -11027,6 +11103,15 @@ async def run_fast_fill_async(
                 reason=(url or "")[:160],
                 via="page.goto",
             )
+            try:
+                note_fill_activity(
+                    layer="entry",
+                    action="navigating",
+                    detail=(url or "")[:80],
+                )
+                await push_fill_activity(page)
+            except Exception:
+                pass
             await page.goto(url, wait_until="domcontentloaded", timeout=90000)
             await asyncio.sleep(2.0 if platform == "workday" else 1.5)
             if do_fill_pause:
@@ -13477,8 +13562,7 @@ def main() -> int:
         default=None,
         help=(
             "Show in-page Pause fill / Continue fill overlay (default ON when headed). "
-            "Pause takes effect between fill actions (not mid-widget); "
-            "Continue resumes and skips already-filled."
+            "Pause stops filling immediately; Continue resumes and skips already-filled."
         ),
     )
     ap.add_argument(

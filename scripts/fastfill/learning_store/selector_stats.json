@@ -189,6 +189,16 @@
           "type": "TERMS_CONSENT",
           "updated_at": "2026-08-06T06:00:33Z"
         },
+        "input[name=\"communicationConsent\"][value=\"notGiven\"]": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-14T08:27:07Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
+        },
         "input[name=\"d437b29e-57a4-45ce-a828-e8fdc36153fe\"]:visible": {
           "attempts": 1,
           "fail": 0,
@@ -311,7 +321,7 @@
           "updated_at": "2026-08-10T11:24:13Z"
         }
       },
-      "updated_at": "2026-08-11T09:19:33Z"
+      "updated_at": "2026-08-14T08:27:07Z"
     },
     "bamboohr": {
       "selectors": {},
@@ -409,6 +419,16 @@
           "type": "MARKETING_CONSENT",
           "updated_at": "2026-08-10T10:02:39Z"
         },
+        "#question_37714318002:visible": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-13T17:48:10Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
+        },
         "#question_6539879009:visible": {
           "attempts": 3,
           "demoted": true,
@@ -469,6 +489,16 @@
           "attempts": 1,
           "demoted": true,
           "demoted_at": "2026-08-11T09:09:45Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
+        },
+        "#question_68580359:visible": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-14T11:45:28Z",
           "fail": 1,
           "host": "",
           "success": 0,
@@ -546,6 +576,26 @@
           "success_rate": 1.0,
           "type": "PASSWORD",
           "updated_at": "2026-08-11T06:08:03Z"
+        },
+        "input[name=\"question_37714323002[]\"][value=\"251275393002\"]": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-13T17:48:10Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
+        },
+        "input[name=\"question_37714324002[]\"][value=\"251275399002\"]": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-13T17:48:10Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
         },
         "input[type=email]": {
           "attempts": 7,
@@ -799,6 +849,16 @@
           "type": "ADDRESS_LINE1",
           "updated_at": "2026-08-02T09:50:49Z"
         },
+        "label:has-text('How did you hear about this job?*') input:visible": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-14T11:45:28Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
+        },
         "label:has-text('How did you hear about this role?*') input:visible": {
           "attempts": 1,
           "demoted": true,
@@ -896,7 +956,7 @@
           "type": ""
         }
       },
-      "updated_at": "2026-08-11T09:11:30Z"
+      "updated_at": "2026-08-14T11:45:28Z"
     },
     "icims": {
       "selectors": {
@@ -1399,6 +1459,26 @@
     },
     "unknown": {
       "selectors": {
+        "input[type=email]": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-18T11:38:47Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
+        },
+        "input[type=password]:nth(0)": {
+          "attempts": 1,
+          "demoted": true,
+          "demoted_at": "2026-08-18T11:38:47Z",
+          "fail": 1,
+          "host": "",
+          "success": 0,
+          "success_rate": 0.0,
+          "type": ""
+        },
         "label:has-text('Departments') input:visible": {
           "attempts": 1,
           "demoted": true,
@@ -1420,7 +1500,7 @@
           "type": ""
         }
       },
-      "updated_at": "2026-08-06T01:27:19Z"
+      "updated_at": "2026-08-18T11:38:47Z"
     },
     "workable": {
       "selectors": {
@@ -1938,7 +2018,7 @@
           "updated_at": "2026-08-13T13:34:51Z"
         }
       },
-      "updated_at": "2026-08-13T13:34:51Z"
+      "updated_at": "2026-08-14T09:41:38Z"
     }
   },
   "version": 1

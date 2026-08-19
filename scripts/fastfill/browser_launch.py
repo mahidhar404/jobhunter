@@ -392,10 +392,29 @@ def resolve_browser_user_agent(
     return None
 
 
+def _scripts_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _ensure_scripts_path() -> None:
+    scripts = str(_scripts_dir())
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+
+
+def headed_fill_window_outer(screen_metrics: Any = None) -> Any:
+    """Outer right-two-thirds rect, or None when screen metrics are unavailable."""
+    _ensure_scripts_path()
+    from window_geometry import work_window_plan
+
+    return work_window_plan(role="fill", metrics=screen_metrics)
+
+
 def build_persistent_context_kwargs(
     *,
     profile_dir: Path,
     headless: bool,
+    screen_metrics: Any = None,
 ) -> dict[str, Any]:
     """Kwargs for ``chromium.launch_persistent_context``."""
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -424,7 +443,43 @@ def build_persistent_context_kwargs(
             ua_exe = resolve_browser_user_agent(channel=None, executable_path=exe)
             if ua_exe:
                 kwargs["user_agent"] = ua_exe
+    if not headless:
+        try:
+            outer = headed_fill_window_outer(screen_metrics)
+        except Exception:
+            outer = None
+        if outer is not None:
+            _ensure_scripts_path()
+            from window_geometry import chromium_window_args, playwright_viewport
+
+            args = list(kwargs.get("args") or [])
+            args.extend(chromium_window_args(outer))
+            kwargs["args"] = args
+            if not (os.environ.get("FASTFILL_VIEWPORT") or "").strip():
+                kwargs["viewport"] = playwright_viewport(outer)
+            kwargs["_jh_window_outer"] = outer
     return kwargs
+
+
+async def place_headed_fill_window(page: Any, *, outer: Any = None) -> dict[str, Any] | None:
+    """CDP-place the headed fill window on the right two-thirds (best-effort)."""
+    if page is None:
+        return None
+    _ensure_scripts_path()
+    from window_geometry import Rect, place_playwright_window
+
+    plan = outer
+    if isinstance(plan, dict):
+        plan = Rect(
+            x=int(plan["x"]),
+            y=int(plan["y"]),
+            width=int(plan["width"]),
+            height=int(plan["height"]),
+        )
+    try:
+        return await place_playwright_window(page, outer=plan)
+    except Exception:
+        return None
 
 
 def bring_fill_chrome_to_front(*, loud: bool = False) -> bool:

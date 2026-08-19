@@ -46,10 +46,20 @@ def partyrock_mode_label(*, test_mode: bool) -> str:
     return "test" if test_mode else "real"
 
 
-def build_partyrock_input(job_description: str, location: str) -> str:
+def build_partyrock_input(
+    job_description: str,
+    location: str,
+    *,
+    company: str = "",
+    title: str = "",
+) -> str:
     """Structured text pasted into PartyRock's single JD input widget."""
+    clean_title = (title or "").strip() or "Unknown"
+    clean_company = (company or "").strip() or "Unknown"
     clean_location = (location or "").strip() or "Unknown"
     return (
+        f"Role Title: {clean_title}\n"
+        f"Company: {clean_company}\n"
         f"Location: {clean_location}\n\n"
         "Job Description:\n"
         f"{(job_description or '').strip()}"

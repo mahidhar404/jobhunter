@@ -96,8 +96,8 @@
       "label_pattern": "input",
       "platform": "greenhouse",
       "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
-      "seen": 4,
-      "updated_at": "2026-08-11T09:09:45Z"
+      "seen": 6,
+      "updated_at": "2026-08-14T11:45:28Z"
     },
     {
       "avoid_strategy": "refill_pass_1",
@@ -321,8 +321,8 @@
       "label_pattern": "preferred first name",
       "platform": "greenhouse",
       "reason": "UNFILLABLE_AFTER_2: live_empty_after_claimed_verified",
-      "seen": 4,
-      "updated_at": "2026-08-12T23:43:02Z"
+      "seen": 5,
+      "updated_at": "2026-08-14T09:39:57Z"
     },
     {
       "avoid_strategy": "refill",
@@ -1644,8 +1644,8 @@
       "label_pattern": "address_zip",
       "platform": "ashby",
       "reason": "UNFILLABLE_AFTER_2: empty_readback",
-      "seen": 1,
-      "updated_at": "2026-08-13T13:38:47Z"
+      "seen": 3,
+      "updated_at": "2026-08-14T08:25:26Z"
     },
     {
       "avoid_strategy": "enumerate_unanswered_choices",
@@ -1655,6 +1655,150 @@
       "reason": "UNFILLABLE_AFTER_2: unanswered_choice_group",
       "seen": 1,
       "updated_at": "2026-08-13T13:38:47Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "u.s. export control requirements - are you a citizen, national, or resident of a",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-13T17:48:10Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "if you checked any of the boxes above other than none / not applicable, then ple",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: unclassified",
+      "seen": 1,
+      "updated_at": "2026-08-13T17:48:10Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "question_37714320002[]",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-13T17:48:10Z"
+    },
+    {
+      "avoid_strategy": "extract+classify",
+      "field_type": "HOW_HEARD",
+      "label_pattern": "how did you first hear about this job? please list the site,",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: multiselect_uncommitted",
+      "seen": 1,
+      "updated_at": "2026-08-13T17:48:10Z"
+    },
+    {
+      "avoid_strategy": "ashby_widgets",
+      "field_type": "YEARS_EXPERIENCE",
+      "label_pattern": "how many years of professional experience do you have as an engineer?",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: radio_unanswered",
+      "seen": 2,
+      "updated_at": "2026-08-14T08:29:30Z"
+    },
+    {
+      "avoid_strategy": "ashby_widgets",
+      "field_type": "SPONSORSHIP",
+      "label_pattern": "do you, now or in the future, require sponsorship to work in the country you cur",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: empty_readback",
+      "seen": 1,
+      "updated_at": "2026-08-14T08:25:26Z"
+    },
+    {
+      "avoid_strategy": "ashby_widgets",
+      "field_type": "INTEREST",
+      "label_pattern": "select a response that accurately describes your level of experience with ai too",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: radio_unanswered",
+      "seen": 1,
+      "updated_at": "2026-08-14T08:27:07Z"
+    },
+    {
+      "avoid_strategy": "ashby_widgets",
+      "field_type": "TERMS_CONSENT",
+      "label_pattern": "privacy_consent",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: wrong_autofill",
+      "seen": 1,
+      "updated_at": "2026-08-14T08:27:07Z"
+    },
+    {
+      "avoid_strategy": "extract+classify",
+      "field_type": "MARKETING_CONSENT",
+      "label_pattern": "check yes or no to indicate your agreement to receive text m",
+      "platform": "ashby",
+      "reason": "UNFILLABLE_AFTER_2: unverified_readback",
+      "seen": 1,
+      "updated_at": "2026-08-14T08:27:07Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "ADDRESS_CITY",
+      "label_pattern": "location (city)*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: no_matching_option",
+      "seen": 1,
+      "updated_at": "2026-08-14T11:45:28Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "ADDRESS_CITY",
+      "label_pattern": "location (permanent address)*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: no_matching_option",
+      "seen": 1,
+      "updated_at": "2026-08-14T11:45:28Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "YEARS_EXPERIENCE",
+      "label_pattern": "do you have 5+ years of software engineering experience, with multiple years bui",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: no_matching_option",
+      "seen": 1,
+      "updated_at": "2026-08-14T11:45:28Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": null,
+      "label_pattern": "question_68580359",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: live_required_empty:empty_required_input",
+      "seen": 1,
+      "updated_at": "2026-08-14T11:45:28Z"
+    },
+    {
+      "avoid_strategy": "extract+classify",
+      "field_type": "HOW_HEARD",
+      "label_pattern": "how did you hear about this job?*",
+      "platform": "greenhouse",
+      "reason": "UNFILLABLE_AFTER_2: multiselect_uncommitted",
+      "seen": 1,
+      "updated_at": "2026-08-14T11:45:28Z"
+    },
+    {
+      "avoid_strategy": "iframe_login",
+      "field_type": "EMAIL",
+      "label_pattern": "email",
+      "platform": "unknown",
+      "reason": "UNFILLABLE_AFTER_2: unverified_readback",
+      "seen": 1,
+      "updated_at": "2026-08-18T11:38:47Z"
+    },
+    {
+      "avoid_strategy": "iframe_login",
+      "field_type": "PASSWORD",
+      "label_pattern": "password",
+      "platform": "unknown",
+      "reason": "UNFILLABLE_AFTER_2: unverified_readback",
+      "seen": 1,
+      "updated_at": "2026-08-18T11:38:47Z"
     }
   ],
   "version": 1

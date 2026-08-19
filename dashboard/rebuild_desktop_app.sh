@@ -7,8 +7,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-APP_PATH="${1:-${HOME}/Desktop/HxH.app}"
-APP_DISPLAY_NAME="${JOB_HUNTER_APP_NAME:-HxH}"
+APP_PATH="${1:-${HOME}/Desktop/Omnidex.app}"
+APP_DISPLAY_NAME="${JOB_HUNTER_APP_NAME:-OmniDex}"
 APPLESCRIPT_SRC="${SCRIPT_DIR}/JobHunterDashboard.applescript"
 ICON="${SCRIPT_DIR}/JobHunterDashboard.icns"
 APP_ICON="${APP_PATH}/Contents/Resources/applet.icns"
@@ -37,6 +37,18 @@ if /usr/bin/grep -q '__JOB_HUNTER_ROOT__' "${TMP_ASCRIPT}"; then
 fi
 
 /usr/bin/osacompile -o "${APP_PATH}" "${TMP_ASCRIPT}"
+
+# Verify bundle executable and injected ROOT before icon/codesign work.
+BUNDLE_EXEC="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${APP_PATH}/Contents/Info.plist" 2>/dev/null || true)"
+if [[ "${BUNDLE_EXEC}" != "applet" ]]; then
+  echo "error: CFBundleExecutable=${BUNDLE_EXEC:-missing} (expected applet)" >&2
+  exit 1
+fi
+if ! /usr/bin/osadecompile "${APP_PATH}/Contents/Resources/Scripts/main.scpt" 2>/dev/null | /usr/bin/grep -qF "${ROOT}"; then
+  echo "error: decompiled applet missing injected ROOT=${ROOT}" >&2
+  exit 1
+fi
+
 /bin/cp -f "${ICON}" "${APP_ICON}"
 
 # osacompile ships the stock applet artwork in an asset catalog and points
@@ -45,6 +57,8 @@ fi
 /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Set :CFBundleName ${APP_DISPLAY_NAME}" "${APP_PATH}/Contents/Info.plist" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Add :CFBundleName string ${APP_DISPLAY_NAME}" "${APP_PATH}/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ${APP_DISPLAY_NAME}" "${APP_PATH}/Contents/Info.plist" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string ${APP_DISPLAY_NAME}" "${APP_PATH}/Contents/Info.plist"
 /bin/rm -f "${APP_PATH}/Contents/Resources/Assets.car"
 
 # Editing Resources breaks the ad-hoc seal osacompile applies.
@@ -55,6 +69,8 @@ fi
 
 echo "rebuilt ${APP_PATH}"
 echo "ROOT=${ROOT}"
+echo "CFBundleExecutable=${BUNDLE_EXEC}"
+echo "verified: osadecompile contains ROOT"
 echo "installed icon ${APP_ICON}"
 echo "run 'killall Finder' if the Desktop still shows the previous icon"
 echo ""

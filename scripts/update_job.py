@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from jobs_lock import locked_jobs_for_write
 from multi_opening import apply_multi_opening_flag
 from resume_publish import publish_resume_to_by_company
+from text_normalize import stamp_company_key
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -95,6 +96,7 @@ def main() -> None:
             job["date_posted"] = args.date_posted
         if args.company is not None:
             job["company"] = args.company
+            stamp_company_key(job)
         if args.title is not None:
             job["title"] = args.title
         if args.location is not None:

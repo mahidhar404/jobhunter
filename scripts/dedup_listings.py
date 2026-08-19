@@ -3,10 +3,10 @@
 
 Merges one or more listings files (from scout.py and/or scrape_ats.py),
 drops test/mock entries, indirect (staffing-agency) apply links, and
-obviously irrelevant titles - then fuzzy-matches remaining listings by
-(normalized company, normalized title) so the same role seen via two
-different boards (e.g. Indeed AND the company's own
-Greenhouse page) collapses into one entry. When a duplicate is found, the
+obviously irrelevant titles - then matches remaining listings by URL/posting
+key, gated full-JD fingerprint, or a same-ATS-org exact-title repost. The same
+role seen via two different boards (e.g. Indeed AND the company's own
+Greenhouse page) collapses only with one of those identity signals. When a duplicate is found, the
 direct-ATS-sourced copy (greenhouse/lever/ashby) wins over an aggregator
 copy (indeed/linkedin) since it tends to have a cleaner apply_url and a
 fuller description. Loser URLs are preserved on alternate_urls / source_url
@@ -25,7 +25,6 @@ Writes the qualified, deduped candidate array to --out (default:
 skip reason plus the final count.
 """
 import argparse
-import difflib
 import json
 import sys
 import time
@@ -48,7 +47,9 @@ from discovery_filters import (  # noqa: E402
     requires_security_clearance,
     requires_us_citizen_or_greencard,
 )
-from jd_fingerprint import item_jd_fingerprint, same_jd_fingerprint  # noqa: E402
+from jd_fingerprint import item_jd_fingerprint  # noqa: E402
+from dedup_jobs import exact_url_overlap, is_fresher  # noqa: E402
+from posting_identity import ats_org_key, posting_key, same_ats_org  # noqa: E402
 from text_normalize import normalize_company, normalize_title  # noqa: E402
 
 
@@ -133,6 +134,85 @@ def looks_like_staffing(company: str, description: str) -> bool:
     # description text flags the employer for the exact opposite of what
     # the phrase means, so it's deliberately excluded.
     return any(h in str(company or "").lower() for h in STAFFING_DENY_HINTS)
+
+
+def deduplicate_candidates(candidates: list[dict]) -> tuple[list[dict], int]:
+    """Apply URL/posting → gated full-JD → exact-title repost identity order."""
+    merged_count = 0
+
+    def merge_phase(items: list[dict], reason_for_pair) -> list[dict]:
+        nonlocal merged_count
+        kept: list[dict] = []
+        for item in items:
+            match_idx = None
+            reason = None
+            for i, existing in enumerate(kept):
+                reason = reason_for_pair(item, existing)
+                if reason:
+                    match_idx = i
+                    break
+            if match_idx is None:
+                kept.append(item)
+                continue
+            existing = kept[match_idx]
+            if reason == "repost" and is_fresher(item, existing):
+                kept[match_idx] = merge_listing_pair(item, existing)
+            else:
+                kept[match_idx] = merge_listing_pair(existing, item)
+            merged_count += 1
+        return kept
+
+    def url_or_posting_reason(a: dict, b: dict) -> str | None:
+        if exact_url_overlap(a, b):
+            return "url"
+        a_key, b_key = posting_key(a), posting_key(b)
+        return "posting_key" if a_key and a_key == b_key else None
+
+    survivors = merge_phase(candidates, url_or_posting_reason)
+
+    fp_groups: dict[str, list[dict]] = {}
+    without_fp: list[dict] = []
+    for item in survivors:
+        fp = item_jd_fingerprint(item)
+        if fp:
+            fp_groups.setdefault(fp, []).append(item)
+        else:
+            without_fp.append(item)
+    survivors = without_fp
+    for items in fp_groups.values():
+        def fingerprint_reason(a: dict, b: dict) -> str | None:
+            same_company = (
+                normalize_company(a.get("company"))
+                and normalize_company(a.get("company"))
+                == normalize_company(b.get("company"))
+            )
+            return "jd_fingerprint" if same_company or same_ats_org(a, b) else None
+
+        survivors.extend(merge_phase(items, fingerprint_reason))
+
+    repost_groups: dict[tuple[str, str], list[dict]] = {}
+    without_repost_key: list[dict] = []
+    for item in survivors:
+        key = (ats_org_key(item) or "", normalize_title(item.get("title")))
+        if all(key):
+            repost_groups.setdefault(key, []).append(item)
+        else:
+            without_repost_key.append(item)
+    survivors = without_repost_key
+    for items in repost_groups.values():
+        def repost_reason(a: dict, b: dict) -> str | None:
+            a_key, b_key = posting_key(a), posting_key(b)
+            if (
+                a_key
+                and b_key
+                and a_key != b_key
+                and (is_fresher(a, b) or is_fresher(b, a))
+            ):
+                return "repost"
+            return None
+
+        survivors.extend(merge_phase(items, repost_reason))
+    return survivors, merged_count
 
 
 def main() -> None:
@@ -255,54 +335,7 @@ def main() -> None:
 
         candidates.append(item)
 
-    # Pass 1: exact normalized JD fingerprint merge (high precision).
-    # Substantial identical JDs collapse across sources; short JDs never match.
-    qualified: list[dict] = []
-    merged_count = 0
-    fp_kept: dict[str, int] = {}  # fingerprint -> index in qualified
-    remainder: list[dict] = []
-    for item in candidates:
-        fp = item_jd_fingerprint(item)
-        if fp and fp in fp_kept:
-            idx = fp_kept[fp]
-            qualified[idx] = merge_listing_pair(qualified[idx], item)
-            merged_count += 1
-        elif fp:
-            fp_kept[fp] = len(qualified)
-            qualified.append(item)
-        else:
-            remainder.append(item)
-
-    # Pass 2: fuzzy-merge remaining + fingerprint survivors by company + title
-    # (>= 0.85). Winner keeps ATS/company apply_url; loser's URLs preserved.
-    pool = qualified + remainder
-    clusters: dict[str, list[dict]] = {}
-    for item in pool:
-        key = normalize_company(item.get("company"))
-        clusters.setdefault(key, []).append(item)
-
-    qualified = []
-    for _company_key, items in clusters.items():
-        kept: list[dict] = []
-        for item in items:
-            title_norm = normalize_title(item.get("title"))
-            match_idx = None
-            for i, k in enumerate(kept):
-                if same_jd_fingerprint(item, k):
-                    match_idx = i
-                    break
-                if difflib.SequenceMatcher(
-                    None, title_norm, normalize_title(k.get("title"))
-                ).ratio() >= 0.85:
-                    match_idx = i
-                    break
-            if match_idx is None:
-                kept.append(item)
-            else:
-                # Prefer ATS/company apply_url; preserve loser's URLs in alternate_urls.
-                kept[match_idx] = merge_listing_pair(kept[match_idx], item)
-                merged_count += 1
-        qualified.extend(kept)
+    qualified, merged_count = deduplicate_candidates(candidates)
 
     out_path = Path(args.out) if args.out else ROOT / "listings" / f"{date.today().isoformat()}-qualified.json"
     out_path.write_text(json.dumps(qualified, indent=2, default=str))

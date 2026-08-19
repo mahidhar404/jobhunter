@@ -1,5 +1,5 @@
 #!/bin/bash
-# One-click launcher (Desktop "Job Hunter Dashboard.app" → this script):
+# One-click launcher (Desktop OmniDex.app / Omnidex.app → this script):
 #   1) Start dashboard/server.py if port 8787 is down
 #   2) Open the UI in a *dedicated* Chromium profile, hosted by a browser that
 #      is NOT /Applications/Google Chrome.app (see resolve_ui_browser)
@@ -9,7 +9,7 @@
 # Closing the last dashboard tab/window (or header Quit / Cmd+Q on the
 # applet) POSTs /api/shutdown and stops the server; stalled heartbeats alone
 # do NOT quit. This wrapper then kills JH-associated browsers and exits — so
-# "Job Hunter Dashboard" leaves the Dock. Children (discovery scrapes,
+# "OmniDex" leaves the Dock. Children (discovery scrapes,
 # fast fills) are process-group-killed by the server on shutdown; this
 # script also tears down:
 #   - dashboard UI browser (dashboard_ui_profile / --app=:8787)
@@ -303,7 +303,7 @@ kill_pids_graceful() {
   done
 }
 
-# PIDs for the Job Hunter dashboard UI window only:
+# PIDs for the OmniDex dashboard UI window only:
 #   1) dedicated profile (--user-data-dir=…/dashboard_ui_profile, plus the
 #      legacy dashboard_chrome_profile so old windows still get torn down)
 #   2) legacy/current app windows (--app=http://127.0.0.1:8787) — never a
@@ -349,6 +349,8 @@ dashboard_chrome_main_pids() {
 # Never `tell application "…" to activate` — Launch Services often opens a
 # blank default-profile CfT window when the binary was started with a custom
 # --user-data-dir (same bug as fill focus via activate).
+# After focus, maximize OmniDex to the full usable screen (menu bar + Dock
+# excluded). Fill/PartyRock use separate Chrome windows on the right ~2/3.
 focus_dashboard_ui() {
   local pid
   pid="$(dashboard_chrome_main_pids | head -1 || true)"
@@ -360,8 +362,33 @@ focus_dashboard_ui() {
     /usr/bin/osascript -e \
       "tell application \"System Events\" to set frontmost of first process whose unix id is ${pid} to true" \
       >/dev/null 2>&1 || true
+    place_dashboard_ui_window "${pid}" || true
   fi
   echo "focused dashboard UI pid=${pid}"
+  return 0
+}
+
+# Maximized to the usable frame (menu bar + Dock excluded) via
+# scripts/window_geometry.py --role dashboard. Fill/PartyRock geometry is
+# unchanged (right ~2/3 on their own windows).
+place_dashboard_ui_window() {
+  local pid="${1:-}"
+  local py
+  local i
+  [[ "$(uname -s)" == "Darwin" ]] || return 0
+  if [[ -z "${pid}" ]]; then
+    pid="$(dashboard_chrome_main_pids | head -1 || true)"
+  fi
+  [[ -n "${pid}" ]] || return 0
+  py="$(resolve_dashboard_python || true)"
+  [[ -n "${py}" ]] || return 0
+  for i in 1 2 3 4 5; do
+    if "${py}" "$ROOT/scripts/window_geometry.py" --role dashboard --apply-pid "${pid}" \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.2
+  done
   return 0
 }
 
@@ -438,7 +465,7 @@ print_cft_role_inventory() {
   echo "  UI:     --user-data-dir=…/dashboard_ui_profile  OR  --app=${URL}"
   echo "  PartyRock: --user-data-dir=~/.openclaw/browser/openclaw/user-data  +  :${OPENCLAW_CDP_PORT}"
   echo "  Fill:   Playwright --remote-debugging-pipe  (focus: $0 --focus-fill)"
-  echo "  Titles: UI window ≈ 'JOB HUNT · OPS'; PartyRock ≈ app title; Fill ≈ job URL title"
+  echo "  Titles: UI window ≈ 'OmniDex'; PartyRock ≈ app title; Fill ≈ job URL title"
   echo "  Never: tell application \"Google Chrome for Testing\" to activate"
 }
 
@@ -639,6 +666,7 @@ open_dashboard_ui() {
     --disable-infobars \
     --hide-crash-restore-bubble \
     --disable-session-crashed-bubble \
+    --start-maximized \
     --app="${URL}/?jh_boot=$(date +%s)" \
     >/dev/null 2>&1 &
   # The browser may fork; prefer pgrep over $! for the stable pid file.

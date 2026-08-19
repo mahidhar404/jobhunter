@@ -132,6 +132,7 @@ NON_US_LOCATION_RE = re.compile(
     r"mexico\s+city|ciudad\s+de\s+mexico|guadalajara|monterrey|"
     r"dubai|abu\s+dhabi|doha|riyadh|jeddah|"
     r"cape\s+town|johannesburg|lagos|nairobi|"
+    r"almaty|astana|nur-sultan|san\s+salvador|"
     r"stuttgart|frankfurt|hamburg|cologne|dusseldorf|"
     r"lyon|marseille|toulouse|lille|"
     # ISO-ish country tokens often seen in ATS dumps
@@ -219,9 +220,9 @@ NON_US_ISO2_CODES = {
     "ae", "ar", "at", "au", "bd", "be", "bg", "bh", "br", "by", "ca", "ch",
     "cl", "cn", "co", "cr", "cz", "de", "dk", "do", "eg", "es", "fi", "fr",
     "gb", "gr", "gt", "hk", "hr", "hu", "id", "ie", "il", "in", "it", "jo",
-    "jp", "ke", "kr", "kw", "lk", "lt", "lu", "lv", "ma", "mx", "my", "ng",
-    "nl", "no", "nz", "pa", "pe", "ph", "pk", "pl", "pt", "qa", "ro", "rs",
-    "ru", "sa", "se", "sg", "si", "sk", "th", "tr", "tw", "ua", "uk", "uy",
+    "jp", "ke", "kr", "kw", "kz", "lk", "lt", "lu", "lv", "ma", "mg", "mx", "my",
+    "ng", "nl", "no", "nz", "pa", "pe", "ph", "pk", "pl", "pt", "qa", "ro", "rs",
+    "ru", "sa", "se", "sg", "si", "sk", "sv", "th", "tr", "tw", "ua", "uk", "uy",
     "ve", "vn", "za",
 }
 
@@ -289,6 +290,10 @@ INDIA_REMOTE_RE = re.compile(
     r")",
     re.I,
 )
+
+# Georgia is ambiguous with the US state. A named Georgian city without an
+# explicit US cue resolves it to the country; bare "Georgia" remains US.
+GEORGIA_COUNTRY_CITY_RE = re.compile(r"\b(?:tbilisi|batumi)\b", re.I)
 
 
 def is_india_location(location: str | None) -> bool:
@@ -408,14 +413,22 @@ def _location_tail_country(loc: str) -> tuple[str | None, list[str]]:
 # ---------------------------------------------------------------------------
 
 # Explicit ATS "clearance required: No/None" — strip before matching so
-# "CLEARANCE REQUIRED FOR START: No" and "Clearance Required: None" keep
-# unless another positive signal remains (e.g. CLEARANCE TYPE: Secret).
+# "CLEARANCE REQUIRED FOR START: No", "Clearance Required: None", and
+# "Clearance Not Required" keep unless another positive signal remains
+# (e.g. CLEARANCE TYPE: Secret). Word-order negation must be consumed as a
+# unit so leftover "security clearance" / "clearance … required" cannot
+# re-fire as a false positive.
 CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE = re.compile(
+    r"("
     r"\bclearance[\s\-]*(?:required|preferred|mandatory|needed)"
-    r"(?:\s+for\s+start)?"
-    # Allow ATS punctuation, pipes, and markdown bold ** between label and No/None.
-    r"[\s:\-|*]*"
-    r"(?:no|none|n/?a)\b",
+    r"(?:\s+for\s+start)?[\s:\-|*]*(?:no|none|n/?a)\b|"
+    r"\bno\s+(?:security\s+)?clearance(?:\s+is)?\s+required\b|"
+    r"\bdoes\s+not\s+require\s+"
+    r"(?:an?\s+)?(?:security\s+)?clearance\b|"
+    r"\b(?:an?\s+)?(?:security\s+)?clearance\s+is\s+not\s+required\b|"
+    r"\b(?:(?:an?\s+|the\s+)?(?:security\s+)?)?clearance"
+    r"[\s:\-|*]*not[\s\-]+(?:required|needed|mandatory|necessary)\b"
+    r")",
     re.I,
 )
 
@@ -446,7 +459,7 @@ CLEARANCE_REQUIREMENT_RE = re.compile(
     r"ability\s+to\s+obtain|able\s+to\s+obtain|"
     r"currently\s+(?:hold|have)|have\s+an?\s+active)"
     r".{0,48}clearance\b|"
-    r"\bclearance.{0,24}(?:required|preferred|mandatory|needed)\b|"
+    r"\bclearance(?![\s:\-|*]*\bnot\b).{0,24}(?:required|preferred|mandatory|needed)\b|"
     # Classified-work phrasing (not "classified as full-time")
     r"\bclassified\s+(?:information|environment|program|material|data|"
     r"systems?|networks?|work|facility|facilities)\b|"
@@ -595,7 +608,9 @@ _YOE_TENURE_BEFORE_RE = re.compile(
     r"(?:for|with)\s+(?:over|more\s+than)|"
     r"(?:founded|established|celebrating)|"
     r"(?:company|holding|firm|business|organization|leader|provider)"
-    r"(?:\s+\w+){0,4}\s+with"
+    r"(?:\s+\w+){0,4}\s+with|"
+    r"(?:our\s+team\s+has|we\s+have)|"
+    r"(?:preferred\s+qualifications?|nice\s+to\s+have)\s*:"
     r")\s*$",
     re.I,
 )
@@ -700,8 +715,7 @@ CITIZENSHIP_OR_GC_REQUIREMENT_RE = re.compile(
     r"\bmust\s+be\s+(?:a\s+)?(?:permanent\s+resident|lawful\s+permanent\s+resident)\b|"
     r"\b(?:permanent\s+resident|lawful\s+permanent\s+resident)\s+(?:status\s+)?"
     r"required\b|"
-    r"\bonly\s+(?:u\.?s\.?|us)\s+(?:citizens?|permanent\s+residents?)\b|"
-    r"\b(?:citizens?|permanent\s+residents?)\s+only\b"
+    r"\bonly\s+(?:u\.?s\.?|us)\s+(?:citizens?|permanent\s+residents?)\b"
     r")",
     re.I,
 )
@@ -814,6 +828,10 @@ def is_clearly_non_us_location(location: str | None) -> bool:
     loc = _fold_accents(str(location or "")).strip()
     if not loc:
         return False
+    if GEORGIA_COUNTRY_CITY_RE.search(loc) and not re.search(
+        r"\b(?:GA|USA|US|U\.S\.A?\.?|United\s+States)\b", loc, re.I
+    ):
+        return True
     tail, head_parts = _location_tail_country(loc)
     head = ", ".join(head_parts)
     if tail:
@@ -832,6 +850,8 @@ def is_clearly_non_us_location(location: str | None) -> bool:
             )
             if decisive and not US_LOCATION_STRONG_RE.search(head):
                 return True
+    if is_india_location(loc) and not US_LOCATION_STRONG_RE.search(loc):
+        return True
     if US_LOCATION_RE.search(loc):
         return False
     return bool(NON_US_LOCATION_RE.search(loc))

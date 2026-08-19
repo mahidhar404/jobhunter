@@ -35,9 +35,23 @@ RESUMES_DIR = ROOT / "resumes"
 
 sys.path.insert(0, str(Path(__file__).parent))
 from jobs_lock import locked_jobs_for_write
-from apply_urls import enrich_listing_urls, normalize_url  # noqa: E402
-from text_normalize import normalize_company  # noqa: E402
-from blocked_urls import block_keys_for_url, load_blocked_url_set  # noqa: E402
+from apply_urls import collect_all_urls, enrich_listing_urls  # noqa: E402
+from text_normalize import (  # noqa: E402
+    normalize_company,
+    normalize_title,
+    stamp_company_key,
+)
+from blocked_urls import (  # noqa: E402
+    block_keys_for_url,
+    load_blocked_id_set,
+    load_blocked_url_set,
+)
+from dedup_jobs import (  # noqa: E402
+    exact_url_overlap,
+    fold_urls_into_winner,
+    soft_link_exact_title_peers,
+)
+from posting_identity import posting_key  # noqa: E402
 from multi_opening import detect_multi_opening  # noqa: E402
 from discovery_filters import (  # noqa: E402
     auto_delete_reason,
@@ -80,6 +94,85 @@ def slugify(text) -> str:
     return text or "job"
 
 
+def generated_job_id(
+    item: dict, *, existing_ids: set[str], blocked_ids: set[str]
+) -> str | None:
+    """Choose a new id without bypassing a user-delete tombstone."""
+    base_id = f"{slugify(item.get('company'))}-{slugify(item.get('title'))}"
+    if base_id in blocked_ids:
+        return None
+    job_id = base_id
+    n = 1
+    while job_id in existing_ids or job_id in blocked_ids:
+        n += 1
+        job_id = f"{base_id}-{n}"
+    return job_id
+
+
+# Soft-deleted / skipped rows must not absorb rediscovery folds or stub upgrades.
+_INACTIVE_MATCH_STATUSES = frozenset({
+    "deleted",
+    "skipped_duplicate",
+    "skipped_contract",
+    "skipped_easy_apply",
+    "skipped_manual",
+    "applied",
+    "cancelled",
+})
+
+
+def is_recovered_stub(job: dict) -> bool:
+    return (
+        str(job.get("source") or "").lower() == "recovered"
+        and not collect_all_urls(job)
+    )
+
+
+def _is_active_match_candidate(job: dict) -> bool:
+    return str(job.get("status") or "").lower() not in _INACTIVE_MATCH_STATUSES
+
+
+def find_existing_match(item: dict, jobs: list[dict]) -> dict | None:
+    """Match posting key/URL first, then an URL-less recovered exact-title stub.
+
+    Inactive/deleted rows are ignored so a soft-delete (or host-variant
+    posting_key twin) cannot swallow rediscovery or upgrade the wrong stub.
+    """
+    item_key = posting_key(item)
+    for job in jobs:
+        if not _is_active_match_candidate(job):
+            continue
+        if item_key and item_key == posting_key(job):
+            return job
+        if exact_url_overlap(item, job):
+            return job
+    company = normalize_company(item.get("company"))
+    title = normalize_title(item.get("title"))
+    if company and title:
+        for job in jobs:
+            if not _is_active_match_candidate(job):
+                continue
+            if (
+                is_recovered_stub(job)
+                and normalize_company(job.get("company")) == company
+                and normalize_title(job.get("title")) == title
+            ):
+                return job
+    return None
+
+
+def fold_discovered_urls(existing: dict, item: dict) -> None:
+    """Fold every discovered URL onto an existing winner without minting an id."""
+    candidate = dict(item)
+    if not candidate.get("job_description") and candidate.get("description"):
+        candidate["job_description"] = candidate["description"]
+    fold_urls_into_winner(existing, candidate)
+    key = posting_key(existing) or posting_key(candidate)
+    if key:
+        existing["posting_key"] = key
+    existing["updated_at"] = now_iso()
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -103,23 +196,21 @@ def main() -> None:
         raw = json.loads(Path(args.skip_companies).read_text())
         skip_companies = {normalize_company(c) for c in raw}
 
-    added, skipped_tracked, skipped_existing, skipped_blocked = 0, 0, 0, 0
+    added, upgraded, skipped_tracked, skipped_existing, skipped_blocked = 0, 0, 0, 0, 0
     skipped_filtered: dict[str, int] = {}
     blocked_urls = load_blocked_url_set()
+    blocked_ids = load_blocked_id_set()
     with locked_jobs_for_write() as data:
-        existing_ids = {j["id"] for j in data["jobs"]}
-        existing_urls = set()
-        for j in data["jobs"]:
-            for f in ("job_url", "apply_url", "source_url"):
-                if j.get(f):
-                    existing_urls.add(normalize_url(j[f]) or j[f])
-            for u in j.get("alternate_urls") or []:
-                if u:
-                    existing_urls.add(normalize_url(u) or u)
+        existing_ids = {
+            j["id"] for j in data["jobs"] if isinstance(j, dict) and j.get("id")
+        }
 
         for item in listings:
             company = item.get("company") or ""
             norm = normalize_company(company)
+            # Prefer ATS/company apply over LinkedIn/Indeed. Live search for
+            # offsite ATS links is scripts/resolve_apply_urls.py (not here —
+            # discovery must stay offline-fast and rate-limit friendly).
             enriched = enrich_listing_urls(item)
             url = enriched.get("job_url") or item.get("job_url") or ""
             direct_url = item.get("job_url_direct") or ""
@@ -128,24 +219,36 @@ def main() -> None:
             if norm in skip_companies:
                 skipped_tracked += 1
                 continue
-            url_keys = {normalize_url(u) or u for u in (url, direct_url, apply_url) if u}
+            base_id = f"{slugify(company)}-{slugify(item.get('title'))}"
+            if base_id in blocked_ids:
+                skipped_blocked += 1
+                continue
             blocked_keys = set()
-            for u in (url, direct_url, apply_url):
+            for u in collect_all_urls(item):
                 if u:
                     blocked_keys.update(block_keys_for_url(u))
             if blocked_keys & blocked_urls:
                 skipped_blocked += 1
                 continue
-            if url_keys & existing_urls:
+            existing_match = find_existing_match(item, data["jobs"])
+            upgrading_recovered = bool(
+                existing_match and is_recovered_stub(existing_match)
+            )
+            if existing_match and not upgrading_recovered:
+                fold_discovered_urls(existing_match, item)
+                stamp_company_key(existing_match)
                 skipped_existing += 1
                 continue
 
-            job_id = f"{slugify(company)}-{slugify(item.get('title'))}"
-            base_id = job_id
-            n = 1
-            while job_id in existing_ids:
-                n += 1
-                job_id = f"{base_id}-{n}"
+            if upgrading_recovered:
+                job_id = str(existing_match["id"])
+            else:
+                job_id = generated_job_id(
+                    item, existing_ids=existing_ids, blocked_ids=blocked_ids
+                )
+                if not job_id:
+                    skipped_blocked += 1
+                    continue
             existing_ids.add(job_id)
 
             # Prefer company/ATS apply; keep aggregator as job_url / source_url.
@@ -194,6 +297,10 @@ def main() -> None:
             )
             # India LPA/lakh pay is display-only (never pruned); stamp when found.
             inr = extract_inr_salary(title=title, description=full_description)
+            now = now_iso()
+            if not date_posted and not date_posted_fallback:
+                date_posted = now
+
             entry = {
                 "id": job_id,
                 "company": company,
@@ -204,6 +311,7 @@ def main() -> None:
                 "date_posted_fallback": date_posted_fallback,
                 "job_url": url or apply_url,
                 "apply_url": apply_url,
+                "posting_key": posting_key(item),
                 "job_description": trim_description(full_description),
                 "multi_opening": detect_multi_opening(
                     title=title, description=full_description
@@ -230,10 +338,11 @@ def main() -> None:
                 "pending_command": None,
                 "session_key": f"agent:job-hunter:job-{job_id}",
                 "resume_path": None,
-                "created_at": now_iso(),
-                "updated_at": now_iso(),
+                "created_at": now,
+                "updated_at": now,
                 "qa_log": [],
             }
+            stamp_company_key(entry)
             if enriched.get("source_url"):
                 entry["source_url"] = enriched["source_url"]
             if enriched.get("alternate_urls"):
@@ -250,13 +359,27 @@ def main() -> None:
                     f"New listing from {', '.join(entry['source_names'])}, "
                     f"posted {date_posted or 'unknown date'}."
                 )
-            data["jobs"].append(entry)
-            for u in (url, direct_url, apply_url, enriched.get("source_url")):
-                if u:
-                    existing_urls.add(normalize_url(u) or u)
-            added += 1
+            if upgrading_recovered and existing_match is not None:
+                preserved = {
+                    "created_at": existing_match.get("created_at"),
+                    "resume_path": existing_match.get("resume_path"),
+                    "qa_log": existing_match.get("qa_log"),
+                }
+                existing_match.update(entry)
+                for field, value in preserved.items():
+                    if value not in (None, [], ""):
+                        existing_match[field] = value
+                # Stub no longer needs a URL once discovery folded real links in.
+                existing_match["needs_url"] = False
+                upgraded += 1
+            else:
+                data["jobs"].append(entry)
+                added += 1
+        soft_link_exact_title_peers(data["jobs"])
 
     log(f"added: {added}")
+    if upgraded:
+        log(f"upgraded recovered stubs: {upgraded}")
     if skipped_tracked:
         log(f"skipped (already tracked): {skipped_tracked}")
     if skipped_existing:

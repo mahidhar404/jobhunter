@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Triage redesign: Cancel→Open, Skip→Deleted, duplicate merge (no Skipped pen)."""
+"""Triage redesign: Cancel parks in-queue, Skip→Deleted, duplicate merge (no Skipped pen)."""
 from __future__ import annotations
 
 import importlib.util
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
+sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 
@@ -270,11 +272,37 @@ class TestSanDiskClassFreshnessMerge(unittest.TestCase):
         self.assertEqual(winner["date_posted"], "2026-08-05")
 
 
+def _run_cancel(srv, job: dict):
+    """POST-cancel against an in-memory jobs dict (dummy fixture only)."""
+    from stats_aggregate import queue_bucket
+
+    jobs = {"jobs": [job]}
+
+    @contextmanager
+    def _fake_locked(*, allow_purge=False):
+        yield jobs
+
+    handler = srv.Handler.__new__(srv.Handler)
+    with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked), mock.patch.object(
+        srv, "_kill_process_tree"
+    ), mock.patch.object(srv, "abort_gateway_session"), mock.patch.object(
+        srv, "clear_fill_activity"
+    ), mock.patch.object(
+        srv, "close_job_partyrock_tab", return_value={}
+    ), mock.patch.object(handler, "_send_json") as send:
+        handler._handle_cancel(job["id"])
+    payload = send.call_args[0][0] if send.call_args else {}
+    return jobs["jobs"][0], payload, queue_bucket
+
+
+DUMMY_RESUME = str(ROOT / "scripts/fastfill/fixtures/dummy_resume_de.pdf")
+
+
 class TestCancelResetAndSkipDelete(unittest.TestCase):
     def setUp(self):
         self.srv = _load_server()
 
-    def test_reset_keeps_resume_path(self):
+    def test_park_filling_with_resume_stays_progress(self):
         job = {
             "id": "c1",
             "status": "filling",
@@ -284,87 +312,129 @@ class TestCancelResetAndSkipDelete(unittest.TestCase):
             "ready_announced": True,
             "timeline": [],
         }
-        self.srv._reset_job_to_open_after_cancel(job)
-        self.assertEqual(job["status"], "discovered")
+        self.srv._park_job_after_cancel(job, origin_status="filling")
+        self.assertEqual(job["status"], "resume_ready")
+        self.assertNotEqual(job["status"], "discovered")
         self.assertEqual(job["resume_path"], "/tmp/dummy_resume.pdf")
         self.assertIsNone(job["question"])
         self.assertIsNone(job["pending_command"])
         self.assertNotIn("ready_announced", job)
-        self.assertIn("returned to Open", job["status_detail"])
+        self.assertNotIn("Open", job["status_detail"])
 
-    def test_handle_cancel_resets_to_discovered(self):
-        srv = self.srv
-        jobs = {
-            "jobs": [
-                {
-                    "id": "run1",
-                    "status": "filling",
-                    "session_key": "agent:job-hunter:job-run1",
-                    "resume_path": str(ROOT / "scripts/fastfill/fixtures/dummy_resume_de.pdf"),
-                    "status_detail": "Filling…",
-                    "timeline": [],
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }
-            ]
-        }
-        handler = srv.Handler.__new__(srv.Handler)
-        writes = []
-
-        def write_jobs(data):
-            writes.append(data)
-
-        with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-            srv, "write_jobs", side_effect=write_jobs
-        ), mock.patch.object(srv, "_kill_process_tree"), mock.patch.object(
-            srv, "abort_gateway_session"
-        ), mock.patch.object(srv, "clear_fill_activity"), mock.patch.object(
-            srv, "close_job_partyrock_tab", return_value={}
-        ), mock.patch.object(handler, "_send_json") as send:
-            handler._handle_cancel("run1")
-        self.assertEqual(jobs["jobs"][0]["status"], "discovered")
-        self.assertTrue(jobs["jobs"][0].get("resume_path"))
-        payload = send.call_args[0][0]
+    def test_handle_cancel_filling_stays_progress_not_open(self):
+        job, payload, queue_bucket = _run_cancel(
+            self.srv,
+            {
+                "id": "run1",
+                "status": "filling",
+                "session_key": "agent:job-hunter:job-run1",
+                "resume_path": DUMMY_RESUME,
+                "status_detail": "Filling…",
+                "timeline": [],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
         self.assertTrue(payload.get("ok"))
-        self.assertEqual(payload.get("status"), "discovered")
+        self.assertNotEqual(job["status"], "discovered")
+        self.assertEqual(job["status"], "resume_ready")
+        self.assertEqual(queue_bucket(job["status"]), "progress")
+        self.assertTrue(job.get("resume_path"))
+        self.assertEqual(payload.get("status"), "resume_ready")
         self.assertTrue(payload.get("resume_kept"))
 
-    def test_handle_cancel_stuck_resets_to_discovered(self):
-        srv = self.srv
-        jobs = {
-            "jobs": [
-                {
-                    "id": "stuck1",
-                    "status": "stuck",
-                    "session_key": "agent:job-hunter:job-stuck1",
-                    "resume_path": str(ROOT / "scripts/fastfill/fixtures/dummy_resume_de.pdf"),
-                    "status_detail": "Agent needs help",
-                    "question": "Which option should I pick?",
-                    "timeline": [],
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }
-            ]
-        }
-        handler = srv.Handler.__new__(srv.Handler)
-        writes = []
+    def test_handle_cancel_tailoring_without_resume_stays_progress(self):
+        job, payload, queue_bucket = _run_cancel(
+            self.srv,
+            {
+                "id": "tailor-no-pdf",
+                "status": "tailoring",
+                "session_key": "agent:job-hunter:job-tailor-no-pdf",
+                "status_detail": "Tailoring…",
+                "timeline": [],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        self.assertTrue(payload.get("ok"))
+        self.assertNotEqual(job["status"], "discovered")
+        self.assertEqual(queue_bucket(job["status"]), "progress")
+        self.assertNotIn(job["status"], self.srv.IN_PROGRESS_STATUSES)
 
-        def write_jobs(data):
-            writes.append(data)
+    def test_handle_cancel_resume_ready_stays_progress(self):
+        job, payload, queue_bucket = _run_cancel(
+            self.srv,
+            {
+                "id": "ready-resume",
+                "status": "resume_ready",
+                "session_key": "agent:job-hunter:job-ready-resume",
+                "resume_path": DUMMY_RESUME,
+                "status_detail": "Resume ready. Fill when you want.",
+                "timeline": [],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(job["status"], "resume_ready")
+        self.assertEqual(queue_bucket(job["status"]), "progress")
 
-        with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-            srv, "write_jobs", side_effect=write_jobs
-        ), mock.patch.object(srv, "_kill_process_tree"), mock.patch.object(
-            srv, "abort_gateway_session"
-        ), mock.patch.object(srv, "clear_fill_activity"), mock.patch.object(
-            srv, "close_job_partyrock_tab", return_value={}
-        ), mock.patch.object(handler, "_send_json") as send:
-            handler._handle_cancel("stuck1")
-        job = jobs["jobs"][0]
-        self.assertEqual(job["status"], "discovered")
+    def test_handle_cancel_stuck_stays_stuck(self):
+        job, payload, queue_bucket = _run_cancel(
+            self.srv,
+            {
+                "id": "stuck1",
+                "status": "stuck",
+                "session_key": "agent:job-hunter:job-stuck1",
+                "resume_path": DUMMY_RESUME,
+                "status_detail": "Agent needs help",
+                "question": "Which option should I pick?",
+                "timeline": [],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(job["status"], "stuck")
+        self.assertEqual(queue_bucket(job["status"]), "stuck")
+        self.assertNotEqual(job["status"], "discovered")
         self.assertTrue(job.get("resume_path"))
         self.assertIsNone(job.get("question"))
-        payload = send.call_args[0][0]
+        self.assertIn("cancel", (job.get("status_detail") or "").lower())
+        self.assertEqual(payload.get("status"), "stuck")
+
+    def test_handle_cancel_ready_stays_ready(self):
+        job, payload, queue_bucket = _run_cancel(
+            self.srv,
+            {
+                "id": "ready1",
+                "status": "ready_for_review",
+                "session_key": "agent:job-hunter:job-ready1",
+                "resume_path": DUMMY_RESUME,
+                "status_detail": "Ready for review (never submitted).",
+                "timeline": [],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
         self.assertTrue(payload.get("ok"))
-        self.assertEqual(payload.get("status"), "discovered")
+        self.assertEqual(job["status"], "ready_for_review")
+        self.assertEqual(queue_bucket(job["status"]), "ready")
+        self.assertNotEqual(job["status"], "discovered")
+        self.assertEqual(payload.get("status"), "ready_for_review")
+
+    def test_handle_cancel_captcha_stays_stuck_bucket(self):
+        job, payload, queue_bucket = _run_cancel(
+            self.srv,
+            {
+                "id": "captcha1",
+                "status": "blocked_captcha",
+                "session_key": "agent:job-hunter:job-captcha1",
+                "resume_path": DUMMY_RESUME,
+                "status_detail": "CAPTCHA — finish in the browser.",
+                "timeline": [],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(job["status"], "blocked_captcha")
+        self.assertEqual(queue_bucket(job["status"]), "stuck")
+        self.assertNotEqual(job["status"], "discovered")
 
     def test_handle_skip_soft_deletes(self):
         srv = self.srv
@@ -495,9 +565,13 @@ class TestCancelResetAndSkipDelete(unittest.TestCase):
                 },
             ]
         }
-        with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-            srv, "write_jobs"
-        ), mock.patch.object(srv, "block_deleted_job", return_value=[]):
+        @contextmanager
+        def _fake_locked(*, allow_purge=False):
+            yield jobs
+
+        with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked), mock.patch.object(
+            srv, "block_deleted_job", return_value=[]
+        ):
             counts = srv.migrate_triage_holding_pen_once()
         self.assertEqual(counts["skipped_to_deleted"], 2)
         self.assertEqual(counts["cancelled_to_open"], 1)
@@ -523,6 +597,14 @@ class TestOpsUiNoSkippedChip(unittest.TestCase):
         # Pipeline filter options removed
         self.assertNotIn('<option value="cancelled">Cancelled</option>', html)
         self.assertNotIn('<option value="skipped">Skipped</option>', html)
+
+    def test_dossier_row_has_delete_not_skip_button(self):
+        """Skip and Delete both already → deleted; show one Delete icon only."""
+        app = (HERE / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn("SKIP_ICON_SVG", app)
+        self.assertNotIn('ariaLabel: "Skip"', app)
+        self.assertIn("async function skipJob(", app)
+        self.assertIn("onclick: `deleteJob", app)
 
     def test_restore_error_message_updated(self):
         src = (HERE / "server.py").read_text(encoding="utf-8")
