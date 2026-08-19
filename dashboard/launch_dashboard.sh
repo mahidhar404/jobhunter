@@ -615,6 +615,25 @@ resolve_ui_browser() {
   return 1
 }
 
+# Trim rebuildable Chromium cache (dashboard profiles) and prune stale fill
+# profiles. Safe while UI is closed; UI cache trim skips if CfT is already up.
+run_profile_disk_hygiene() {
+  local py action="${1:-all}"
+  py="$(resolve_dashboard_python || true)"
+  [[ -n "${py}" ]] || return 0
+  case "${action}" in
+    ui)
+      "${py}" "$ROOT/scripts/profile_disk_hygiene.py" --trim-ui-cache 2>/dev/null || true
+      ;;
+    fill)
+      "${py}" "$ROOT/scripts/profile_disk_hygiene.py" --prune-fill-profiles 2>/dev/null || true
+      ;;
+    *)
+      "${py}" "$ROOT/scripts/profile_disk_hygiene.py" --prune-fill-profiles 2>/dev/null || true
+      ;;
+  esac
+}
+
 open_dashboard_ui() {
   # Single-instance: if the dedicated-profile --app window is alive, focus it
   # and return. Never re-exec the binary against the same user-data-dir — that
@@ -632,6 +651,7 @@ open_dashboard_ui() {
 
   clear_stale_ui_profile_locks "$UI_PROFILE"
   clear_stale_ui_profile_locks "$LEGACY_UI_PROFILE"
+  run_profile_disk_hygiene ui
 
   local ui_bin
   ui_bin="$(resolve_ui_browser || true)"
@@ -762,6 +782,8 @@ start_dashboard_server() {
     echo "dashboard already running (pid=${SERVER_PID:-unknown}) on :${DASHBOARD_PORT}"
     return 0
   fi
+
+  run_profile_disk_hygiene fill
 
   cd "$ROOT" || return 1
   local py_bin
