@@ -29,6 +29,14 @@ AGGREGATOR_HOST_HINTS = (
     "jooble.org",
     "snagajob.com",
     "talent.com",
+    "remoteok.com",
+    "remotive.com",
+    "jobicy.com",
+    "adzuna.com",
+    "adzuna.in",
+    "weworkremotely.com",
+    "authenticjobs.com",
+    "jobspresso.co",
 )
 
 # Known ATS / hosted apply platforms (prefer these over bare company career pages).
@@ -53,6 +61,8 @@ ATS_HOST_HINTS = (
     "ukg.net",
     "oraclecloud.com",
     "rippling.com",
+    "teamtailor.com",
+    "pinpointhq.com",
     "applytojob.com",
     "breezy.hr",
     "jobscore.com",
@@ -293,14 +303,18 @@ def enrich_listing_urls(item: dict) -> dict:
 
 
 def site_source_rank(site) -> int:
-    """Align with dedup_listings ATS_SOURCE_RANK; unknown → aggregator-ish."""
+    """Rank discovery site labels; unknown → aggregator-ish."""
     s = str(site or "").lower().strip()
     if s in (
         "greenhouse", "lever", "ashby", "recruitee", "personio",
         "smartrecruiters", "workable", "rippling", "breezy", "bamboohr",
+        "teamtailor", "jazzhr", "pinpoint",
     ):
         return RANK_KNOWN_ATS
-    if s in ("indeed", "linkedin", "builtin", "glassdoor", "ziprecruiter"):
+    if s in (
+        "indeed", "linkedin", "builtin", "glassdoor", "ziprecruiter",
+        "remoteok", "remotive", "jobicy", "rss_feeds", "adzuna", "adzuna_us",
+    ):
         return RANK_AGGREGATOR
     return RANK_OTHER
 

@@ -1,0 +1,13 @@
+{
+  "id": "must_prune_staff_title",
+  "title": "Staff Machine Learning Engineer",
+  "company": "Fixture Big",
+  "location": "Remote, US",
+  "description": "Lead architecture for ML platforms. No clearance required.",
+  "expect": {
+    "keep": false,
+    "reason": "management_track",
+    "tags": { "clearance": false, "us_person": false },
+    "work_mode": "remote"
+  }
+}

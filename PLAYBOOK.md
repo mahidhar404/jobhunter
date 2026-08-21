@@ -19,6 +19,12 @@ fan out more than that.
   user doesn't need to be told through any other channel.
 - **Never guess EEO/demographic/work-authorization answers.** If
   `profile.json` doesn't have it, ask the user, then save the answer.
+- **Dashboard reliability (agents):** `GET /api/jobs` is stamp-only + cache +
+  ETag — never re-parse JDs, never walk `resumes/*/jd_full.txt`, never do
+  heavy enrich under the jobs lock on that path. JD work belongs on
+  `/api/jobs/search`, job detail, and background backfill only. Dashboard
+  sticks to `:8787` (never hop to `:8788` while the UI stays on the old
+  port). Incomplete-JD sweeper stays background — never on list open.
 - **For mailing address fields, never ask me.** Use the exact city PartyRock
   put in the compiled resume header as the anchor, then resolve a synthetic
   apartment from `scripts/fastfill/fixtures/us_apartment_addresses.json`.
@@ -38,6 +44,31 @@ fan out more than that.
   company's own site, or a Greenhouse / iCIMS / Workday instance for that
   company. Skip listings that route through a staffing agency or a
   third-party recruiter.
+
+## What's automatic vs still-manual
+
+**Automatic (dashboard / scripts — no agent turn):**
+- Discover: scrape → `dedup_listings` → `write_discovered` (tags + prune
+  tombstones) → `dedup_jobs` → HTTP apply-URL resolve (this-run jobs)
+- Continuous missing-JD backfill (small batches): fetch JD → re-stamp
+  work_mode / YOE / salary / clearance / us_person → prune+tombstone if
+  newly disqualifying
+- Scheduled prune sweep (persisted reasons + interval), including
+  ``unresolved_apply_url`` (LinkedIn/aggregator apply URL after resolve
+  failed / no_external / easy_apply) with an **Unresolved URL** chip
+- Rate-limited apply-resolve backlog (older unresolved LinkedIn/aggregators;
+  HTTP-only, skips while Discover runs); persist path auto-prunes+tags
+  unresolved outcomes on Open jobs
+- Background stamp backfills from `jd_full` (YOE / work_mode / salary /
+  clearance chips)
+- Posted dates on LinkedIn HTTP resolve via shared `posted_date` helper
+  (exact `date_posted` or `~` fallback)
+
+**Still manual / agent-assisted:**
+- Start → tailor + compile + form fill (never Submit)
+- CAPTCHA, EEO answers, final human review / submit
+- Opt-in LinkedIn CDP resolve (`LINKEDIN_ALLOW_CDP=1`) — not part of Discover
+- India region toggle, Discover source pins, prune reason/interval prefs
 
 ## Pipeline
 
@@ -60,8 +91,10 @@ fan out more than that.
      (HTML SPA or token-gated; no free unauthenticated board list);
      ZipRecruiter / Glassdoor (aggregators / anti-bot / paid); Taleo,
      SuccessFactors, Avature (no public cross-company board API).
-     Teamtailor `/jobs.json` is a free feed candidate not yet wired (host
-     can be `slug.teamtailor.com` or `slug.na.teamtailor.com`).
+     Teamtailor `/jobs.json` per-site feeds (wired in `scrape_ats.py`); JazzHR
+     `{slug}.applytojob.com/apply` SSR boards; Pinpoint `{slug}.pinpointhq.com/postings.json`.
+     Discovery passes known URL/posting_key keys so scrapers skip detail fetches
+     for jobs already in `jobs.json` (board list still runs to find new roles).
    - `scripts/scrape_builtin.py` scrapes Built In (builtin.com) directly -
      no public API and no JobSpy support, so this reverse-engineers the
      site's own server-rendered search pages and a JSON init blob each
@@ -70,7 +103,8 @@ fan out more than that.
      skips any posting where Built In's own `isEasyApply` flag is true -
      never use Built In's hosted apply form, only a real external ATS
      link (same policy as LinkedIn's Easy Apply below). Search requests
-     apply Built In's own "past week" (`daysSinceUpdated=7`) and
+     apply Built In's own recency filter (`daysSinceUpdated`, default **7**,
+     never 1 — that window hid jobs) and
      experience-level filters (entry-level/junior/mid-level/senior,
      excluding internship and Expert/Leader 9+ years) server-side -
      Built In's relevance-only search ranking has no date sort, so a
@@ -79,9 +113,27 @@ fan out more than that.
      req ranked page 9 of an unfiltered search). Narrowing the search
      itself keeps the per-term result set bounded and recent instead of
      paging deeper into an unbounded ranking.
+     **Adaptive recency:** if the last *successful* Discover finished N days
+     ago, lookback is **N+1** days (safety), floored at 7 and capped at **10**.
+     Per-source 1–10 day pins in Discover override adaptive for that source.
+     Scout JobSpy gets `hours_old = days*24`; Adzuna gets `max_days` when
+     keys exist; Built In gets `daysSinceUpdated` 1–10. RemoteOK / Remotive /
+     Jobicy / RSS have no recency query
+     param — they return the current public feed (do not client-drop older
+     unseen rows). ATS boards are full-board fetches (no date filter);
+     dashboard per-platform timeout is 1800s, known slugs fetch **before**
+     slug guesses (guesses get a leftover ~180s budget). Never scrape Workday.
+   - US public feeds (same PRE_ATS phase as scout/Built In): RemoteOK
+     (tagged JSON union), Remotive (software/data/AI/devops categories),
+     Jobicy (`count=100` + industry union), RSS bundle (WWR
+     programming/devops/backend + Authentic Jobs keyword splits +
+     Jobspresso), Adzuna US (`scrape_adzuna.py --country us`; **0 without
+     API keys**, never invent keys). Title filter stays on.
    - `scripts/dedup_listings.py` merges all listings files, drops
-     test/mock entries, staffing-agency postings, indirect apply links, and
-     obviously irrelevant titles, and fuzzy-merges the same role seen via
+     test/mock entries, staffing-agency postings, indirect apply links,
+     obviously irrelevant titles, clearance/intel, >6 YOE, US-citizen / green-
+     card-only (including USC/GC slang), not mere “unable to sponsor” /
+     “authorized to work” / E-Verify, and fuzzy-merges the same role seen via
      two different boards (keeping the direct-ATS copy over the aggregator
      copy) - into `listings/<date>-qualified.json`.
    Don't re-implement any of this filtering ad-hoc in a turn - if one of
@@ -297,9 +349,9 @@ fan out more than that.
   breakdown of an agent turn - use this if something feels slow)
 - Synthetic apartment bank: `scripts/fastfill/fixtures/us_apartment_addresses.json`
 - Per-ATS-platform form-filling notes (Workday/Greenhouse/Lever/Ashby/
-  iCIMS): `ats_notes/<platform>.md` - auto-injected into the fill turn when
-  `apply_url` matches a known platform (see `ats_notes_for_url` in
-  server.py); append new lessons here, not to a job-specific note
+  iCIMS): `ats_notes/<platform>.md` — append new lessons here, not to a
+  job-specific note (fill paths that still inject platform notes read these
+  files directly; the old dashboard `ats_notes_for_url` helper was removed)
 - Command-center dashboard: `dashboard/server.py` (start with
   `python3 dashboard/server.py`, view at http://127.0.0.1:8787 — **Ops `/` only**; Classic is frozen and `/classic` redirects here)
 - **Dummy autofill (never submit):** `PRODUCTION.md` + `./scripts/fastfill/run_fill_visible.sh`
@@ -351,6 +403,19 @@ entry per job looks like:
 employer/ATS apply page; aggregator listings (LinkedIn/Indeed) are kept as
 `job_url`/`source_url` and used as the Application link only when no company/ATS
 URL is known. Never drop a job because URL resolution failed.
+
+**LinkedIn apply-URL resolve (opt-in profile):** PartyRock-style CfT + long-lived
+profile + CDP attach, but a **separate** user-data-dir
+(`linkedin_resolve_profile/`, CDP `:18801`) so LinkedIn cookies never mix with
+PartyRock (`~/.openclaw/browser/openclaw/user-data` / `:18800`). Sign in once
+via `./open_linkedin_resolve.sh` (or `python3 scripts/linkedin_resolve_profile.py
+--login`) — leave that browser open; confirm with `--profile-ok` (yes/no only).
+Dashboard **Resolve ATS** ensures CDP and `connect_over_cdp` (never headless
+`launch_persistent_context` relaunch — that authwalled / wiped `li_at`). Falls
+back to public web search. Still **never** Easy Apply submit, **never** CAPTCHA
+solve (stop + surface), **never** daily Chrome / dashboard UI / PartyRock /
+wipeable fill profiles. Public discovery search still does not scrape
+authenticated LinkedIn.
 When you create a `discovered` entry during the Discover/Dedup step, carry
 over `source` (the site it came from, e.g. `"indeed"`) and `date_posted`
 (the listing's own posted-date field) from the raw scraped listing - the

@@ -87,7 +87,8 @@ def main() -> int:
         "companySiblings must filter with jobRequiresClearance"
     )
     assert "CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE" in js
-    assert "blob.replace(CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE" in js
+    assert "CLEARANCE_PREFERRED_ONLY_RE" in js
+    assert "requiresSecurityClearance" in js
     # Every discovery-filter regex must still be present/extractable in app.js.
     for name in (
         "SENIORITY_EXCLUDE_RE",
@@ -142,7 +143,7 @@ def main() -> int:
         (
             "Developer",
             "Ripple Effect",
-            "Clearance: Must be able to work in the U.S. without employer sponsorship",
+            "Clearance: Must be able to work in the U.S.",
         ),
     ]
     drop_title = [
@@ -203,6 +204,51 @@ def main() -> int:
     assert "extractMinRequiredYoe" in js
     assert "jobRequiresExcessiveYoe" in js or "requiresExcessiveExperience" in js
     assert "CITIZENSHIP_OR_GC_REQUIREMENT_RE" in js
+    assert "NO_VISA_SPONSORSHIP_RE" in js
+    assert "SPONSORS_VISA_RE" in js
+    cit_fn = js.split("function requiresUsCitizenOrGreencard", 1)[1].split(
+        "\nfunction ", 1
+    )[0]
+    assert "NO_VISA_SPONSORSHIP_RE" not in cit_fn, (
+        "no-sponsorship must not hide as citizenship_or_greencard"
+    )
+    cit_re = _extract_js_re(js, "CITIZENSHIP_OR_GC_REQUIREMENT_RE")
+    no_spon_re = _extract_js_re(js, "NO_VISA_SPONSORSHIP_RE")
+    yes_spon_re = _extract_js_re(js, "SPONSORS_VISA_RE")
+    assert cit_re.search("Visa: USC and GC only.")
+    assert cit_re.search("USC/GC only")
+    assert not cit_re.search("unable to sponsor")
+    assert not cit_re.search("Visa: GC/USC is preferred but H1B works too.")
+    assert not cit_re.search("Must be authorized to work in the U.S.")
+    assert no_spon_re.search("no visa sponsorship")
+    assert yes_spon_re.search("we sponsor visas")
+    assert not no_spon_re.search("we sponsor visas")
+    assert sibling_kept(
+        title="AI Engineer",
+        description="We are unable to sponsor visas for this role.",
+    )
+    assert not sibling_kept(
+        title="Python AI Engineer",
+        description="Visa: USC and GC only.",
+    )
+    anduril = (
+        "U.S. Person status is required as this position needs to access "
+        "export controlled data. Eligibility to obtain/maintain a US Top Secret "
+        "clearance is also desirable."
+    )
+    assert not sibling_kept(
+        title="Software Engineer - ML Infrastructure",
+        company="Anduril",
+        description=anduril,
+    )
+    assert js_clearance_hit(anduril)
+    us_person_re = _extract_js_re(js, "US_PERSON_REQUIRED_RE")
+    assert us_person_re.search(anduril)
+    assert us_person_re.search("Must comply with ITAR requirements.")
+    assert not us_person_re.search("U.S. Person status is preferred for this role.")
+    assert "requiresUsPerson" in js.split("function requiresUsCitizenOrGreencard", 1)[1].split(
+        "\nfunction ", 1
+    )[0]
 
     print("test_company_siblings_filter: OK")
     return 0

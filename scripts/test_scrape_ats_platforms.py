@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -35,6 +36,9 @@ class SlugPatternTests(unittest.TestCase):
             {"apply_url": "https://ats.rippling.com/tensorlake/jobs/abc"},
             {"apply_url": "https://cruisebound.breezy.hr/p/40a2b0b63666-data-scientist"},
             {"apply_url": "https://peerislands.bamboohr.com/careers/51"},
+            {"apply_url": "https://spokeo.na.teamtailor.com/jobs/609343-senior-data-engineer"},
+            {"apply_url": "https://emedlabsllc.applytojob.com/apply/FI24qAupbj/Analytics-Engineer"},
+            {"job_url": "https://cardfactory.pinpointhq.com/en/postings/f1084665-head-of-dei"},
         ]
         path = Path(self.id().replace(".", "_") + "_listings.json")
         # Write under /tmp via NamedTemporaryFile pattern using workspace tmp
@@ -50,6 +54,9 @@ class SlugPatternTests(unittest.TestCase):
             self.assertIn("tensorlake", reg["rippling"])
             self.assertIn("cruisebound", reg["breezy"])
             self.assertIn("peerislands", reg["bamboohr"])
+            self.assertIn("spokeo.na.teamtailor.com", reg["teamtailor"])
+            self.assertIn("emedlabsllc", reg["jazzhr"])
+            self.assertIn("cardfactory", reg["pinpoint"])
         finally:
             if tmp.exists():
                 tmp.unlink()
@@ -116,7 +123,11 @@ class FixtureScrapeTests(unittest.TestCase):
                 "published_on": "2026-07-15",
             }],
         }
-        detail = {"description": "<p>Build models</p>"}
+        detail = {
+            "description": "<p>Build models for production.</p>",
+            "requirements": "<p>Requirements</p><p>Five years of Python and SQL.</p>",
+            "benefits": "<p>Health insurance.</p>",
+        }
 
         def fake_fetch(url, *args, **kwargs):
             if "widget" in url:
@@ -130,6 +141,84 @@ class FixtureScrapeTests(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0]["company"], "Node.Digital")
         self.assertIn("Build models", jobs[0]["description"])
+        self.assertIn("Requirements", jobs[0]["description"])
+        self.assertIn("Five years of Python", jobs[0]["description"])
+        self.assertIn("Requirements", jobs[0]["description"])
+        self.assertIn("Five years of Python", jobs[0]["description"])
+
+    def test_workable_skips_detail_fetch_for_known_url(self):
+        widget = {
+            "name": "Node.Digital",
+            "jobs": [{
+                "title": "AI/ML Engineer",
+                "shortcode": "B897D2F1F1",
+                "city": "Arlington",
+                "state": "VA",
+                "country": "United States",
+                "application_url": "https://apply.workable.com/j/B897D2F1F1",
+                "published_on": "2026-07-15",
+            }],
+        }
+        from blocked_urls import block_keys_for_url
+        calls: list[str] = []
+
+        def fake_fetch(url, *args, **kwargs):
+            calls.append(url)
+            if "widget" in url:
+                return widget
+            raise AssertionError(f"unexpected detail fetch: {url}")
+
+        sa._SKIP_URL_KEYS = set(block_keys_for_url(
+            "https://apply.workable.com/j/B897D2F1F1"
+        ))
+        sa._SKIPPED_KNOWN = 0
+        try:
+            with mock.patch.object(sa, "fetch_json", side_effect=fake_fetch):
+                jobs = sa.scrape_workable("node")
+            self.assertEqual(jobs, [])
+            self.assertEqual(sa._SKIPPED_KNOWN, 1)
+            self.assertTrue(all("widget" in u for u in calls))
+            self.assertFalse(any("/api/v2/" in u for u in calls))
+        finally:
+            sa._SKIP_URL_KEYS = set()
+            sa._SKIPPED_KNOWN = 0
+
+    def test_smartrecruiters_skips_detail_fetch_for_known_url(self):
+        listing = {
+            "offset": 0,
+            "limit": 100,
+            "totalFound": 1,
+            "content": [{
+                "id": "sr1",
+                "name": "Senior Machine Learning Engineer",
+                "visibility": "PUBLIC",
+                "location": {"city": "Chicago", "region": "IL", "country": "United States"},
+                "releasedDate": "2026-07-01T00:00:00.000Z",
+                "postingUrl": "https://jobs.smartrecruiters.com/AbbVie/sr1",
+            }],
+        }
+        from blocked_urls import block_keys_for_url
+        calls: list[str] = []
+
+        def fake_fetch(url, *args, **kwargs):
+            calls.append(url)
+            if "offset=" in url or url.rstrip("/").endswith("/postings"):
+                return listing
+            raise AssertionError(f"unexpected detail fetch: {url}")
+
+        sa._SKIP_URL_KEYS = set(block_keys_for_url(
+            "https://jobs.smartrecruiters.com/AbbVie/sr1"
+        ))
+        sa._SKIPPED_KNOWN = 0
+        try:
+            with mock.patch.object(sa, "fetch_json", side_effect=fake_fetch):
+                jobs = sa.scrape_smartrecruiters("AbbVie")
+            self.assertEqual(jobs, [])
+            self.assertEqual(sa._SKIPPED_KNOWN, 1)
+            self.assertFalse(any(u.endswith("/postings/sr1") for u in calls))
+        finally:
+            sa._SKIP_URL_KEYS = set()
+            sa._SKIPPED_KNOWN = 0
 
     def test_rippling_fixture(self):
         payload = [{
@@ -209,6 +298,47 @@ class FixtureScrapeTests(unittest.TestCase):
         self.assertIn("Build sensor sims", jobs[0]["description"])
         self.assertIn("Benefits include equity", jobs[0]["description"])
 
+    def test_lever_compose_includes_lists_when_plain_present(self):
+        """descriptionPlain is the intro; lists hold requirements (nextgenfed)."""
+        payload = [{
+            "id": "7387d176-8443-4da8-a98f-b4192ae966fe",
+            "text": "Senior Statistician",
+            "hostedUrl": "https://jobs.lever.co/nextgenfed/7387d176",
+            "applyUrl": "https://jobs.lever.co/nextgenfed/7387d176/apply",
+            "description": "<div>NextGen Federal Systems seeks a Senior Statistician at Scott AFB.</div>",
+            "descriptionPlain": (
+                "NextGen Federal Systems, LLC (NextGen) is seeking a Senior "
+                "Statistician to work on our Operational Analysis Support "
+                "contract in the 618th Air Operations Center at Scott AFB."
+            ),
+            "categories": {"location": "Scott AFB IL"},
+            "lists": [
+                {
+                    "text": "Position Requirements",
+                    "content": (
+                        "<li>Extensive experience in statistical analysis</li>"
+                        "<li>Experience in the development of predictive analysis tools</li>"
+                    ),
+                },
+                {
+                    "text": "Desired Skills",
+                    "content": "<li>Advanced skills in Excel, JMP, MATLAB, R, SAS</li>",
+                },
+            ],
+            "additionalPlain": "NextGen is an Equal Opportunity Employer.",
+            "additional": "",
+            "openingPlain": "",
+        }]
+        with mock.patch.object(sa, "fetch_json", return_value=payload):
+            jobs = sa.scrape_lever("nextgenfed")
+        self.assertEqual(len(jobs), 1)
+        desc = jobs[0]["description"]
+        self.assertIn("Senior Statistician", desc)
+        self.assertIn("Position Requirements", desc)
+        self.assertIn("predictive analysis tools", desc)
+        self.assertIn("Desired Skills", desc)
+        self.assertIn("Equal Opportunity Employer", desc)
+
     def test_bamboohr_fixture(self):
         listing = {
             "meta": {"totalCount": 1},
@@ -240,6 +370,115 @@ class FixtureScrapeTests(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         self.assertIn("Analyze data", jobs[0]["description"])
 
+    def test_teamtailor_fixture(self):
+        feed = {
+            "title": "Spokeo",
+            "items": [{
+                "id": "j1",
+                "title": "Senior Data Engineer",
+                "url": "https://spokeo.na.teamtailor.com/jobs/609343-senior-data-engineer",
+                "date_published": "2026-08-04T09:43:48-07:00",
+                "content_html": "<p>Build data pipelines</p>",
+            }],
+        }
+        with mock.patch.object(sa, "fetch_json", return_value=feed):
+            jobs = sa.scrape_teamtailor("spokeo.na.teamtailor.com")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["site"], "teamtailor")
+        self.assertEqual(jobs[0]["company"], "Spokeo")
+        self.assertIn("Build data pipelines", jobs[0]["description"])
+
+    def test_jazzhr_fixture(self):
+        board_html = '''
+        <html><head>
+        <meta property="og:description" content="Explore open job opportunities at Bright Vision." />
+        </head><body>
+        <a href="https://acme.applytojob.com/apply/pIuCcNu1fu/AI-Data-Engineer">
+            AI Data Engineer
+        </a>
+        </body></html>
+        '''
+        job_html = '''
+        <script type="application/ld+json">
+        {"@type":"JobPosting","title":"AI Data Engineer","datePosted":"2026-07-01",
+         "description":"<p>Build pipelines</p>"}
+        </script>
+        '''
+        with mock.patch.object(sa, "fetch_html", side_effect=[board_html, job_html]):
+            jobs = sa.scrape_jazzhr("acme")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["site"], "jazzhr")
+        self.assertIn("Build pipelines", jobs[0]["description"])
+
+    def test_jazzhr_html_description_when_no_jobposting_ldjson(self):
+        """Zealogics-style boards: Organization ld+json only; JD is #job-description."""
+        board_html = '''
+        <html><head>
+        <meta property="og:description" content="Explore open job opportunities at Zealogics." />
+        </head><body>
+        <a href="https://acme.applytojob.com/apply/AgViDHIEyQ/Senior-Data-Engineer">
+            Senior Data Engineer
+        </a>
+        </body></html>
+        '''
+        job_html = '''
+        <script type="application/ld+json">
+        {"@type":"Organization","name":"Zealogics.com"}
+        </script>
+        <div class="col description" id="job-description">
+            <b>Position Overview</b><br>Architect data models across SAP Core and PostgreSQL.
+        </div>
+        '''
+        with mock.patch.object(sa, "fetch_html", side_effect=[board_html, job_html]):
+            jobs = sa.scrape_jazzhr("acme")
+        self.assertEqual(len(jobs), 1)
+        self.assertIn("Architect data models", jobs[0]["description"])
+        self.assertNotIn("No job description", jobs[0]["description"])
+
+    def test_jazzhr_prefers_html_body_over_short_jobposting(self):
+        board_html = '''
+        <html><body>
+        <a href="https://acme.applytojob.com/apply/AgViDHIEyQ/Senior-Data-Engineer">
+            Senior Data Engineer
+        </a>
+        </body></html>
+        '''
+        job_html = '''
+        <script type="application/ld+json">
+        {"@type":"JobPosting","title":"Senior Data Engineer",
+         "description":"<p>Acme is hiring in Austin.</p>"}
+        </script>
+        <div id="job-description">
+            <p>Acme is hiring in Austin.</p>
+            <h2>Responsibilities</h2>
+            <p>Architect data models across SAP Core and PostgreSQL.</p>
+            <h2>Requirements</h2>
+            <p>''' + ("Experience with ETL pipelines and warehouse design. " * 20) + '''</p>
+        </div>
+        '''
+        with mock.patch.object(sa, "fetch_html", side_effect=[board_html, job_html]):
+            jobs = sa.scrape_jazzhr("acme")
+        self.assertEqual(len(jobs), 1)
+        self.assertIn("Responsibilities", jobs[0]["description"])
+        self.assertIn("Architect data models", jobs[0]["description"])
+
+    def test_pinpoint_fixture(self):
+        payload = {
+            "data": [{
+                "title": "Senior Data Engineer",
+                "url": "https://cardfactory.pinpointhq.com/en/postings/abc",
+                "description": "<p>Build data platforms</p>",
+                "employment_type": "full_time",
+                "location": {"name": "Remote"},
+                "deadline_at": "2026-08-01T00:00:00Z",
+            }],
+        }
+        with mock.patch.object(sa, "fetch_json", return_value=payload):
+            jobs = sa.scrape_pinpoint("cardfactory")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["site"], "pinpoint")
+        self.assertIn("Build data platforms", jobs[0]["description"])
+
     def test_probe_smartrecruiters_rejects_empty_unknown(self):
         with mock.patch.object(
             sa, "fetch_json",
@@ -269,6 +508,33 @@ class LiveProbeTests(unittest.TestCase):
                 # Boards may have zero *relevant* titles right now; probe already
                 # confirmed the endpoint works. Prefer seeing at least a list.
                 self.assertIsInstance(jobs, list)
+
+
+class OrchestrationTests(unittest.TestCase):
+    def test_fetch_known_before_guess(self):
+        self.assertEqual(
+            sa.SCRAPE_PHASE_ORDER,
+            ("extract", "fetch_known", "guess", "fetch_guessed"),
+        )
+        src = Path(sa.__file__).read_text()
+        fetch_i = src.index("fetch_board_listings(tasks")
+        guess_i = src.index("guessed, probed = guess_new_slugs(")
+        self.assertLess(fetch_i, guess_i)
+
+    def test_guess_deadline_stops_probes(self):
+        tmp = ROOT / "listings" / "_test_guess_deadline.json"
+        tmp.write_text(json.dumps([{"company": "DefinitelyNotARealAtsCoXYZ"}]))
+        try:
+            reg = {ats: [] for ats in sa.SLUG_PATTERNS}
+            reg["tried_and_failed"] = {ats: [] for ats in sa.SLUG_PATTERNS}
+            added, probed = sa.guess_new_slugs(
+                [tmp], reg, 300, deadline_monotonic=time.monotonic() - 1,
+            )
+            self.assertEqual(probed, 0)
+            self.assertEqual(added, 0)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
 
 
 if __name__ == "__main__":

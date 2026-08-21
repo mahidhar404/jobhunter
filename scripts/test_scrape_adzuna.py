@@ -40,6 +40,22 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(j["job_url"], "https://www.adzuna.in/details/123")
         self.assertTrue(j["search_term"].startswith("india:adzuna"))
 
+    def test_normalize_us_results(self):
+        data = {
+            "results": [{
+                "title": "Data Engineer",
+                "company": {"display_name": "Acme US"},
+                "location": {"display_name": "San Francisco, CA"},
+                "created": "2026-08-02T12:00:00Z",
+                "redirect_url": "https://www.adzuna.com/details/456",
+                "description": "US data pipelines.",
+            }]
+        }
+        jobs = sa.normalize_results(data, search_term="data engineer", country="us")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["search_term"], "us:adzuna:data engineer")
+        self.assertEqual(jobs[0]["company"], "Acme US")
+
     def test_normalize_bad_input(self):
         self.assertEqual(sa.normalize_results(None), [])
         self.assertEqual(sa.normalize_results({}), [])
@@ -79,6 +95,55 @@ class SkipWithoutKeysTests(unittest.TestCase):
                                return_value={"adzuna_app_id": "fid",
                                              "adzuna_app_key": "fkey"}):
             self.assertEqual(sa._resolve_keys(), ("fid", "fkey"))
+
+
+class PaginationDefaultsTests(unittest.TestCase):
+    def test_us_defaults_to_three_pages_india_one(self):
+        self.assertEqual(sa.resolve_max_pages("us", None), 3)
+        self.assertEqual(sa.resolve_max_pages("in", None), 1)
+        self.assertEqual(sa.resolve_max_pages("us", 99), sa.ADZUNA_MAX_PAGES_CAP)
+        self.assertEqual(sa.resolve_max_pages("us", 2), 2)
+
+    def test_us_scrape_requests_multiple_pages(self):
+        page_payload = {
+            "results": [{
+                "title": "Data Engineer",
+                "company": {"display_name": "Acme"},
+                "location": {"display_name": "Remote"},
+                "created": "2026-08-02T12:00:00Z",
+                "redirect_url": "https://www.adzuna.com/details/1",
+            }]
+        }
+        calls = []
+
+        def fake_fetch(url: str):
+            calls.append(url)
+            return page_payload
+
+        with mock.patch.object(sa, "US_SEARCH_TERMS", ["data engineer"]), \
+             mock.patch.object(sa, "fetch_json", side_effect=fake_fetch), \
+             mock.patch.object(sa, "polite_sleep"):
+            jobs = sa.scrape("id", "key", country="us",
+                             results_per_term=50, max_pages=3)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(any("/1?" in u for u in calls))
+        self.assertTrue(any("/3?" in u for u in calls))
+
+    def test_max_days_query_param(self):
+        calls: list[str] = []
+
+        def fake_fetch(url: str):
+            calls.append(url)
+            return {"results": []}
+
+        with mock.patch.object(sa, "US_SEARCH_TERMS", ["data engineer"]), \
+             mock.patch.object(sa, "fetch_json", side_effect=fake_fetch), \
+             mock.patch.object(sa, "polite_sleep"):
+            sa.scrape("id", "key", country="us",
+                      results_per_term=50, max_pages=1, max_days=7)
+        self.assertTrue(calls)
+        self.assertIn("max_days=7", calls[0])
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ killall Finder   # only if the Desktop still shows the old icon
 |------|----------------------------|---------------|
 | Dashboard UI | `dashboard_ui_profile` / `--app=:8787` · window title ≈ **JOB HUNT · OPS** | Dock / `launch_dashboard.sh --focus-ui` |
 | PartyRock / OpenClaw | `~/.openclaw/browser/openclaw/user-data` / `:18800` · PartyRock tab title | `./open_partyrock.sh` only |
+| LinkedIn resolve | `linkedin_resolve_profile` / `:18801` · LinkedIn tab | `./open_linkedin_resolve.sh` |
 | Form fill / hold | Playwright `--remote-debugging-pipe` · job URL title | `launch_dashboard.sh --focus-fill` · CAPTCHA/`bring_chrome_testing_to_front` |
 
 Inventory without focusing: `./dashboard/launch_dashboard.sh --cft-roles`.
@@ -76,6 +77,7 @@ Measured on CfT 149: `--disable-infobars` reclaims the full 56px banner; **`--te
 |---------|----------------|
 | Dashboard UI window | `--user-data-dir=…/dashboard_ui_profile` (or legacy `…/dashboard_chrome_profile`) or `--app=http://127.0.0.1:8787` |
 | PartyRock / OpenClaw CDP | Chrome for Testing + `--user-data-dir=~/.openclaw/browser/openclaw/user-data` + `--remote-debugging-port=18800` (`scripts/chrome_for_testing.py` / `./open_partyrock.sh` + `tailor_resume.py` — never daily Google Chrome) |
+| LinkedIn apply-URL resolve | Chrome for Testing + `--user-data-dir=<repo>/linkedin_resolve_profile` + CDP `:18801` (`./open_linkedin_resolve.sh` / Resolve attaches via CDP — PartyRock mechanism, separate profile; never Easy Apply submit) |
 | Legacy PartyRock profile | `--user-data-dir=…/partyrock_chrome_profile` (torn down on quit if still open; opener no longer launches it) |
 | Form-fill headed browser | `Google Chrome for Testing` main (Playwright / fast_fill), excluding dashboard UI **and** OpenClaw PartyRock |
 | Discovery / fill / agent children | `_running_procs` process groups (`start_new_session=True`) |
@@ -329,6 +331,47 @@ resolution fails. Helpers: `scripts/apply_urls.py`. Listing merge:
 `scripts/dedup_jobs.py` (winner keeps best ATS `apply_url` + folded `alternate_urls`;
 loser → `deleted` / `deleted_reason=duplicate`, not a Skipped holding pen).
 
+**Resolve ATS / LinkedIn session profile:** same *mechanism* as PartyRock
+(CfT + long-lived user-data-dir + CDP attach), **separate** profile so cookies
+never mix. Profile: `linkedin_resolve_profile/` (gitignored; override
+`JOB_HUNTER_LINKEDIN_RESOLVE_PROFILE`). CDP: `:18801` (override
+`JOB_HUNTER_LINKEDIN_RESOLVE_CDP_PORT`). Sign in once:
+
+```bash
+./open_linkedin_resolve.sh
+# or: python3 scripts/linkedin_resolve_profile.py --login
+# Check persistence (prints yes/no only — never cookie values):
+python3 scripts/linkedin_resolve_profile.py --profile-ok
+```
+
+**How to login (PartyRock-style):**
+1. Run `./open_linkedin_resolve.sh` — starts CfT on the LinkedIn profile with
+   CDP `:18801` and opens LinkedIn login (leaves the browser **running**).
+2. Sign in until the LinkedIn **feed/home** loads.
+3. **Leave the window open** — Resolve ATS attaches via `connect_over_cdp`
+   (same as PartyRock tailor). Do not quit between login and Resolve.
+4. Confirm: `--profile-ok` prints `yes`.
+
+Then **Resolve ATS** (or `python3 scripts/resolve_apply_urls.py JOB_ID --write`)
+ensures CDP is up and attaches (never headless relaunch /
+`launch_persistent_context` — that authwalled and could wipe `li_at`). Prefers
+Apply `href` / data-* / LinkedIn-redirect unwrap before click-follow. Easy
+Apply-only → leave on LinkedIn (no submit). CAPTCHA → stop, never solve. Not
+daily Chrome / `dashboard_ui_profile` / PartyRock `:18800` / fill profiles.
+Public web search remains the fallback when the profile is missing or no
+offsite link appears.
+
+**No focus steal (dashboard resolve):** Resolve opens each job as a **background**
+CDP tab (`Target.createTarget` `background: true`) and closes that tab when
+done — never `browser.close()`, never osascript Activate / bring CfT to front.
+Interactive `./open_linkedin_resolve.sh` / `--login` may focus once so you can
+sign in. Cold ensure without a URL uses `--no-startup-window`. Batch resolve uses cookie+HTTP parallel (`logs/run_linkedin_resolve_2d_batch.py`,
+`LINKEDIN_HTTP_CONCURRENCY=36` default, clamp 1–40; no Chrome tabs on HTTP path —
+never 10-wide CDP). CDP fallback ≤2 only on authwall/miss (`--http-only` skips it).
+Unresolved terminals (`failed` / `no_external` / `easy_apply` with apply_url still
+LinkedIn/aggregator) auto-prune Open jobs to Deleted (`deleted_reason=unresolved_apply_url`)
+and stamp the **Unresolved URL** chip — on resolve write, startup sweep, and scheduled prune.
+
 ### Discovery — ATS board scrape (`scrape_ats.py`)
 
 Dashboard **Discover** continues from `logs/discovery_checkpoint.json` by default
@@ -336,8 +379,33 @@ Dashboard **Discover** continues from `logs/discovery_checkpoint.json` by defaul
 Last outcome (`success`/`failed`/`interrupted`/`partial`) lives in
 `dashboard/discovery_last_run.json` and shows in the Discover popover.
 Scrapers get `logs/discovery_skip_urls.json` so known jobs.json/blocked URLs
-are not re-fetched. → `run_scout_scrape_then_dedup` runs `scripts/scrape_ats.py`
-after scout. Platforms with free public board endpoints (no auth / no proxy):
+(and posting_keys) are not re-fetched; Built In / ATS detail platforms skip
+per-URL detail GETs, scout/feeds drop known rows after the bulk list.
+`run_scout_scrape_then_dedup` runs `scripts/scrape_ats.py`
+after scout. **Per-platform timeout is 1800s** (300s was killing Greenhouse/
+Ashby mid-fetch). Known slugs are fetched first; `--max-guesses` (default 80)
+runs afterward with `--guess-budget-s` (default 180) so guessing cannot steal
+the whole budget. **Still excluded:** Workday/iCIMS (never scrape / never CAPTCHA).
+
+**Adaptive recency** (`scripts/adaptive_recency.py`): last successful Discover
+N days ago → lookback **N+1**, floor **7**, cap **10**. Discover popover lets
+you pin **1–10 days** per date-filter source (`source_days` in
+`logs/discovery_settings.json`); a pin beats adaptive. Unpinned sources use
+the adaptive window. Persisted as `last_successful_discover_at` in
+`logs/discovery_settings.json` when a run ends with outcome `success`.
+Scout `--hours-old` = days×24. Built In `--days-since-updated` is any int 1–10.
+Adzuna `--max-days` when keys exist.
+
+US feed scrapers (PRE_ATS phase, like scout): `scrape_remoteok.py` (untagged
+feed + `?tag=` union for ai/python/data/devops/ml), `scrape_remotive.py`
+(category feeds: software-development/data/AI/devops/…, no limit),
+`scrape_jobicy.py` (`count=100` API max, industry union; no pagination),
+`scrape_rss_feeds.py` (WWR programming+devops+backend, split Authentic Jobs
+keyword feeds, Jobspresso). **None of those APIs expose a days/max_days
+param** — they dump the current public feed; we do not drop older items
+client-side. All still title-filter via `RELEVANT_KEYWORDS`.
+Adzuna US (`scrape_adzuna.py --country us`): 50 results/page × 3 pages/term;
+**0 listings without API keys** (never invent keys).
 
 | Platform | Endpoint pattern |
 |----------|------------------|
@@ -347,6 +415,9 @@ after scout. Platforms with free public board endpoints (no auth / no proxy):
 | Rippling | `ats.rippling.com/api/v1/board/{slug}/jobs` |
 | Breezy HR | `{slug}.breezy.hr/json` |
 | BambooHR | `{slug}.bamboohr.com/careers/list` (+ `/detail` for JD) |
+| Teamtailor | `{hostname}.teamtailor.com/jobs.json` |
+| JazzHR | `{slug}.applytojob.com/apply` (SSR board + ld+json detail) |
+| Pinpoint | `{slug}.pinpointhq.com/postings.json` |
 
 Registry: `ats_companies.json` (self-expands from listing URLs + slug guesses).
 **Still excluded:** Workday/iCIMS (Akamai/CAPTCHA), Jobvite/Gem/Dover/Comeet
@@ -365,10 +436,12 @@ When India is on: `scout.py` adds an India pass (`location=India`,
 run — `scripts/scrape_internshala.py`, `scripts/scrape_hirist.py`,
 `scripts/scrape_cutshort.py`, `scripts/scrape_adzuna.py` (shared helpers in
 `scripts/india_scrape_common.py`). Adzuna needs `ADZUNA_APP_ID`/`ADZUNA_APP_KEY`
-(env or git-ignored `web_keys.json`); with no keys it skips cleanly (UI shows
-skipped, no crash). Built In stays US-only. Ops **Region** filter = `All`/`US`/
-`India`; jobs carry a `region` stamp; INR/LPA parsed display-only (never prunes).
-Full notes + Wave B backlog: `ats_notes/INDIA_DISCOVERY.md`.
+(env wins) or the same values as `adzuna_app_id`/`adzuna_app_key` in git-ignored
+repo-root `web_keys.json`; with no keys it skips loud (UI shows skipped / missing
+keys, no crash — do not invent credentials). Built In stays US-only. Ops
+**Region** filter = `All`/`US`/`India`; jobs carry a `region` stamp; INR/LPA
+parsed display-only (never prunes). Full notes + Wave B backlog:
+`ats_notes/INDIA_DISCOVERY.md`.
 
 ### Discovery — Built In + JD extract
 `scripts/scrape_builtin.py` uses adaptive HTTP pacing (delay grows on 429, cools on success) and a **headless Playwright** HTML fallback only after 429 retries are exhausted (`scripts/pw_fetch_html.py`). `scripts/extract_job_posting.py` (manual-add / missing-JD backfill) adds the same Playwright tier when HTTP HTML is missing or too thin. Never used for Workday/iCIMS/LinkedIn; never solves CAPTCHA.
@@ -397,6 +470,50 @@ $PY scripts/manager_bridge/heartbeat.py --check-gates --check-chrome
 ```
 
 Yogesh: paste `CLAUDE_MANAGER_PROMPT.md` into Claude Code as Manager; tell Cursor **"Execute manager bridge inbox task"** to run Executor.
+
+## Reliability contracts — how to verify
+
+**Live port:** dashboard sticks to `http://127.0.0.1:8787`. Refresh/Quit/restart
+must not hop to `:8788` while the UI window stays on `:8787`. Opt-in hop only
+via `JOBHUNTER_ALLOW_PORT_HOP=1` or an explicit `JOBHUNTER_DASHBOARD_PORT`.
+
+```bash
+curl -sS http://127.0.0.1:8787/api/build | python3 -m json.tool
+# expect build_id + port 8787
+curl -sS -D- -o /dev/null http://127.0.0.1:8787/ | head -20
+# expect X-JH-Build and Cache-Control on HTML
+time curl -sS -o /dev/null -w '%{http_code} %{time_total}\n' http://127.0.0.1:8787/api/jobs
+# expect 200 and well under ~1s after warm cache
+# API search takes bare tokens (UI fielded search uses `jd: python` and strips
+# prefixes client-side before calling this endpoint).
+curl -sS 'http://127.0.0.1:8787/api/jobs/search?q=python' | head -c 200
+curl -sS http://127.0.0.1:8787/api/discover | python3 -c \
+  'import sys,json; d=json.load(sys.stdin); print(d.get("adzuna_keys_configured"), d.get("adzuna_keys_detail"))'
+```
+
+**`GET /api/jobs` law:** stamp-only + ETag; no `jd_full` reads; no JD re-parse.
+Heavy JD grep is `/api/jobs/search` only (bare tokens). Incomplete-JD / tag
+backfill runs in background threads after boot — never blocks first paint.
+
+**Hard-refresh UI:** Cmd+Shift+R on the OmniDex window after server restart;
+`index.html` injects `?v=<build_id>` on `/app.js` and `/job_sort.js`.
+Posted age / Today filter read only `date_posted` or `date_posted_fallback`
+(never `created_at`); undated rows show `—`. After pulling posted-date UI
+fixes, hard-refresh so `job_sort.js` reloads.
+
+**Focused tests:**
+
+```bash
+python3 dashboard/test_jobs_list_perf.py
+python3 dashboard/test_list_tag_stamps.py
+python3 dashboard/test_jd_incomplete.py
+python3 dashboard/test_list_search_jd.py
+python3 scripts/test_prune_tag_goldens.py
+python3 scripts/test_posted_date.py
+node dashboard/test_job_sort.js
+node dashboard/test_posted_date_filter.js
+node dashboard/test_list_search.js
+```
 
 ## Related
 

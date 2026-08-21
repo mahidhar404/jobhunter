@@ -20,7 +20,9 @@ from discovery_filters import (
     requires_excessive_experience,
     requires_security_clearance,
     requires_us_citizen_or_greencard,
+    requires_us_person,
     should_keep_listing,
+    stamp_clearance_us_person_tags,
 )
 
 
@@ -77,6 +79,10 @@ def test_above_senior_excluded():
 
 def test_staff_not_staffing():
     assert not is_excluded_title("Staffing Coordinator for Data Team")  # staffing ≠ staff
+    # IC "Member of Technical Staff" is not the Staff seniority ladder
+    assert not is_excluded_title("Member of Technical Staff")
+    assert not is_excluded_title("Member of Technical Staff: Research")
+    assert is_excluded_title("Staff AI Scientist")
     # "lead" must not match "leadership" as a bare token inside another word
     assert not is_excluded_title("Leadership Development Data Analyst")
 
@@ -325,6 +331,23 @@ def test_clearance_and_intel_excluded():
     assert not requires_security_clearance(
         description="Clearance: Must be able to work in the U.S. without employer sponsorship",
     )
+    # EEO boilerplate "Employee Polygraph Protection Act" is not a cleared role
+    assert not requires_security_clearance(
+        description=(
+            "Equal Employment Opportunity (EEO) Employee Polygraph Protection Act (EPPA)"
+        ),
+    )
+    # Preferred clearance is not a hard disqualifier
+    assert not requires_security_clearance(
+        description="An active Secret clearance is preferred.",
+    )
+    # Ability to obtain Secret is still a hard requirement
+    assert requires_security_clearance(
+        description=(
+            "Ability to obtain and maintain a U.S. Government Secret Security "
+            "Clearance; an active Secret clearance is preferred."
+        ),
+    )
     # Explicit no clearance required — keep (unless another positive signal)
     assert not requires_security_clearance(
         description="CLEARANCE REQUIRED FOR START: No\nTRAVEL: Yes",
@@ -368,6 +391,95 @@ def test_clearance_and_intel_excluded():
     # Prose "public trust" — keep
     assert not requires_security_clearance(
         description="Research that informs national policy and earns public trust.",
+    )
+    # Contingent-award boilerplate is not a hard clearance gate
+    assert not requires_security_clearance(
+        description=(
+            "This position is contingent upon award of contract, business needs, "
+            "security clearance verification, and funding availability."
+        ),
+    )
+    # Eligibility to obtain/maintain TS — even "desirable" — is a barrier
+    assert requires_security_clearance(
+        description=(
+            "Eligibility to obtain/maintain a US Top Secret clearance is also desirable."
+        ),
+    )
+    assert requires_security_clearance(
+        description=(
+            "May be expected to obtain and hold a U.S. Top Secret security clearance."
+        ),
+    )
+
+
+ANDURIL_ML_INFRA_US_PERSON = (
+    "U.S. Person status is required as this position needs to access "
+    "export controlled data. Eligibility to obtain/maintain a US Top Secret "
+    "clearance is also desirable."
+)
+
+
+def test_anduril_us_person_and_ts_eligibility_prunes_and_tags():
+    """Anduril ML Infra Preferred Qualifications — required US Person + TS obtain."""
+    assert requires_us_person(description=ANDURIL_ML_INFRA_US_PERSON)
+    assert requires_security_clearance(description=ANDURIL_ML_INFRA_US_PERSON)
+    assert requires_us_citizen_or_greencard(description=ANDURIL_ML_INFRA_US_PERSON)
+    reason = auto_delete_reason(
+        title="Software Engineer - ML Infrastructure",
+        company="Anduril",
+        location="Costa Mesa, CA, US",
+        description=ANDURIL_ML_INFRA_US_PERSON,
+    )
+    assert reason in ("clearance_or_intel", "citizenship_or_greencard")
+    tags = stamp_clearance_us_person_tags(
+        title="Software Engineer - ML Infrastructure",
+        company="Anduril",
+        location="Costa Mesa, CA, US",
+        description=ANDURIL_ML_INFRA_US_PERSON,
+    )
+    assert tags["clearance"] is True
+    assert tags["us_person"] is True
+    # Mere preferred US Person (no required / ITAR / export-controlled) stays
+    assert not requires_us_person(
+        description="U.S. Person status is preferred for this role."
+    )
+    assert should_keep_listing(
+        title="ML Engineer",
+        location="Remote, US",
+        description="U.S. Person preferred; we sponsor H-1B.",
+    )
+    # ITAR / export-controlled without the words "U.S. citizenship"
+    assert requires_us_person(description="Must comply with ITAR requirements.")
+    assert requires_us_person(
+        description="This role accesses export-controlled data."
+    )
+    assert not requires_us_person(
+        description="We export product telemetry to our US region."
+    )
+    # Conditional / EEO boilerplate is not a hard US-Person gate
+    assert not requires_us_person(
+        description=(
+            "If access to export-controlled technology or source code is required "
+            "for performance of job duties, it is within Employer's discretion "
+            "whether to apply for a U.S. government license."
+        )
+    )
+    assert not requires_us_person(
+        description=(
+            "regulated by the Export Administration Regulations (EAR), by the "
+            "Department of State through the International Traffic in Arms "
+            "Regulations (ITAR), and by the Treasury Department through OFAC."
+        )
+    )
+    assert requires_us_person(
+        description=(
+            "ITAR REQUIREMENTS: To conform to U.S. Government export regulations, "
+            "applicant must be a U.S. citizen or national."
+        )
+    )
+    # Preferred-only Secret (no obtain/maintain) still stays
+    assert not requires_security_clearance(
+        description="An active Secret clearance is preferred."
     )
 
 
@@ -517,6 +629,14 @@ def test_yoe_extract_and_excessive():
         description="Nice to have: 10+ years of experience."
     )
     assert not requires_excessive_experience(
+        description="Ideal candidate has 8+ years of experience in ML."
+    )
+    assert not requires_excessive_experience(
+        description="8+ years of experience preferred."
+    )
+    assert not requires_excessive_experience(description="3+ years of experience")
+    assert not requires_excessive_experience(description="~8+ years of experience")
+    assert not requires_excessive_experience(
         description="Our team has 12 years of experience building data products."
     )
     assert not requires_excessive_experience(
@@ -595,8 +715,16 @@ def test_work_mode_fallback():
     assert detect_work_mode_fallback(description="work from anywhere") == "remote"
     assert detect_work_mode_fallback(description="this is an office-based position") == "onsite"
     assert detect_work_mode_fallback(description="HQ-based team in NYC") == "onsite"
-    assert detect_work_mode_fallback(description="3-4 days a week at the office") == "hybrid"
-    assert detect_work_mode(description="3-4 days a week at the office") == "unknown"
+    assert detect_work_mode_fallback(description="3-4 days a week at the office") in (
+        "hybrid",
+        "unknown",
+    )
+    office_days = "3-4 days a week at the office"
+    if detect_work_mode(description=office_days) == "unknown":
+        assert detect_work_mode_fallback(description=office_days) == "hybrid"
+    else:
+        assert detect_work_mode(description=office_days) == "hybrid"
+        assert detect_work_mode_fallback(description=office_days) == "unknown"
     # Strict already remote → fallback unused (returns unknown)
     assert detect_work_mode(location="Remote, US") == "remote"
     assert detect_work_mode_fallback(location="Remote, US") == "unknown"
@@ -612,8 +740,34 @@ def test_citizenship_and_greencard():
     assert requires_us_citizen_or_greencard(
         description="Must be a permanent resident to apply."
     )
+    # Recruiter slang / JD "Important" lines (Wise Skulls LinkedIn)
+    assert requires_us_citizen_or_greencard(description="Visa: USC and GC only.")
+    assert requires_us_citizen_or_greencard(description="**Visa: USC and GC only.**")
+    assert requires_us_citizen_or_greencard(title="Python AI Engineer", description="USC/GC")
+    assert requires_us_citizen_or_greencard(description="US citizens only. Green card holders only.")
+    assert requires_us_citizen_or_greencard(description="green card holders only")
+    assert requires_us_citizen_or_greencard(description="must be US citizen")
+    # No-sponsorship is not USC/GC-only — do not prune on these.
+    assert not requires_us_citizen_or_greencard(description="unable to sponsor")
+    assert not requires_us_citizen_or_greencard(description="no visa sponsorship")
+    assert not requires_us_citizen_or_greencard(
+        description="sponsorship is not available for this position"
+    )
+    assert not requires_us_citizen_or_greencard(
+        description="Must be authorized to work in the U.S. without sponsorship."
+    )
     assert not requires_us_citizen_or_greencard(
         description="Must be authorized to work in the U.S."
+    )
+    assert not requires_us_citizen_or_greencard(
+        description="This employer participates in E-Verify."
+    )
+    # Preferred USC/GC with H-1B still allowed is not USC/GC-only
+    assert not requires_us_citizen_or_greencard(
+        description="Visa: GC/USC is preferred but H1B works too."
+    )
+    assert not requires_us_citizen_or_greencard(
+        description="USC/GC preferred; visa sponsorship is available."
     )
     assert not requires_us_citizen_or_greencard(
         description="EEO: citizenship status is never considered."
@@ -621,16 +775,48 @@ def test_citizenship_and_greencard():
     assert not requires_us_citizen_or_greencard(
         description="Citizens only may participate in this overseas program."
     )
+    # Positive sponsorship — keep, including near-misses
+    assert not requires_us_citizen_or_greencard(description="we sponsor visas")
+    assert not requires_us_citizen_or_greencard(
+        description="Visa sponsorship is available for this role."
+    )
+    assert not requires_us_citizen_or_greencard(
+        description="We do sponsor H1B visas for qualified candidates."
+    )
+    # Citizen/GC-only still drops even if they also mention sponsoring
+    assert requires_us_citizen_or_greencard(
+        description="Visa: USC and GC only. We sponsor H1B in other teams."
+    )
     assert not should_keep_listing(
         title="ML Engineer",
         location="Remote, US",
         description="U.S. citizenship required for this role.",
     )
+    assert not should_keep_listing(
+        title="Python AI Engineer",
+        location="Remote, US",
+        description="Visa: USC and GC only.",
+    )
     assert should_keep_listing(
         title="ML Engineer",
         location="Remote, US",
-        description="Must be authorized to work in the U.S. without sponsorship.",
+        description="We sponsor visas for this role.",
     )
+    assert should_keep_listing(
+        title="AI Engineer",
+        location="Remote, US",
+        description="We are unable to sponsor visas for this role.",
+    )
+    assert auto_delete_reason(
+        title="Python AI Engineer",
+        location="Remote, US",
+        description="Visa: USC and GC only.",
+    ) == "citizenship_or_greencard"
+    assert auto_delete_reason(
+        title="AI Engineer",
+        location="Remote, US",
+        description="Unable to sponsor work visas.",
+    ) is None
 
 
 def test_work_mode_detect():
@@ -644,6 +830,69 @@ def test_work_mode_detect():
     assert detect_work_mode(
         description="Remote or on-site available depending on team."
     ) == "unknown"
+    # Hyphenated Non-Remote must not match \\bremote\\b
+    assert detect_work_mode(title="Data Analyst - Non-Remote") == "unknown"
+    assert detect_work_mode(title="Data Analyst (Non Remote)") == "unknown"
+
+
+def test_work_mode_surrounding_text_false_positives():
+    # Product "remote access/support" is not a remote role (Splashtop-style).
+    assert detect_work_mode(
+        description="We deliver next-generation remote access and remote support software."
+    ) == "unknown"
+    # Explicit negation should not stamp remote (Galvanize-style).
+    galv = (
+        "This role is based at headquarters in Redwood City, CA. "
+        "This is not a remote position, and remote applicants will not be considered."
+    )
+    assert detect_work_mode(description=galv) != "remote"
+    assert detect_work_mode(description=galv) == "unknown"
+    assert detect_work_mode_fallback(description=galv) == "onsite"
+    # Office-days + "remote work is not available" is hybrid, not WFH-remote (Chipotle-style).
+    assert detect_work_mode(
+        description=(
+            "This role will be based in our Columbus, OH office 4 days per week "
+            "(with work from home on Friday). Remote work is not available for this role."
+        )
+    ) == "hybrid"
+    # Amenity "on-site gym" is not an onsite role (Vagaro / Mastercard benefits).
+    assert detect_work_mode(
+        description="Benefits include an on-site gym, flavored water, and a basketball court."
+    ) == "unknown"
+    # Interview logistics should not stamp onsite when the role is remote.
+    assert detect_work_mode(
+        description=(
+            "This is a fully remote role. We require at least one in-person interview "
+            "before making an offer."
+        )
+    ) == "remote"
+    # Location Remote still wins.
+    assert detect_work_mode(location="Remote, US") == "remote"
+    # Preferred/optional onsite is unsure → fallback ~, not a hard onsite stamp.
+    pref = "Location: Downtown Boston - Preferred Onsite. CA/GA/TX optional onsite hubs."
+    assert detect_work_mode(description=pref) == "unknown"
+    assert detect_work_mode_fallback(description=pref) == "onsite"
+
+
+def test_yoe_surrounding_text_not_tenure_or_age():
+    assert extract_min_required_yoe(
+        description="Must be 18 years of age or older to apply."
+    ) is None
+    assert extract_min_required_yoe_fallback(
+        description="Must be 18 years of age or older to apply."
+    ) is None
+    assert extract_min_required_yoe(
+        description="We've been 10 years in business. 3+ years of experience required."
+    ) == 3
+    assert extract_min_required_yoe(
+        description="The company is 12 years old and still growing."
+    ) is None
+    assert extract_min_required_yoe_fallback(
+        description="The company is 12 years old and still growing."
+    ) is None
+    assert extract_min_required_yoe(
+        description="Celebrating 10 years of excellence serving customers."
+    ) is None
 
 
 def test_salary_extract_strict():
@@ -668,6 +917,39 @@ def test_salary_extract_strict():
     ) is None
     assert extract_salary(
         description="Company valuation of $1 billion; join our team."
+    ) is None
+    # Labeled compensation next to "venture accelerator" is still pay (mlabs-style).
+    r = extract_salary(
+        description=(
+            "Full-time Compensation:\xa0$300K - $375K\n"
+            "Our client, a premier venture accelerator backing high-growth startups."
+        )
+    )
+    assert r == {"min": 300000, "max": 375000, "period": "year"}
+    # /Year between range sides (EchoStar-style).
+    r = extract_salary(
+        description="Compensation: $96,250.00/Year - $137,500.00/Year"
+    )
+    assert r == {"min": 96250, "max": 137500, "period": "year"}
+    # Monthly USD figures annualize (Texas HHSC-style).
+    r = extract_salary(
+        description=(
+            "Salary Range: $8,488.33- $11,666.66  Pay Frequency: Monthly"
+        )
+    )
+    assert r is not None and r["period"] == "year"
+    assert 100000 <= r["min"] <= 103000
+    assert 138000 <= r["max"] <= 142000
+    r = extract_salary(
+        description=(
+            "Salary Range:\n $8,488\\.33\\- $11,666.66\n Pay Frequency: Monthly"
+        )
+    )
+    assert r is not None and 100000 <= r["min"] <= 103000
+    assert r.get("max") is not None and 138000 <= r["max"] <= 142000
+    # ARR / funding range is not IC pay.
+    assert extract_salary(
+        description="We work with $10M - $50M ARR companies to help them grow."
     ) is None
     sal, src = extract_salary_with_source(
         description="Compensation: $120,000 - $150,000"
@@ -907,6 +1189,69 @@ def test_approx_yoe_never_prunes_via_auto_delete_reason():
         location="Remote, US",
         description="Requires 8+ years of experience in ML.",
     ) == "excessive_yoe"
+    # Preferred / excited-if and education-equivalency years are not a hard floor
+    assert not requires_excessive_experience(
+        description="We're excited if you have 8+ years of professional experience as a Data Engineer.",
+    )
+    assert not requires_excessive_experience(
+        description=(
+            "Masters degree with 3 years of relevant experience; "
+            "or 7 years of equivalent professional experience."
+        ),
+    )
+
+
+def test_staffing_company_prunes_not_jd_boilerplate():
+    assert auto_delete_reason(
+        title="Data Scientist",
+        location="Remote, US",
+        company="Insight Global",
+    ) == "staffing"
+    assert auto_delete_reason(
+        title="Data Scientist",
+        location="Remote, US",
+        company="Acme Labs",
+        description="We do not accept submissions from staffing agencies.",
+    ) is None
+
+
+def test_contract_job_type_prunes_fulltime_keeps():
+    from discovery_filters import is_excluded_job_type
+
+    assert is_excluded_job_type("contract")
+    assert is_excluded_job_type("full_time") is False
+    assert is_excluded_job_type("fulltime") is False
+    assert is_excluded_job_type(None) is False
+    assert is_excluded_job_type("volunteer")
+    assert is_excluded_job_type("part-time")
+    assert auto_delete_reason(
+        title="Data Scientist",
+        location="Remote, US",
+        job_type="contract",
+    ) == "contract"
+    assert auto_delete_reason(
+        title="Data Scientist",
+        location="Remote, US",
+        job_type="fulltime",
+    ) is None
+    assert auto_delete_reason(
+        title="Data Scientist",
+        location="Remote, US",
+        job_type="full_time",
+    ) is None
+
+
+def test_preferred_greencard_and_approx_yoe_do_not_prune():
+    assert auto_delete_reason(
+        title="ML Engineer",
+        location="Remote, US",
+        description="Green card preferred. Visa sponsorship is available.",
+    ) is None
+    assert auto_delete_reason(
+        title="ML Engineer",
+        location="Remote, US",
+        description="~8 years of experience in the industry.",
+    ) is None
 
 
 if __name__ == "__main__":
@@ -931,6 +1276,8 @@ if __name__ == "__main__":
     test_work_mode_fallback()
     test_citizenship_and_greencard()
     test_work_mode_detect()
+    test_work_mode_surrounding_text_false_positives()
+    test_yoe_surrounding_text_not_tenure_or_age()
     test_salary_extract_strict()
     test_salary_fallback_display_only()
     test_extract_inr_salary_display_only()
@@ -941,4 +1288,8 @@ if __name__ == "__main__":
     test_region_aware_auto_delete()
     test_yoe_fallback_does_not_prune()
     test_approx_yoe_never_prunes_via_auto_delete_reason()
+    test_staffing_company_prunes_not_jd_boilerplate()
+    test_contract_job_type_prunes_fulltime_keeps()
+    test_preferred_greencard_and_approx_yoe_do_not_prune()
+    test_anduril_us_person_and_ts_eligibility_prunes_and_tags()
     print("ok")

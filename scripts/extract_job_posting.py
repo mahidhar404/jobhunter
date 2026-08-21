@@ -50,6 +50,7 @@ import re
 import sys
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -62,6 +63,7 @@ from scrape_ats import (  # noqa: E402
     smartrecruiters_description_from_detail,
     rippling_description_from_detail,
     description_from_jobposting_ldjson,
+    description_from_job_html,
 )
 from apply_urls import (  # noqa: E402
     extract_ats_urls_from_text,
@@ -86,6 +88,45 @@ PERSONIO_RE = re.compile(r"([a-z0-9-]+)\.jobs\.personio\.(?:com|de)")
 SMARTRECRUITERS_RE = re.compile(r"jobs\.smartrecruiters\.com/([^/?#]+)/([^/?#]+)")
 RIPPLING_RE = re.compile(r"ats\.rippling\.com/([^/?#]+)/jobs/([^/?#]+)")
 BREEZY_RE = re.compile(r"([a-z0-9-]+)\.breezy\.hr/p/([^/?#]+)")
+JAZZHR_RE = re.compile(r"applytojob\.com", re.I)
+_APPLY_PATH_SUFFIXES = ("/apply", "/application", "/applications")
+
+
+def posting_url(url: str) -> str:
+    """Job posting page for ATS apply URLs (strip trailing /apply, /application).
+
+    JazzHR listings live at ``{slug}.applytojob.com/apply/{id}/...`` — that
+    ``/apply/`` is the posting, not a suffix, so those URLs are left intact.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return raw
+    parts = urlsplit(raw)
+    if "applytojob.com" in (parts.netloc or "").lower():
+        return raw
+    path = parts.path.rstrip("/")
+    lowered = path.lower()
+    for suffix in _APPLY_PATH_SUFFIXES:
+        if lowered.endswith(suffix):
+            path = path[: -len(suffix)]
+            return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+    return raw
+
+
+def jd_fetch_urls(*urls: str) -> list[str]:
+    """Posting URL first, then the original (apply) URL."""
+    out: list[str] = []
+    for url in urls:
+        if not (url or "").strip():
+            continue
+        for candidate in (posting_url(url), url.strip()):
+            if candidate and candidate not in out:
+                out.append(candidate)
+    return out
+
+
+def _is_lever_apply_url(url: str) -> bool:
+    return bool(LEVER_RE.search(url or "")) and posting_url(url) != (url or "").strip()
 
 
 def fetch_html(url: str) -> str | None:
@@ -274,7 +315,7 @@ def try_breezy(url: str) -> dict | None:
     html = fetch_html(url)
     if not html:
         return None
-    description = description_from_jobposting_ldjson(html)
+    description = description_from_job_html(html)
     if not description:
         return None
     # Prefer ld+json metadata when present
@@ -309,6 +350,39 @@ def try_breezy(url: str) -> dict | None:
     }
 
 
+def try_jazzhr(url: str) -> dict | None:
+    """JazzHR / applytojob.com — SSR JD in #job-description, often no JobPosting."""
+    if not JAZZHR_RE.search(url or ""):
+        return None
+    html = fetch_html(url)
+    if not html:
+        return None
+    description = description_from_job_html(html)
+    if not (description or "").strip():
+        return None
+    title = None
+    m = re.search(r"<title>([^<]*)</title>", html, re.I)
+    if m:
+        title = m.group(1).strip()
+        title = re.sub(r"\s+-\s+.*$", "", title).strip() or title
+    company = None
+    loc = None
+    soup_m = re.search(
+        r'<meta property="og:description" content="Apply to ([^"]+) at ([^"]+) in ([^".]+)',
+        html,
+    )
+    if soup_m:
+        title = title or soup_m.group(1).strip()
+        company = soup_m.group(2).strip()
+        loc = soup_m.group(3).strip()
+    return {
+        "company": company,
+        "title": title or "",
+        "location": loc,
+        "description": description,
+    }
+
+
 KNOWN_ATS_TRIERS = [
     try_greenhouse,
     try_lever,
@@ -318,6 +392,7 @@ KNOWN_ATS_TRIERS = [
     try_smartrecruiters,
     try_rippling,
     try_breezy,
+    try_jazzhr,
 ]
 
 
@@ -390,6 +465,23 @@ def _parse_html_tiers(url: str, html: str) -> dict | None:
             result["apply_url"] = prefer_apply_url(*(html_ats + [url]))
         return _attach_apply_url(result, url)
 
+    # HTTP body JD (JazzHR #job-description and similar) when schema.org is Organization-only.
+    html_desc = description_from_job_html(html)
+    if html_desc and len(html_desc.strip()) >= min(MIN_DESCRIPTION_CHARS, 80):
+        title = None
+        m = re.search(r"<title>([^<]*)</title>", html, re.I)
+        if m:
+            title = m.group(1).strip()
+        result = {
+            "company": None,
+            "title": title,
+            "location": None,
+            "description": html_desc,
+        }
+        if html_ats:
+            result["apply_url"] = prefer_apply_url(*(html_ats + [url]))
+        return _attach_apply_url(result, url)
+
     result = try_generic_fallback(url, html)
     if result:
         if html_ats:
@@ -398,25 +490,39 @@ def _parse_html_tiers(url: str, html: str) -> dict | None:
     return None
 
 
-def extract(url: str, *, allow_playwright: bool = True) -> dict | None:
+def _url_unreachable(url: str) -> str | None:
     for platform, pattern in UNREACHABLE_PATTERNS.items():
-        if pattern.search(url):
-            print(f"skipping: {platform} can't be fetched programmatically", file=sys.stderr)
-            return None
+        if pattern.search(url or ""):
+            return platform
+    return None
 
-    for trier in KNOWN_ATS_TRIERS:
-        result = trier(url)
-        if result and result.get("description"):
-            return _attach_apply_url(result, url)
 
-    html = fetch_html(url)
-    if html:
-        parsed = _parse_html_tiers(url, html)
-        if parsed:
-            return parsed
+def extract(url: str, *, allow_playwright: bool = True) -> dict | None:
+    skip = _url_unreachable(url)
+    if skip:
+        print(f"skipping: {skip} can't be fetched programmatically", file=sys.stderr)
+        return None
 
-    # Tier 4: headless Chromium for JS-rendered / thin HTTP pages.
-    # Never used for unreachable hosts (already returned above).
+    candidates = jd_fetch_urls(url)
+    for cand in candidates:
+        if _url_unreachable(cand):
+            continue
+        for trier in KNOWN_ATS_TRIERS:
+            result = trier(cand)
+            if result and result.get("description"):
+                return _attach_apply_url(result, url)
+
+    for cand in candidates:
+        if _url_unreachable(cand):
+            continue
+        html = fetch_html(cand)
+        if html:
+            parsed = _parse_html_tiers(cand, html)
+            if parsed:
+                return parsed
+
+    # Tier 4: headless Chromium. Never Workday/iCIMS/LinkedIn. Never Lever
+    # /apply (JS challenge blob); posting URL is tried instead.
     if not allow_playwright:
         return None
     try:
@@ -424,11 +530,17 @@ def extract(url: str, *, allow_playwright: bool = True) -> dict | None:
     except ImportError:
         print("pw_fetch_html unavailable", file=sys.stderr)
         return None
-    print(f"playwright extract fallback: {url}", file=sys.stderr)
-    pw_html = fetch_html_playwright(url)
-    if not pw_html:
-        return None
-    return _parse_html_tiers(url, pw_html)
+    for cand in candidates:
+        if _url_unreachable(cand) or _is_lever_apply_url(cand):
+            continue
+        print(f"playwright extract fallback: {cand}", file=sys.stderr)
+        pw_html = fetch_html_playwright(cand)
+        if not pw_html:
+            continue
+        parsed = _parse_html_tiers(cand, pw_html)
+        if parsed:
+            return parsed
+    return None
 
 
 def main() -> None:

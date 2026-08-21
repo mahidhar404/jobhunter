@@ -125,20 +125,33 @@ remember_dashboard_port() {
 }
 
 restore_dashboard_port_from_file() {
+  # Sticky port: ignore stale 8788+ saved from older hoppy launches unless
+  # hopping is explicitly allowed or JOBHUNTER_DASHBOARD_PORT is set.
   local saved=""
   [[ -n "${JOBHUNTER_DASHBOARD_PORT:-}" ]] && return 0
   [[ ! -f "$DASHBOARD_PORT_FILE" ]] && return 0
   saved="$(tr -d '[:space:]' < "$DASHBOARD_PORT_FILE" 2>/dev/null || true)"
   [[ "${saved}" =~ ^[0-9]+$ ]] || return 0
+  if [[ "${saved}" != "8787" ]] && [[ "${JOBHUNTER_ALLOW_PORT_HOP:-0}" != "1" ]]; then
+    echo "ignoring stale dashboard_port=${saved}; sticking to :8787"
+    DASHBOARD_PORT="8787"
+    URL="http://127.0.0.1:${DASHBOARD_PORT}"
+    remember_dashboard_port
+    return 0
+  fi
   DASHBOARD_PORT="${saved}"
   URL="http://127.0.0.1:${DASHBOARD_PORT}"
 }
 
 dashboard_port_candidates() {
+  # Sticky :8787 by default. Hopping to :8788+ leaves the UI on a dead port.
+  # Opt-in only: JOBHUNTER_ALLOW_PORT_HOP=1 (or an explicit JOBHUNTER_DASHBOARD_PORT).
   if [[ -n "${JOBHUNTER_DASHBOARD_PORT:-}" ]]; then
     echo "${JOBHUNTER_DASHBOARD_PORT}"
-  else
+  elif [[ "${JOBHUNTER_ALLOW_PORT_HOP:-0}" == "1" ]]; then
     echo 8787 8788 8789 8790 8791 8792
+  else
+    echo 8787
   fi
 }
 
@@ -187,11 +200,15 @@ is_our_dashboard_server_pid() {
 port_is_bindable() {
   local port="${1:-}"
   [[ -z "${port}" ]] && return 1
+  # SO_REUSEADDR matches ThreadingHTTPServer — without it, macOS TIME_WAIT after
+  # Refresh makes :8787 look "taken", launcher hops to :8788, and the UI stuck on
+  # :8787 times out ("did not come back within ~60s").
   /usr/bin/env python3 - "$port" <<'PY' 2>/dev/null
 import socket, sys
 port = int(sys.argv[1])
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 try:
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("127.0.0.1", port))
 except OSError:
     sys.exit(1)
@@ -201,16 +218,24 @@ PY
 }
 
 # Post-reboot: Cursor/MCP or a zombie server.py can hold :8787 without serving ops HTML.
-# Scan the default port range for a live dashboard, reclaim our stale listener, or pick a free port.
+# Prefer reclaiming :8787. Never hop to :8788+ unless JOBHUNTER_ALLOW_PORT_HOP=1
+# (hopping leaves the Chrome --app window polling a dead port).
+# During Refresh (RESTARTING=1) stay on the preferred UI port — never hop.
 resolve_dashboard_port() {
   local preferred="${JOBHUNTER_DASHBOARD_PORT:-8787}"
   local ports=()
   local p lp
+  local allow_hop=0
 
   if [[ -n "${JOBHUNTER_DASHBOARD_PORT:-}" ]]; then
     ports=("${preferred}")
-  else
+  elif [[ "${RESTARTING}" -eq 1 ]]; then
+    ports=("${preferred}")
+  elif [[ "${JOBHUNTER_ALLOW_PORT_HOP:-0}" == "1" ]]; then
+    allow_hop=1
     ports=(8787 8788 8789 8790 8791 8792)
+  else
+    ports=("${preferred}")
   fi
 
   for p in "${ports[@]}"; do
@@ -233,7 +258,10 @@ resolve_dashboard_port() {
       else
         echo "warn: port ${p} held by foreign pid=${lp} (not job-hunter dashboard)" >&2
         /bin/ps -p "${lp}" -o command= 2>/dev/null | sed 's/^/  /' >&2 || true
-        if [[ -n "${JOBHUNTER_DASHBOARD_PORT:-}" ]]; then
+        if [[ -n "${JOBHUNTER_DASHBOARD_PORT:-}" ]] || [[ "${RESTARTING}" -eq 1 ]] || [[ "${allow_hop}" -eq 0 ]]; then
+          if [[ "${allow_hop}" -eq 0 ]]; then
+            echo "error: sticky port ${p} busy — fix the foreign listener or set JOBHUNTER_ALLOW_PORT_HOP=1" >&2
+          fi
           return 1
         fi
         continue
@@ -246,7 +274,7 @@ resolve_dashboard_port() {
       return 0
     fi
     echo "warn: port ${p} not bindable (hidden listener) — trying next" >&2
-    if [[ -n "${JOBHUNTER_DASHBOARD_PORT:-}" ]]; then
+    if [[ -n "${JOBHUNTER_DASHBOARD_PORT:-}" ]] || [[ "${RESTARTING}" -eq 1 ]] || [[ "${allow_hop}" -eq 0 ]]; then
       return 1
     fi
   done
@@ -258,7 +286,8 @@ wait_for_port_free() {
   # Used by --restart: old server is shutting down; wait for the active port to clear.
   local port="${1:-$DASHBOARD_PORT}"
   local i
-  for i in $(seq 1 60); do
+  local max="${2:-60}"
+  for i in $(seq 1 "${max}"); do
     if [[ -z "$(listener_pid_on_port "$port")" ]]; then
       return 0
     fi
@@ -266,6 +295,33 @@ wait_for_port_free() {
   done
   echo "warn: port ${port} still busy after wait; continuing anyway" >&2
   return 0
+}
+
+# Refresh must reclaim the UI's port (usually 8787). Hopping to 8788+ leaves the
+# open Chrome window polling a dead port until the ~30–60s client timeout.
+wait_for_preferred_port_ready() {
+  local port="${1:-8787}"
+  local i lp
+  for i in $(seq 1 120); do
+    lp="$(listener_pid_on_port "$port")"
+    if [[ -n "${lp}" ]]; then
+      if is_our_dashboard_server_pid "${lp}"; then
+        echo "restart: stopping leftover dashboard pid=${lp} on :${port}"
+        kill "${lp}" 2>/dev/null || true
+        wait_for_port_free "${port}" 40
+        continue
+      fi
+      echo "warn: preferred port ${port} held by foreign pid=${lp}" >&2
+      /bin/ps -p "${lp}" -o command= 2>/dev/null | sed 's/^/  /' >&2 || true
+      return 1
+    fi
+    if port_is_bindable "${port}"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "warn: preferred port ${port} still not bindable after wait" >&2
+  return 1
 }
 
 # Collect unique PIDs matching one or more pgrep -f patterns.
@@ -349,8 +405,8 @@ dashboard_chrome_main_pids() {
 # Never `tell application "…" to activate` — Launch Services often opens a
 # blank default-profile CfT window when the binary was started with a custom
 # --user-data-dir (same bug as fill focus via activate).
-# After focus, maximize OmniDex to the full usable screen (menu bar + Dock
-# excluded). Fill/PartyRock use separate Chrome windows on the right ~2/3.
+# After focus, enter true macOS fullscreen (green-button Space). Fill/PartyRock
+# use separate Chrome windows on the right ~2/3 (never fullscreen).
 focus_dashboard_ui() {
   local pid
   pid="$(dashboard_chrome_main_pids | head -1 || true)"
@@ -368,9 +424,9 @@ focus_dashboard_ui() {
   return 0
 }
 
-# Maximized to the usable frame (menu bar + Dock excluded) via
-# scripts/window_geometry.py --role dashboard. Fill/PartyRock geometry is
-# unchanged (right ~2/3 on their own windows).
+# True fullscreen via scripts/window_geometry.py --role dashboard (AXFullScreen,
+# then maximized usable-frame fallback). Fill/PartyRock geometry is unchanged
+# (right ~2/3 on their own windows).
 place_dashboard_ui_window() {
   local pid="${1:-}"
   local py
@@ -436,6 +492,7 @@ focus_fill_cft() {
     [[ "${line}" != *"Google Chrome"* ]] && continue
     [[ "${line}" == *dashboard_ui_profile* || "${line}" == *"--app=${URL}"* ]] && continue
     [[ "${line}" == *openclaw/user-data* || "${line}" == *"--remote-debugging-port=${OPENCLAW_CDP_PORT}"* ]] && continue
+    [[ "${line}" == *linkedin_resolve_profile* ]] && continue
     [[ "${line}" == *"/Applications/Google Chrome.app"* && "${line}" != *job_hunter_fill_profile* && "${line}" != *"${fill_root}"* ]] && continue
     pid="${line%% *}"
     [[ "${pid}" =~ ^[0-9]+$ ]] || continue
@@ -464,6 +521,7 @@ print_cft_role_inventory() {
   echo "=== Chrome for Testing roles (one Dock icon; distinguish by argv) ==="
   echo "  UI:     --user-data-dir=…/dashboard_ui_profile  OR  --app=${URL}"
   echo "  PartyRock: --user-data-dir=~/.openclaw/browser/openclaw/user-data  +  :${OPENCLAW_CDP_PORT}"
+  echo "  LinkedIn:  --user-data-dir=…/linkedin_resolve_profile  +  :18801"
   echo "  Fill:   Playwright --remote-debugging-pipe  (focus: $0 --focus-fill)"
   echo "  Titles: UI window ≈ 'OmniDex'; PartyRock ≈ app title; Fill ≈ job URL title"
   echo "  Never: tell application \"Google Chrome for Testing\" to activate"
@@ -524,8 +582,9 @@ kill_openclaw_browser() {
 }
 
 # Playwright / fast_fill headed browser (never daily Google Chrome).
-# Exclude dashboard UI (kill_dashboard_chrome) and OpenClaw PartyRock CDP
-# (kill_openclaw_browser) — same CfT binary, not fill (CHR3-003).
+# Exclude dashboard UI (kill_dashboard_chrome), OpenClaw PartyRock CDP
+# (kill_openclaw_browser), and LinkedIn resolve profile — same CfT binary,
+# not fill (CHR3-003).
 chrome_for_testing_pids() {
   # Main binary only — Helpers die with the main process.
   /usr/bin/pgrep -lf "Google Chrome for Testing" 2>/dev/null \
@@ -537,6 +596,7 @@ chrome_for_testing_pids() {
     | grep -vF -- "--user-data-dir=${OPENCLAW_BROWSER_PROFILE}" \
     | grep -vF -- "--remote-debugging-port=${OPENCLAW_CDP_PORT}" \
     | grep -v openclaw/user-data \
+    | grep -v linkedin_resolve_profile \
     | awk '{print $1}' \
     | awk 'NF && !seen[$0]++' \
     || true
@@ -686,6 +746,7 @@ open_dashboard_ui() {
     --disable-infobars \
     --hide-crash-restore-bubble \
     --disable-session-crashed-bubble \
+    --start-fullscreen \
     --start-maximized \
     --app="${URL}/?jh_boot=$(date +%s)" \
     >/dev/null 2>&1 &
@@ -944,9 +1005,16 @@ restore_dashboard_port_from_file
 acquire_launcher_lock
 
 if [[ "$MODE" == "--restart" ]]; then
+  # Stick to the UI port (default 8787). A prior hop may have saved 8788+ in
+  # dashboard_port — ignore that on Refresh so the open window can reload.
+  if [[ -z "${JOBHUNTER_DASHBOARD_PORT:-}" ]]; then
+    DASHBOARD_PORT="8787"
+    URL="http://127.0.0.1:${DASHBOARD_PORT}"
+    remember_dashboard_port
+  fi
   echo "launch_dashboard.sh --restart: waiting for old server to release :${DASHBOARD_PORT}"
   RESTARTING=1
-  wait_for_port_free
+  wait_for_preferred_port_ready "$DASHBOARD_PORT" || wait_for_port_free "$DASHBOARD_PORT" 80
   rm -f "$RESTART_FLAG" 2>/dev/null || true
 fi
 
@@ -984,7 +1052,13 @@ while true; do
     RESTARTING=1
     KEEP_CHROME=1
     rm -f "$RESTART_FLAG" 2>/dev/null || true
-    wait_for_port_free
+    # Prefer the port the UI already has open (saved file / env / 8787).
+    if [[ -z "${JOBHUNTER_DASHBOARD_PORT:-}" ]]; then
+      DASHBOARD_PORT="8787"
+      URL="http://127.0.0.1:${DASHBOARD_PORT}"
+      remember_dashboard_port
+    fi
+    wait_for_preferred_port_ready "$DASHBOARD_PORT" || wait_for_port_free "$DASHBOARD_PORT" 80
     KEEP_CHROME=0
     # RESTARTING stays 1 until start_dashboard_server succeeds above.
     continue

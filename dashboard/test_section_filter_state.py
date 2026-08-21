@@ -92,7 +92,6 @@ FILTER_CONTROL_IDS = [
     "yoe-filter",
     "date-filter",
     "salary-filter",
-    "status-filter",
     "extras-filter",
     "region-filter",
 ]
@@ -106,7 +105,6 @@ DEFAULT_CONTROLS = {
     "yoe-filter": "",
     "date-filter": "",
     "salary-filter": "",
-    "status-filter": "",
     "extras-filter": "",
     "region-filter": "",
 }
@@ -157,7 +155,6 @@ TODAY_STORED = {
     "yoe": "le5",
     "date": "2d",
     "salary": "",
-    "status": "",
     "extras": "",
     "region": "us",
 }
@@ -264,7 +261,7 @@ def open_filters_popover(page) -> None:
 def close_filters_popover(page) -> None:
     if page.locator("#list-filters.open").count():
         page.click("#filters-toggle")
-    # The popover also stays visible on :hover / :focus-within, so step away.
+    # Click-pinned open closes via toggle; move away clears any hover timer.
     page.mouse.move(4, 4)
     page.wait_for_timeout(80)
 
@@ -410,7 +407,6 @@ def check_localstorage_new_session(page, base_url: str) -> None:
             "yoe": "",
             "date": "",
             "salary": "ge100",
-            "status": "",
             "extras": "",
             "region": "us",
         },
@@ -592,6 +588,21 @@ def check_posted_windows_static() -> None:
         sys.stderr.write(proc.stderr)
     assert proc.returncode == 0, proc.stderr or proc.stdout
     assert "OK test_posted_date_filter.js" in proc.stdout
+    extras_block = html.split('id="extras-filter"', 1)[1].split("</select>", 1)[0]
+    assert 'id="status-filter"' not in html
+    assert 'value="no_jd"' in extras_block and "No / incomplete JD" in extras_block
+    incl = subprocess.run(
+        ["node", str(ROOT / "dashboard" / "test_list_filters_inclusive.js")],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if incl.returncode != 0:
+        sys.stderr.write(incl.stdout)
+        sys.stderr.write(incl.stderr)
+    assert incl.returncode == 0, incl.stderr or incl.stdout
+    assert "OK test_list_filters_inclusive.js" in incl.stdout
     print("ok: posted date windows + Today preset payload (static/js)")
 
 
@@ -629,7 +640,6 @@ def check_today_preset_and_posted_windows(page, base_url: str) -> None:
     set_select(page, "work-mode-filter", "remote")
     set_select(page, "yoe-filter", "le3")
     set_select(page, "salary-filter", "ge200")
-    set_select(page, "status-filter", "filling")
     set_select(page, "extras-filter", "has_url")
     set_select(page, "region-filter", "india")
     close_filters_popover(page)

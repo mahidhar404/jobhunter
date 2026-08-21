@@ -2,8 +2,9 @@
 """Deterministic dedup + qualify step for scraped job listings.
 
 Merges one or more listings files (from scout.py and/or scrape_ats.py),
-drops test/mock entries, indirect (staffing-agency) apply links, and
-obviously irrelevant titles - then matches remaining listings by URL/posting
+drops test/mock entries and obviously irrelevant titles. Prune matches
+(staffing, seniority, non-US, clearance, YOE, citizenship) stay in the
+qualified file so write_discovered_jobs can tombstone them into Deleted.
 key, gated full-JD fingerprint, or a same-ATS-org exact-title repost. The same
 role seen via two different boards (e.g. Indeed AND the company's own
 Greenhouse page) collapses only with one of those identity signals. When a duplicate is found, the
@@ -40,12 +41,8 @@ from apply_urls import (  # noqa: E402
 )
 from blocked_urls import block_keys_for_url, load_blocked_url_set  # noqa: E402
 from discovery_filters import (  # noqa: E402
+    auto_delete_reason,
     enabled_regions_from_env,
-    is_excluded_title,
-    location_matches_regions,
-    requires_excessive_experience,
-    requires_security_clearance,
-    requires_us_citizen_or_greencard,
 )
 from jd_fingerprint import item_jd_fingerprint  # noqa: E402
 from dedup_jobs import exact_url_overlap, is_fresher  # noqa: E402
@@ -60,10 +57,6 @@ def log(msg: str) -> None:
 ROOT = Path(__file__).parent.parent
 JOBS_FILE = ROOT / "jobs.json"
 
-STAFFING_DENY_HINTS = [
-    "staffing", "recruiting agency", "talent acquisition partners",
-    "randstad", "robert half", "adecco", "manpower", "kforce", "insight global",
-]
 TEST_HINTS = ["smart apply test", "internal test job", "test company"]
 IRRELEVANT_TITLE_HINTS = [
     "drafter", "cad operator", "engineering technician", "business development manager",
@@ -113,27 +106,13 @@ RELEVANT_KEYWORDS = [
     "etl", "elt", "dataops", "big data", "data cleaning", "data quality",
     "data wrangling",
 ]
-ATS_SOURCE_RANK = {
-    "greenhouse": 0, "lever": 0, "ashby": 0, "recruitee": 0, "personio": 0,
-    "smartrecruiters": 0, "workable": 0, "rippling": 0, "breezy": 0, "bamboohr": 0,
-    "indeed": 1, "linkedin": 1, "builtin": 1,
-}
-# Note: fuzzy-merge winner selection now uses apply_urls.merge_listing_pair
-# (URL quality + site), not ATS_SOURCE_RANK alone. Kept for reference/compat.
+# Fuzzy-merge winner selection uses apply_urls.listing_preference_rank /
+# merge_listing_pair (URL quality + site), not a local ATS_SOURCE_RANK table.
 
 
 def is_relevant(title) -> bool:
     t = str(title or "").lower()
     return any(kw in t for kw in RELEVANT_KEYWORDS)
-
-
-def looks_like_staffing(company: str, description: str) -> bool:
-    # Only the COMPANY NAME is a reliable signal here. Job descriptions from
-    # real direct employers routinely include boilerplate like "we do not
-    # accept submissions from staffing agencies" - matching against the
-    # description text flags the employer for the exact opposite of what
-    # the phrase means, so it's deliberately excluded.
-    return any(h in str(company or "").lower() for h in STAFFING_DENY_HINTS)
 
 
 def deduplicate_candidates(candidates: list[dict]) -> tuple[list[dict], int]:
@@ -252,7 +231,7 @@ def main() -> None:
 
     skipped = {"test": 0, "existing_url": 0, "blocked_url": 0, "staffing": 0,
                "irrelevant_title": 0, "not_relevant": 0, "no_company": 0,
-               "management_track": 0, "non_us_location": 0,
+               "management_track": 0, "contract": 0, "non_us_location": 0,
                "clearance_or_intel": 0, "excessive_yoe": 0,
                "citizenship_or_greencard": 0}
     candidates = []
@@ -301,33 +280,21 @@ def main() -> None:
         if url_keys & existing_urls:
             skipped["existing_url"] += 1
             continue
-        if looks_like_staffing(company, description):
-            skipped["staffing"] += 1
-            continue
-        norm_title = normalize_title(title)
-        if any(h in norm_title for h in IRRELEVANT_TITLE_HINTS):
+        if any(h in normalize_title(title) for h in IRRELEVANT_TITLE_HINTS):
             skipped["irrelevant_title"] += 1
             continue
-        if is_excluded_title(title):
-            skipped["management_track"] += 1
-            continue
-        if not location_matches_regions(location, regions):
-            skipped["non_us_location"] += 1
-            continue
-        if requires_security_clearance(
+        prune_reason = auto_delete_reason(
             title=title,
-            company=company,
             location=location,
+            company=company,
             description=description,
             url=apply_url or direct_url or url,
-        ):
-            skipped["clearance_or_intel"] += 1
-            continue
-        if requires_excessive_experience(title=title, description=description):
-            skipped["excessive_yoe"] += 1
-            continue
-        if requires_us_citizen_or_greencard(title=title, description=description):
-            skipped["citizenship_or_greencard"] += 1
+            job_type=item.get("job_type"),
+            regions=regions,
+        )
+        if prune_reason:
+            skipped[prune_reason] = skipped.get(prune_reason, 0) + 1
+            candidates.append(item)
             continue
         if not is_relevant(title):
             skipped["not_relevant"] += 1

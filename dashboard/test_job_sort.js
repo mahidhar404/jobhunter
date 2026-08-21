@@ -1,6 +1,11 @@
 /* Focused tests for the Posted sort comparator (node dashboard/test_job_sort.js). */
 const assert = require("node:assert");
-const { compareByPosted, datePostedTime } = require("./static/job_sort.js");
+const {
+  compareByPosted,
+  datePostedTime,
+  jobPostedDisplay,
+  postedAgeLabel,
+} = require("./static/job_sort.js");
 
 function order(jobs) {
   return jobs.slice().sort(compareByPosted).map(j => j.id);
@@ -25,19 +30,32 @@ assert.deepStrictEqual(
   ["timestamp", "date-only"],
 );
 
-// Jobs without date_posted use created_at (discovery date) for posted sort.
+// Undated / invalid posted dates sort last — created_at is NOT a posted date.
 assert.deepStrictEqual(
   order([
     { id: "missing", created_at: "2026-08-05T12:00:00Z" },
     { id: "invalid", date_posted: "not-a-date", created_at: "2026-08-05T12:00:00Z" },
     { id: "posted", date_posted: "2026-07-01" },
   ]),
-  ["invalid", "missing", "posted"],
+  ["posted", "invalid", "missing"],
 );
 assert.strictEqual(datePostedTime({ date_posted: "not-a-date" }), null);
 assert.strictEqual(datePostedTime({}), null);
-assert.ok(
-  datePostedTime({ created_at: "2026-08-05T12:00:00Z" }) > datePostedTime({ date_posted: "2026-07-01" }),
+assert.strictEqual(datePostedTime({ created_at: "2026-08-05T12:00:00Z" }), null);
+assert.deepStrictEqual(
+  jobPostedDisplay({ created_at: "2026-08-05T12:00:00Z" }),
+  { time: null, iso: null, approx: false },
+);
+assert.strictEqual(
+  postedAgeLabel({ created_at: "2026-08-05T12:00:00Z" }, Date.parse("2026-08-18T12:00:00Z")),
+  "—",
+);
+assert.strictEqual(
+  postedAgeLabel(
+    { date_posted_fallback: "2026-08-15" },
+    Date.parse("2026-08-18T12:00:00Z"),
+  ),
+  "~3d",
 );
 
 // Equal posted dates fall back to updated_at/created_at, newest first.
@@ -97,7 +115,8 @@ for (const file of ["app.js"]) {
     { id: "newest", date_posted: "2026-08-05T08:00:00Z" },
     { id: "mid", date_posted: "2026-08-01" },
   ], "date").map(j => j.id);
-  assert.deepStrictEqual(sorted, ["no-date", "newest", "mid", "old"], file);
+  // Undated last — created_at must not float "no-date" above real posted dates.
+  assert.deepStrictEqual(sorted, ["newest", "mid", "old", "no-date"], file);
 }
 
 console.log("ok: job sort tests passed");

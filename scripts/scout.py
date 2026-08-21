@@ -30,6 +30,7 @@ from jobspy import scrape_jobs
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from discovery_filters import enabled_regions_from_env, normalize_regions  # noqa: E402
+from known_job_urls import load_skip_urls_file, url_is_known  # noqa: E402
 
 # JobSpy query params per enabled region. Keep in sync with
 # discovery_filters region ids. LinkedIn India is brittle/low-priority
@@ -70,9 +71,34 @@ SITES = ["indeed", "linkedin"]  # zip_recruiter/glassdoor dropped: reliably 403/
 PER_CALL_TIMEOUT_S = 90
 
 
-def scrape_one(site: str, term: str, results_wanted: int, *, region: str = "us"):
+def _cell_str(value) -> str | None:
+    """Coerce a JobSpy/pandas cell to str, mapping NaN/NaT/nullish → None."""
+    if value is None:
+        return None
+    try:
+        # pandas NA / NaT / float nan — avoid str(nan) == "nan" in listings JSON.
+        import pandas as pd
+
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    text = str(value).strip()
+    if not text or text.lower() in ("nan", "nat", "none", "null"):
+        return None
+    return text
+
+
+def scrape_one(
+    site: str,
+    term: str,
+    results_wanted: int,
+    *,
+    region: str = "us",
+    hours_old: int | None = None,
+):
     q = REGION_QUERY.get(region, REGION_QUERY["us"])
-    return scrape_jobs(
+    kwargs = dict(
         site_name=[site],
         search_term=term,
         location=q["location"],
@@ -81,6 +107,9 @@ def scrape_one(site: str, term: str, results_wanted: int, *, region: str = "us")
         country_indeed=q["country_indeed"],
         linkedin_fetch_description=(site == "linkedin"),
     )
+    if hours_old:
+        kwargs["hours_old"] = int(hours_old)
+    return scrape_jobs(**kwargs)
 
 
 def main() -> None:
@@ -96,6 +125,16 @@ def main() -> None:
         help="Comma-separated regions to query (us,india). Default: "
              "JOBHUNTER_DISCOVERY_REGIONS env / US-only.",
     )
+    parser.add_argument(
+        "--hours-old", type=int, default=None,
+        help="JobSpy recency window in hours (adaptive Discover: days * 24).",
+    )
+    parser.add_argument(
+        "--skip-urls", default=None,
+        help="JSON array of URL keys already in jobs.json / blocked / prior listings. "
+             "JobSpy still queries aggregators (no per-URL skip inside JobSpy); "
+             "known URLs are dropped before write.",
+    )
     args = parser.parse_args()
 
     sites = list(args.sites) if args.sites else list(SITES)
@@ -109,10 +148,18 @@ def main() -> None:
     out_path = Path(args.out) if args.out else Path(__file__).parent.parent / "listings" / f"{date.today().isoformat()}.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    skip_keys = load_skip_urls_file(Path(args.skip_urls) if args.skip_urls else None)
+    if skip_keys:
+        log(f"skip-urls: {len(skip_keys)} known key(s) (filter after JobSpy; cannot skip JobSpy network)")
+
     run_start = time.monotonic()
-    log(f"regions: {', '.join(regions)}")
+    if args.hours_old:
+        log(f"regions: {', '.join(regions)}; hours_old={args.hours_old}")
+    else:
+        log(f"regions: {', '.join(regions)}")
     seen_urls: set[str] = set()
     all_listings: list[dict] = []
+    skipped_known = 0
     # max_workers matches len(sites): both sites for one term are
     # submitted before either is waited on, so indeed+linkedin actually
     # run concurrently (previously max_workers=1 combined with waiting on
@@ -129,7 +176,10 @@ def main() -> None:
                 for site in sites:
                     log(f"scraping {site}: {term} [{region}]...")
                 futures = {
-                    site: pool.submit(scrape_one, site, term, args.results_per_term, region=region)
+                    site: pool.submit(
+                        scrape_one, site, term, args.results_per_term,
+                        region=region, hours_old=args.hours_old,
+                    )
                     for site in sites
                 }
                 for site, future in futures.items():
@@ -145,20 +195,24 @@ def main() -> None:
 
                     added = 0
                     for _, row in df.iterrows():
-                        url = row.get("job_url")
+                        url = _cell_str(row.get("job_url"))
                         if not url or url in seen_urls:
+                            continue
+                        direct = _cell_str(row.get("job_url_direct"))
+                        if url_is_known(url, skip_keys) or url_is_known(direct, skip_keys):
+                            skipped_known += 1
                             continue
                         seen_urls.add(url)
                         all_listings.append({
-                            "title": row.get("title"),
-                            "company": row.get("company"),
-                            "site": row.get("site"),
+                            "title": _cell_str(row.get("title")),
+                            "company": _cell_str(row.get("company")),
+                            "site": _cell_str(row.get("site")) or site,
                             "job_url": url,
-                            "job_url_direct": row.get("job_url_direct"),
-                            "description": row.get("description"),
-                            "date_posted": str(row.get("date_posted")) if row.get("date_posted") is not None else None,
-                            "job_type": row.get("job_type"),
-                            "location": row.get("location"),
+                            "job_url_direct": direct,
+                            "description": _cell_str(row.get("description")) or "",
+                            "date_posted": _cell_str(row.get("date_posted")),
+                            "job_type": _cell_str(row.get("job_type")),
+                            "location": _cell_str(row.get("location")),
                             "search_term": term,
                         })
                         added += 1
@@ -172,6 +226,8 @@ def main() -> None:
             # Hint to reclaim DataFrames and scraper memory before next term
             gc.collect()
 
+    if skipped_known:
+        log(f"skipped {skipped_known} already-known URL(s)")
     log(f"done: {len(all_listings)} listings -> {out_path} (total {time.monotonic() - run_start:.1f}s)")
 
 

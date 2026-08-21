@@ -1,0 +1,13 @@
+{
+  "id": "must_keep_no_visa_sponsor",
+  "title": "Machine Learning Engineer",
+  "company": "Fixture Labs",
+  "location": "Remote, US",
+  "description": "We are unable to sponsor visas for this role. Authorized to work in the U.S. required. Build and ship models.",
+  "expect": {
+    "keep": true,
+    "reason": null,
+    "tags": { "clearance": false, "us_person": false },
+    "work_mode": "remote"
+  }
+}

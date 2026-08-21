@@ -132,7 +132,11 @@ def _parse_posted_ts(value) -> float | None:
 
 
 def posted_signal(job: dict) -> _PostedSignal | None:
-    """Effective posted signal mirroring dashboard jobPostedDisplay."""
+    """Effective posted signal mirroring dashboard jobPostedDisplay.
+
+    Only ``date_posted`` (exact) or ``date_posted_fallback`` (~). Never
+    ``created_at`` — discovery time is not a posted date.
+    """
     exact = job.get("date_posted")
     ts = _parse_posted_ts(exact)
     if ts is not None:
@@ -141,10 +145,6 @@ def posted_signal(job: dict) -> _PostedSignal | None:
     ts = _parse_posted_ts(fb)
     if ts is not None:
         return _PostedSignal(ts, str(fb).strip(), True)
-    created = job.get("created_at")
-    ts = _parse_posted_ts(created)
-    if ts is not None:
-        return _PostedSignal(ts, str(created).strip(), False)
     return None
 
 
@@ -245,10 +245,12 @@ def fold_urls_into_winner(winner: dict, loser: dict) -> None:
         combined.setdefault("alternate_urls", []).append(u)
     out = enrich_listing_urls(combined)
     old_primary = winner.get("apply_url")
+    manual_apply = bool(winner.get("apply_url_manual"))
     # ATS-over-aggregator first; among equal-quality ATS, fresher posting's URL.
     # Do not re-prefer via first-wins among equal rank (that would keep the stale URL).
-    primary = _prefer_primary_apply(winner, loser, out.get("apply_url"))
-    winner["apply_url"] = primary or old_primary
+    if not manual_apply:
+        primary = _prefer_primary_apply(winner, loser, out.get("apply_url"))
+        winner["apply_url"] = primary or old_primary
     # Never replace ATS apply with aggregator's job_url
     if is_aggregator_url(winner.get("job_url") or "") is False and is_aggregator_url(loser.get("job_url") or ""):
         winner["source_url"] = winner.get("source_url") or loser.get("job_url")

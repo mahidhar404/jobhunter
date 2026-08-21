@@ -6,11 +6,14 @@ import importlib.util
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 SERVER_PATH = HERE / "server.py"
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 
 
 def _load_server():
@@ -93,6 +96,67 @@ def test_jobs_list_cache_reuses_serialized_body():
     assert first == second
     assert first[1].endswith('-7-0"')
     read.assert_called_once()
+
+
+def test_jobs_list_cache_rejects_stale_body_under_newer_mtime():
+    """TOCTOU: never cache an old revision under a post-write mtime."""
+    import jobs_list as jl
+
+    with tempfile.TemporaryDirectory() as td:
+        jobs_file = Path(td) / "jobs.json"
+        jobs_file.write_text(
+            json.dumps({"revision": 1, "jobs": [{"id": "a"}]}), encoding="utf-8"
+        )
+        mtimes = [jobs_file.stat().st_mtime_ns]
+        reads = {"n": 0}
+
+        def _read():
+            reads["n"] += 1
+            if reads["n"] == 1:
+                # Simulate a writer landing after the pre-read mtime check.
+                time.sleep(0.02)
+                jobs_file.write_text(
+                    json.dumps({"revision": 2, "jobs": [{"id": "b"}]}),
+                    encoding="utf-8",
+                )
+                mtimes.append(jobs_file.stat().st_mtime_ns)
+                return {"revision": 1, "jobs": [{"id": "a"}]}
+            return json.loads(jobs_file.read_text(encoding="utf-8"))
+
+        cache: dict = {
+            "mtime": None,
+            "body_bytes": None,
+            "etag": None,
+            "fill_hold": None,
+        }
+        body1, _etag1 = jl.cached_jobs_list_response(
+            jobs_file=jobs_file,
+            read_jobs=_read,
+            fill_hold_active=lambda: False,
+            build_response=lambda data, fh: {
+                "jobs": data.get("jobs") or [],
+                "fill_hold_active": fh,
+            },
+            cache=cache,
+        )
+        # First attempt saw mtime change mid-read and retried.
+        assert reads["n"] >= 2
+        payload1 = json.loads(body1.decode())
+        assert payload1["jobs"][0]["id"] == "b"
+
+        body2, _etag2 = jl.cached_jobs_list_response(
+            jobs_file=jobs_file,
+            read_jobs=_read,
+            fill_hold_active=lambda: False,
+            build_response=lambda data, fh: {
+                "jobs": data.get("jobs") or [],
+                "fill_hold_active": fh,
+            },
+            cache=cache,
+        )
+        payload2 = json.loads(body2.decode())
+        assert payload2["jobs"][0]["id"] == "b"
+        assert cache.get("mtime") == jobs_file.stat().st_mtime_ns
 
 
 def test_jobs_list_etag_includes_fill_hold():
@@ -182,7 +246,7 @@ def test_jobs_head_matches_get_without_body():
     handler.end_headers = _end  # type: ignore[method-assign]
     with mock.patch.object(
         srv, "_cached_jobs_list_response", return_value=(body, etag)
-    ), mock.patch.object(srv, "_lock", mock.MagicMock()):
+    ):
         handler.do_HEAD()
     assert sent.get("code") == 200
     assert sent.get("ended") is True
@@ -202,6 +266,59 @@ def test_stats_route_exists_alongside_jobs_etag():
     # Classic redirects must remain.
     assert 'parts[0] in ("classic", "classic.html", "classic.js")' in src
     assert "send_response(302)" in src
+
+
+def test_jobs_list_stamp_only_never_reads_jd_full():
+    """Contract: GET /api/jobs / slim_job_for_list must not touch jd_full."""
+    srv = _load_server()
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    # Hot-path slim + cache must delegate to jobs_list (single source of truth).
+    assert "return _slim_job_for_list_impl(" in src
+    assert "_cached_jobs_list_response_impl(" in src
+    assert "_invalidate_jobs_list_cache_impl(" in src
+    assert "load_raw_job_description" not in (
+        src[src.index("def slim_job_for_list") : src.index("def sync_job_resume_on_disk")]
+    )
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        jobs_file = root / "jobs.json"
+        resumes = root / "resumes"
+        job_dir = resumes / "legacy-row"
+        job_dir.mkdir(parents=True)
+        (job_dir / "jd_full.txt").write_text(
+            "Compensation: $200,000. Remote. 5+ years.\n", encoding="utf-8"
+        )
+        data = {
+            "revision": 1,
+            "jobs": [
+                {
+                    "id": "legacy-row",
+                    "title": "Dummy",
+                    "job_description": "short preview",
+                    # Missing stamp keys — must still skip jd_full.
+                }
+            ],
+        }
+        jobs_file.write_text(json.dumps(data), encoding="utf-8")
+        srv._invalidate_jobs_list_cache()
+        with mock.patch.object(srv, "JOBS_FILE", jobs_file), mock.patch.object(
+            srv, "RESUMES_DIR", resumes
+        ), mock.patch.object(srv, "read_jobs", return_value=data), mock.patch.object(
+            srv, "_fill_hold_browser_active", return_value=False
+        ), mock.patch.object(
+            srv, "load_raw_job_description", side_effect=AssertionError("jd_full")
+        ):
+            body, etag = srv._cached_jobs_list_response()
+    payload = json.loads(body.decode())
+    assert len(payload["jobs"]) == 1
+    assert payload["jobs"][0].get("salary_min") is None
+    assert etag.startswith('"')
+
+
+def test_jobs_list_contract_documented_in_source():
+    src = SERVER_PATH.read_text(encoding="utf-8")
+    assert "stamp-only" in src.lower() or "Stamp-only" in src
+    assert "never opens resumes/<id>/jd_full.txt" in src
 
 
 if __name__ == "__main__":

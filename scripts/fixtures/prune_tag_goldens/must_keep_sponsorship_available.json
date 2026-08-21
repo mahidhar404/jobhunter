@@ -1,0 +1,14 @@
+{
+  "id": "must_keep_sponsorship_available",
+  "title": "Data Scientist",
+  "company": "Fixture AI",
+  "location": "San Francisco, CA",
+  "description": "Visa sponsorship is available for this role. Hybrid in SF. 3+ years of experience required.",
+  "expect": {
+    "keep": true,
+    "reason": null,
+    "tags": { "clearance": false, "us_person": false },
+    "work_mode": "hybrid",
+    "min_yoe": 3
+  }
+}

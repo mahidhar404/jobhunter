@@ -14,12 +14,12 @@ sys.path.insert(0, str(ROOT / "dashboard"))
 import server as srv  # noqa: E402
 
 
-def test_discovery_settings_default_builtin_days_is_one() -> None:
+def test_discovery_settings_default_builtin_days_is_seven() -> None:
     with tempfile.TemporaryDirectory() as td:
         settings_file = Path(td) / "discovery_settings.json"
         with mock.patch.object(srv, "DISCOVERY_SETTINGS_FILE", settings_file):
             defaults = srv.load_discovery_settings()
-    assert defaults["builtin_days_since_updated"] == 1
+    assert defaults["builtin_days_since_updated"] == 7
 
 
 def test_discovery_settings_round_trip_allowlisted_days() -> None:
@@ -45,10 +45,15 @@ def test_discovery_settings_reject_unsupported_days() -> None:
 
 def test_normalize_builtin_days_allowlist() -> None:
     assert srv.normalize_builtin_days_since_updated(1) == 1
-    assert srv.normalize_builtin_days_since_updated("30") == 30
-    assert srv.normalize_builtin_days_since_updated(None) == 1
+    assert srv.normalize_builtin_days_since_updated("10") == 10
+    assert srv.normalize_builtin_days_since_updated(None) == 7
     try:
         srv.normalize_builtin_days_since_updated(14)
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+    try:
+        srv.normalize_builtin_days_since_updated(30)
         raise AssertionError("expected ValueError")
     except ValueError:
         pass
@@ -70,27 +75,26 @@ def test_discovery_status_exposes_builtin_days() -> None:
     with tempfile.TemporaryDirectory() as td:
         settings_file = Path(td) / "discovery_settings.json"
         with mock.patch.object(srv, "DISCOVERY_SETTINGS_FILE", settings_file):
-            srv.save_discovery_settings({"builtin_days_since_updated": 30})
+            srv.save_discovery_settings({"builtin_days_since_updated": 10})
             status = srv.discovery_status()
-    assert status.get("builtin_days_since_updated") == 30
+    assert status.get("builtin_days_since_updated") == 10
 
 
-def test_ui_discover_popover_has_builtin_days_control() -> None:
-    """Wiring smoke: popover markup/JS must expose Built In last-N selector."""
+def test_ui_discover_popover_has_per_source_days_control() -> None:
+    """Wiring smoke: popover markup/JS must expose 1–10 lookback per source."""
     app_js = (ROOT / "dashboard" / "static" / "app.js").read_text()
-    assert "builtin_days_since_updated" in app_js or "builtinDaysSinceUpdated" in app_js
-    assert "Built In: last" in app_js or "builtin-days" in app_js
-    # Supported UI values only
-    for v in (1, 3, 7, 30):
-        assert str(v) in app_js
+    assert "saveSourceDaysSetting" in app_js
+    assert "src-days" in app_js
+    for v in range(1, 11):
+        assert f">{v}d<" in app_js or f"${{d}}d" in app_js
 
 
 if __name__ == "__main__":
-    test_discovery_settings_default_builtin_days_is_one()
+    test_discovery_settings_default_builtin_days_is_seven()
     test_discovery_settings_round_trip_allowlisted_days()
     test_discovery_settings_reject_unsupported_days()
     test_normalize_builtin_days_allowlist()
     test_builtin_scrape_cmd_includes_days_flag()
     test_discovery_status_exposes_builtin_days()
-    test_ui_discover_popover_has_builtin_days_control()
+    test_ui_discover_popover_has_per_source_days_control()
     print("ok: discovery builtin settings tests passed")

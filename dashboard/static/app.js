@@ -29,6 +29,7 @@ const DELETED_REASON_LABELS = {
   seniority: { short: "Management / seniority", long: "Management / seniority" },
   non_us: { short: "Non-US location", long: "Non-US location" },
   non_us_location: { short: "Non-US location", long: "Non-US location" },
+  staffing: { short: "Staffing agency", long: "Staffing / recruiting agency" },
   stale_listing: { short: "Stale listing", long: "Listing posted more than 10 days ago" },
   user: { short: "Skipped / deleted by you", long: "Skipped or deleted by you" },
   manual: { short: "Skipped / deleted by you", long: "Skipped or deleted by you" },
@@ -36,6 +37,8 @@ const DELETED_REASON_LABELS = {
   duplicate: { short: "Duplicate (merged)", long: "Duplicate — merged into another listing" },
   contract: { short: "Contract / C2C", long: "Contract / C2C" },
   easy_apply: { short: "Easy apply", long: "Easy apply / aggregator apply" },
+  unresolved_apply_url: { short: "Unresolved URL", long: "Apply URL still LinkedIn / aggregator after resolve" },
+  apply_resolve_failed: { short: "Unresolved URL", long: "Apply URL still LinkedIn / aggregator after resolve" },
   dead_link: { short: "Dead link", long: "Dead or broken link" },
 };
 /** Canonical order for Deleted reason groups (empty key = No reason, last). */
@@ -45,9 +48,11 @@ const DELETED_REASON_ORDER = [
   "clearance_or_intel",
   "management_track",
   "non_us_location",
+  "staffing",
   "stale_listing",
   "contract",
   "easy_apply",
+  "unresolved_apply_url",
   "duplicate",
   "dead_link",
   "skipped_manual",
@@ -78,7 +83,7 @@ const IN_PROGRESS_OR_NEEDS_ATTENTION = [
 // (real example: "Sr. Lead Machine Learning Engineer (IC)" matches "lead"
 // but had real completed work behind it).
 // Keep in sync with scripts/discovery_filters.py (single source of policy).
-const SENIORITY_EXCLUDE_RE = /\b(principal|staff|lead|manager|mgr|director|vp|svp|evp|vice[\s-]+president|head\s+of|chief|founder|partner|fellow|distinguished|supervisor|architect|cto|ceo|cpo|cfo|coo|cio)\b/i;
+const SENIORITY_EXCLUDE_RE = /\b(principal|(?<!technical\s)staff|lead|manager|mgr|director|vp|svp|evp|vice[\s-]+president|head\s+of|chief|founder|partner|fellow|distinguished|supervisor|architect|cto|ceo|cpo|cfo|coo|cio)\b/i;
 const NON_US_LOCATION_RE = /\b(india|japan|china|singapore|philippines|germany|france|poland|mexico|brazil|australia|vietnam|indonesia|malaysia|thailand|canada|united\s+kingdom|\buk\b|england|scotland|ireland|wales|netherlands|spain|italy|sweden|norway|denmark|switzerland|belgium|portugal|austria|finland|israel|south\s+korea|\bkorea\b|taiwan|hong\s+kong|dubai|u\.?a\.?e\.?|united\s+arab\s+emirates|new\s+zealand|argentina|colombia|chile|peru|ecuador|bolivia|uruguay|paraguay|venezuela|guatemala|honduras|nicaragua|costa\s+rica|panama|dominican\s+republic|saudi\s+arabia|\bksa\b|qatar|kuwait|bahrain|oman|jordan|lebanon|egypt|morocco|tunisia|nigeria|kenya|ghana|ethiopia|south\s+africa|ukraine|romania|serbia|slovakia|slovenia|croatia|hungary|czech(\s+republic)?|\bczechia\b|bulgaria|lithuania|latvia|estonia|greece|turkey|turkiye|pakistan|bangladesh|sri\s+lanka|nepal|cambodia|myanmar|armenia|azerbaijan|kazakhstan|uzbekistan|tajikistan|north\s+macedonia|macedonia|belarus|moldova|europe|european(\s+union)?|emea|apac|latam|\basia\b|africa|middle\s+east|worldwide|\bglobal\b|ontario|quebec|alberta|manitoba|saskatchewan|british\s+columbia|nova\s+scotia|new\s+brunswick|newfoundland|prince\s+edward|karnataka|telangana|maharashtra|tamil\s+nadu|kerala|gujarat|haryana|uttar\s+pradesh|west\s+bengal|andhra\s+pradesh|rajasthan|madhya\s+pradesh|odisha|assam|jharkhand|bangalore|bengaluru|mumbai|delhi|hyderabad|pune|chennai|kolkata|gurgaon|gurugram|noida|ahmedabad|jaipur|coimbatore|kochi|thiruvananthapuram|trivandrum|indore|bhubaneswar|vadodara|nagpur|mysuru|visakhapatnam|lucknow|chandigarh|kuala\s+lumpur|penang|bangkok|hanoi|ho\s+chi\s+minh|istanbul|athens|zagreb|gdansk|wroclaw|tokyo|osaka|shanghai|beijing|shenzhen|manila|jakarta|toronto|vancouver|montreal|ottawa|calgary|edmonton|kitchener|kitchener-waterloo|mississauga|winnipeg|halifax|london|paris|munich|berlin|amsterdam|dublin|zurich|geneva|stockholm|copenhagen|oslo|helsinki|lisbon|madrid|barcelona|rome|milan|prague|budapest|vienna|brussels|warsaw|krakow|bucharest|sofia|belgrade|bratislava|vilnius|tallinn|riga|edinburgh|glasgow|melbourne|sydney|brisbane|perth|adelaide|auckland|wellington|seoul|taipei|tel\s+aviv|jerusalem|haifa|sao\s+paulo|rio\s+de\s+janeiro|bogota|medellin|santiago|buenos\s+aires|lima|quito|montevideo|mexico\s+city|ciudad\s+de\s+mexico|guadalajara|monterrey|dubai|abu\s+dhabi|doha|riyadh|jeddah|cape\s+town|johannesburg|lagos|nairobi|almaty|astana|nur-sultan|san\s+salvador|stuttgart|frankfurt|hamburg|cologne|dusseldorf|lyon|marseille|toulouse|lille|\bgbr\b|\bcan\b|\bind\b|\baus\b|\bdeu\b|\bfra\b|\bnld\b|\bsgp\b|\birl\b|\bnzl\b|\bpol\b|\bmex\b|\bbra\b|\besp\b|\bita\b|\bswe\b|\bnor\b|\bdnk\b|\bche\b|\bbel\b|\bprt\b|\baut\b|\bfin\b|\bisr\b|\bkor\b|\btwn\b|\bphl\b|\bare\b|\brou\b|\buae\b|\bsau\b|\bqat\b)\b/i;
 // u.s(?!\w) — not u.s. + \b; trailing "." is non-word so \b after u.s. never matches.
 const US_LOCATION_STRONG_RE = /\b(united\s+states|u\.s\.a\.?|u\.s(?!\w)|\busa\b|\bus\b|remote[,\s\/-]*us|us[,\s\/-]*remote|us[-\s]?based|us[-\s]?only|alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new\s+hampshire|new\s+jersey|new\s+mexico|new\s+york|north\s+carolina|north\s+dakota|ohio|oklahoma|oregon|pennsylvania|rhode\s+island|south\s+carolina|south\s+dakota|tennessee|texas|utah|vermont|virginia|washington|west\s+virginia|wisconsin|wyoming|district\s+of\s+columbia|san\s+francisco|seattle|austin|boston|chicago|denver|atlanta|dallas|houston|miami|phoenix|portland|salt\s+lake|los\s+angeles|san\s+diego|san\s+jose|palo\s+alto|mountain\s+view|sunnyvale|redmond|bellevue|cupertino|menlo\s+park|foster\s+city|oakland|irvine|raleigh|durham|charlotte|nashville|minneapolis|pittsburgh|philadelphia|washington,\s*dc|new\s+york\s+city|\bnyc\b|bay\s+area|silicon\s+valley)\b/i;
@@ -116,9 +121,10 @@ const INDIA_LOCATION_RE = /\b(india|bharat|karnataka|telangana|maharashtra|tamil
 const INDIA_REMOTE_RE = /(remote[,\s/\-]*india|india[,\s/\-]*remote|india\s*\(\s*remote\s*\)|remote\s*\(\s*india\s*\)|(?:wfh|work\s+from\s+home)[,\s/\-]*india|anywhere\s+in\s+india|pan[\s\-]*india|across\s+india)/i;
 const GEORGIA_COUNTRY_CITY_RE = /\b(?:tbilisi|batumi)\b/i;
 // Clearance requirement language — not bare "security" / "secret" alone.
-const CLEARANCE_REQUIREMENT_RE = /(\bts[\s_\/.\-]*sci\b|\btop[\s\-]*secret\b|\bpolygraph\b|\b(?:ci|full[\s\-]*scope)[\s\-]*poly(?:graph)?\b|\b(?:q|l)[\s\-]*clearance\b|\bdoe[\s\-]*(?:q|l)\b|\bdod[\s\-]*(?:secret|top[\s\-]*secret|ts|clearance)\b|\bsecret[\s\-]*clearance\b|\bsecurity[\s\-]*clearance\b|\bactive[\s\-]*(?:ts|sci|secret|top[\s\-]*secret|security)?[\s\-]*clearance\b|\b(?:ts|secret|top[\s\-]*secret)[\s\-]*cleared\b|\bcleared[\s\-]*(?:candidate|personnel|position|role|engineer|scientist)\b|\bclearance[\s\-]*(?:required|preferred|mandatory|needed|necessary|eligibility|level|requirements?)\b|\b(?:must|require[ds]?|required|need(?:s|ed)?|possess(?:es|ing)?|hold(?:s|ing)?|obtain(?:able|ing)?|eligible\s+for|ability\s+to\s+obtain|able\s+to\s+obtain|currently\s+(?:hold|have)|have\s+an?\s+active).{0,48}clearance\b|\bclearance(?![\s:\-|*]*\bnot\b).{0,24}(?:required|preferred|mandatory|needed)\b|\bclassified\s+(?:information|environment|program|material|data|systems?|networks?|work|facility|facilities)\b|\b(?:handle|access|process|work\s+(?:with|on))\s+classified\b|\bsci[\s\-]*clearance\b|\bsap(?:\/sar)?\s+clearance\b|\bclearance\s*:\s*(?:secret|top[\s\-]*secret|ts(?:[\s_\/.\-]*sci)?|sci|public\s+trust|(?:doe[\s\-]*)?[ql]|active)\b|\bclearance\s*:.{0,48}(?:obtain|eligible|public\s+trust|secret|ts[\s_\/.\-]*sci|polygraph)\b|\bclearance[\s\-]*(?:type|level)\s*:\s*(?:secret|top[\s\-]*secret|ts(?:[\s_\/.\-]*sci)?|sci|public\s+trust|(?:doe[\s\-]*)?[ql]|active|confidential)\b|\bclearance(?:[\s\-]*(?:required(?:\s+for\s+start)?|type|level))?\s*:?\s*(?:\u2026|\.\.\.)\s*\[\s*full\s+text\b|\(\s*public\s+trust\s*\)|\bpublic\s+trust\s+clearance\b|\b(?:must|require[ds]?|required|need(?:s|ed)?|possess(?:es|ing)?|hold(?:s|ing)?|obtain(?:able|ing)?|eligible\s+for|ability\s+to\s+obtain|able\s+to\s+obtain|currently\s+(?:hold|have)|have\s+an?\s+active|maintain(?:ing)?).{0,48}public\s+trust\b|\bpublic\s+trust(?:\s+clearance)?[\s\-]*(?:required|preferred|mandatory|needed)\b)/i;
+const CLEARANCE_REQUIREMENT_RE = /(\bts[\s_\/.\-]*sci\b|\btop[\s\-]*secret\b|(?<!employee\s)\bpolygraph\b|\b(?:ci|full[\s\-]*scope)[\s\-]*poly(?:graph)?\b|\b(?:q|l)[\s\-]*clearance\b|\bdoe[\s\-]*(?:q|l)\b|\bdod[\s\-]*(?:secret|top[\s\-]*secret|ts|clearance)\b|\bsecret[\s\-]*clearance\b|\bsecurity[\s\-]*clearance\b|\bactive[\s\-]*(?:ts|sci|secret|top[\s\-]*secret|security)?[\s\-]*clearance\b|\b(?:ts|secret|top[\s\-]*secret)[\s\-]*cleared\b|\bcleared[\s\-]*(?:candidate|personnel|position|role|engineer|scientist)\b|\bclearance[\s\-]*(?:required|mandatory|needed|necessary|eligibility|level|requirements?)\b|\b(?:must|require[ds]?|required|need(?:s|ed)?|possess(?:es|ing)?|hold(?:s|ing)?|obtain(?:able|ing)?|eligible\s+for|ability\s+to\s+obtain|able\s+to\s+obtain|currently\s+(?:hold|have)|have\s+an?\s+active).{0,48}clearance\b|\bclearance(?![\s:\-|*]*\bnot\b).{0,24}(?:required|mandatory|needed)\b|\bclassified\s+(?:information|environment|program|material|data|systems?|networks?|work|facility|facilities)\b|\b(?:handle|access|process|work\s+(?:with|on))\s+classified\b|\bsci[\s\-]*clearance\b|\bsap(?:\/sar)?\s+clearance\b|\bclearance\s*:\s*(?:secret|top[\s\-]*secret|ts(?:[\s_\/.\-]*sci)?|sci|public\s+trust|(?:doe[\s\-]*)?[ql]|active)\b|\bclearance\s*:.{0,48}(?:obtain|eligible|public\s+trust|secret|ts[\s_\/.\-]*sci|polygraph)\b|\bclearance[\s\-]*(?:type|level)\s*:\s*(?:secret|top[\s\-]*secret|ts(?:[\s_\/.\-]*sci)?|sci|public\s+trust|(?:doe[\s\-]*)?[ql]|active|confidential)\b|\bclearance(?:[\s\-]*(?:required(?:\s+for\s+start)?|type|level))?\s*:?\s*(?:\u2026|\.\.\.)\s*\[\s*full\s+text\b|\(\s*public\s+trust\s*\)|\bpublic\s+trust\s+clearance\b|\b(?:must|require[ds]?|required|need(?:s|ed)?|possess(?:es|ing)?|hold(?:s|ing)?|obtain(?:able|ing)?|eligible\s+for|ability\s+to\s+obtain|able\s+to\s+obtain|currently\s+(?:hold|have)|have\s+an?\s+active|maintain(?:ing)?).{0,48}public\s+trust\b|\bpublic\s+trust(?:\s+clearance)?[\s\-]*(?:required|mandatory|needed)\b)/i;
 // ATS "Clearance required: No/None" / "Clearance Not Required" — stripped first.
 const CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE = /(\bclearance[\s\-]*(?:required|preferred|mandatory|needed)(?:\s+for\s+start)?[\s:\-|*]*(?:no|none|n\/?a)\b|\bno\s+(?:security\s+)?clearance(?:\s+is)?\s+required\b|\bdoes\s+not\s+require\s+(?:an?\s+)?(?:security\s+)?clearance\b|\b(?:an?\s+)?(?:security\s+)?clearance\s+is\s+not\s+required\b|\b(?:(?:an?\s+|the\s+)?(?:security\s+)?)?clearance[\s:\-|*]*not[\s\-]+(?:required|needed|mandatory|necessary)\b)/i;
+const CLEARANCE_PREFERRED_ONLY_RE = /(\b(?:an?\s+)?(?:active\s+)?(?:secret|top[\s\-]*secret|ts(?:[\s_\/.\-]*sci)?|security)?[\s\-]*clearance\s+is\s+preferred\b|\b(?:active\s+)?(?:secret|top[\s\-]*secret|security)[\s\-]*clearance\s+preferred\b|\bclearance[\s\-]*preferred\b|\bpreferred[\s:]+(?:an?\s+)?(?:active\s+)?(?:secret|top[\s\-]*secret|ts|security)?[\s\-]*clearance\b|\bsecurity[\s\-]*clearance\s+verification\b|\bclearance\s+verification\b)/gi;
 const INTEL_AGENCY_COMPANY_RE = /(national\s+security\s+agency|\bnsa\b|central\s+intelligence(?:\s+agency)?|\bcia\b|defense\s+intelligence(?:\s+agency)?|\bdia\b|national\s+geospatial(?:[\s\-]+intelligence)?(?:\s+agency)?|\bnga\b|national\s+reconnaissance\s+office|\bnro\b|office\s+of\s+the\s+director\s+of\s+national\s+intelligence|\bodni\b|national\s+counterterrorism\s+center|\bnctc\b|defense\s+counterintelligence\s+and\s+security\s+agency|\bdcsa\b|intelligence\s+community\s+agency|u\.?s\.?\s+intelligence\s+community|\bic\s+agency\b)/i;
 const INTEL_AGENCY_URL_RE = /(intelligencecareers\.gov|(?:^|[\.\/])nsa\.gov|(?:^|[\.\/])cia\.gov|(?:^|[\.\/])dia\.mil|(?:^|[\.\/])nga\.mil|(?:^|[\.\/])nro\.gov|(?:^|[\.\/])dni\.gov|(?:^|[\.\/])dcsa\.mil)/i;
 const STALE_LISTING_MAX_AGE_DAYS = 10;
@@ -151,6 +157,8 @@ const YOE_RANGE_RE = new RegExp(
 );
 const YOE_LABEL_RE = /\b(?:yoe|years?\s+of\s+experience|years?\s+experience)\s*[:=]\s*(\d{1,2})\s*\+?/gi;
 const YOE_TENURE_BEFORE_RE = /(?:(?:more|over)\s+than|(?:nearly|almost|approximately|around|about)|(?:for|with)\s+(?:over|more\s+than)|(?:founded|established|celebrating)|(?:company|holding|firm|business|organization|leader|provider)(?:\s+\w+){0,4}\s+with|(?:our\s+team\s+has|we\s+have)|(?:preferred\s+qualifications?|nice\s+to\s+have)\s*:)\s*$/i;
+const YOE_SOFT_BEFORE_RE = /(?:~|\b(?:preferred|desired|ideally|optional|bonus)\b|\bideal(?:ly)?(?:\s+candidate)?\b|\bnice\s+to\s+have\b|\ba\s+plus\b|\bexcited\s+if\s+you\s+have\b|\bwe(?:['’]re|\s+are)\s+excited\s+if\b)[\s\S]{0,100}$/i;
+const YOE_SOFT_AFTER_RE = /^\s*(?:is\s+)?(?:preferred|desired|a\s+plus|nice\s+to\s+have|bonus)\b/i;
 // Tier-2 YOE display fallback — prefer recall; keep in sync with discovery_filters.py
 const YOE_FB_WORD = String.raw`[\w/+&.,'-]+`;
 const YOE_FB_EXP = "(?:experience|exper(?:ience)?|exp\\.?|yoe)";
@@ -203,7 +211,14 @@ const YOE_FALLBACK_YEARS_IN_FIELD_RE = new RegExp(
   String.raw`\b(\d{1,2})\s*${YOE_PLUS}\s*(?:years?|yrs?\.?)\s+in\s+(?:${YOE_FB_WORD}\s+){0,6}(?:engineering|science|analytics|development|software|data|ml|ai)\b`,
   "gi"
 );
-const CITIZENSHIP_OR_GC_REQUIREMENT_RE = /(\b(?:u\.?s\.?|us|united\s+states)\s+citizens?\s+only\b|\bonly\s+(?:u\.?s\.?|us|united\s+states)\s+citizens?\b|\b(?:u\.?s\.?|us|united\s+states)\s+citizenship\s+required\b|\bmust\s+be\s+(?:a\s+)?(?:u\.?s\.?|us|united\s+states)\s+citizen\b|\brequire[sd]?\s+(?:u\.?s\.?|us|united\s+states)\s+citizenship\b|\bcitizenship\s*(?:requirement|:)\s*(?:u\.?s\.?|us|united\s+states)\b|\bgreen\s*card\s+required\b|\bmust\s+(?:have|hold|possess)\s+(?:a\s+)?green\s*card\b|\brequire[sd]?\s+(?:a\s+)?green\s*card\b|\bmust\s+be\s+(?:a\s+)?(?:permanent\s+resident|lawful\s+permanent\s+resident)\b|\b(?:permanent\s+resident|lawful\s+permanent\s+resident)\s+(?:status\s+)?required\b|\bonly\s+(?:u\.?s\.?|us)\s+(?:citizens?|permanent\s+residents?)\b)/i;
+const CITIZENSHIP_OR_GC_REQUIREMENT_RE = /(\b(?:u\.?s\.?|us|united\s+states)\s+citizens?\s+only\b|\bonly\s+(?:u\.?s\.?|us|united\s+states)\s+citizens?\b|\b(?:u\.?s\.?|us|united\s+states)\s+citizenship\s+required\b|\bmust\s+be\s+(?:a\s+)?(?:u\.?s\.?|us|united\s+states)\s+citizen\b|\brequire[sd]?\s+(?:u\.?s\.?|us|united\s+states)\s+citizenship\b|\bcitizenship\s*(?:requirement|:)\s*(?:u\.?s\.?|us|united\s+states)\b|\bgreen\s*card\s+required\b|\bmust\s+(?:have|hold|possess)\s+(?:a\s+)?green\s*card\b|\brequire[sd]?\s+(?:a\s+)?green\s*card\b|\bmust\s+be\s+(?:a\s+)?(?:permanent\s+resident|lawful\s+permanent\s+resident)\b|\b(?:permanent\s+resident|lawful\s+permanent\s+resident)\s+(?:status\s+)?required\b|\bonly\s+(?:u\.?s\.?|us)\s+(?:citizens?|permanent\s+residents?)\b|\bgreen\s*card\s+holders?\s+only\b|\bonly\s+green\s*card\s+holders?\b|\bgreen\s*cards?\s+only\b|\b(?:u\.?s\.?|us|united\s+states)\s+citizens?\s+(?:and|or)\s+(?:green\s*card(?:\s+holders?)?|permanent\s+residents?|gc)\s+only\b|\busc\s*(?:and|&|\/)\s*gc(?:\s+only)?\b(?!\s+(?:is\s+)?preferred)|\bgc\s*(?:and|&|\/)\s*usc(?:\s+only)?\b(?!\s+(?:is\s+)?preferred)|\busc\s*\/\s*gc\b(?!\s+(?:is\s+)?preferred)|\bgc\s*\/\s*usc\b(?!\s+(?:is\s+)?preferred)|\bvisa\s*:\s*usc\b(?!\s+(?:and\s+gc\s+)?(?:is\s+)?preferred))/i;
+const NO_VISA_SPONSORSHIP_RE = /(\bno\s+(?:visa\s+|h-?1b\s+|immigration\s+)?sponsorship\b|\bwithout\s+(?:(?:the\s+)?(?:need\s+for\s+)?)?(?:employer\s+|company\s+)?(?:visa\s+|h-?1b\s+|immigration\s+)?sponsorship\b|\b(?:does|do|will|can)\s+not\s+sponsor\b|\bunable\s+to\s+sponsor\b|\bcannot\s+sponsor\b|\bnot\s+(?:able|willing)\s+to\s+sponsor\b|\bno\s+(?:visa\s+)?sponsor(?:ship)?\s+(?:available|provided|offered)\b|\bsponsorship\s+(?:is\s+)?(?:not\s+available|unavailable)\b)/i;
+const SPONSORS_VISA_RE = /(\bwe\s+(?:do\s+)?sponsor(?:s)?\s+(?:h-?1b|visas?|work\s+visas?)\b|\b(?:company|employer)\s+sponsors?\s+(?:h-?1b|visas?)\b|\b(?:visa|h-?1b|immigration)\s+sponsorship\s+(?:is\s+)?(?:available|provided|offered|ok|okay)\b|\b(?:will|can|may)\s+sponsor\s+(?:h-?1b|visas?|work\s+visas?)\b|\bsponsorship\s+(?:is\s+)?(?:available|provided|offered)\b|\bopen\s+to\s+(?:visa|h-?1b|immigration)\s+sponsorship\b|\bprovides?\s+(?:visa|h-?1b)\s+sponsorship\b)/i;
+const US_PERSON_PREFERRED_ONLY_RE = /(\b(?:u\.?s\.?|us)\s+persons?(?:\s+status)?\s+(?:is\s+)?preferred\b|\bpreferred[\s:]+(?:a\s+)?(?:u\.?s\.?|us)\s+person(?:\s+status)?\b)/gi;
+const US_PERSON_IF_EXPORT_BOILERPLATE_RE = /\bif\s+access\s+to\s+export[\s\-]?controlled\b[\s\S]{0,280}?\bis\s+required\b/gi;
+const US_PERSON_REQUIRED_RE = /(\b(?:u\.?s\.?|us)\s+persons?(?:\s+status)?\s+(?:is\s+)?required\b|\brequire[sd]?\s+(?:a\s+)?(?:u\.?s\.?|us)\s+person(?:\s+status)?\b|\bmust\s+be\s+(?:a\s+)?(?:u\.?s\.?|us)\s+person\b|\bonly\s+(?:u\.?s\.?|us)\s+persons?\b|\b(?:u\.?s\.?|us)\s+persons?\s+only\b|\bitar\s+requirements?\b|\bitar[\s\-]controlled\b|\bsubject\s+to\s+itar\b|\bitar\b.{0,48}(?:required|restricted|compliance)\b|\b(?:requires?|requiring|needs?|needing|must\s+have)\s+access\s+to\s+(?:u\.?s\.?\s+)?export[\s\-]?controlled\b|\baccess(?:es|ing)?(?:\s+to)?\s+export[\s\-]?controlled\s+(?:data|information|items?|material|technology|source)\b)/i;
+/** Visibility-only visa/work-auth phrases (does not prune). */
+const JD_VISA_VISIBILITY_RE = /(\b(?:h-?1-?b|h1b)s?\b|\b(?:stem\s+)?opt\b|\bcpt\b|\bead\b|\btn(?:\s+visa)?\b|\bl-?1(?:[ab])?\b|\bo-?1\b|\busc\b|\bgc\b|\bgreen\s*cards?\b|\b(?:u\.?s\.?|us|united\s+states)\s+citizens?\b|\b(?:u\.?s\.?|us)\s+persons?\b|\bitar\b|\bexport[\s\-]?controlled\b|\btop[\s\-]*secret\b|\bts[\s_\/.\-]*sci\b|\bcitizens?\s+only\b|\bcitizenship\b|\bvisas?\b|\b(?:visa\s+|h-?1b\s+|immigration\s+)?sponsorship\b|\bsponsors?(?:\s+(?:h-?1b|visas?|work\s+visas?))?\b|\bwork[\s-]?auth(?:orization)?\b|\bwork[\s-]?visas?\b|\bpermanent\s+residents?\b)/i;
 const WORK_MODE_HYBRID_RE = /(\bhybrid\b|\bremote\s+and\s+(?:in[\s\-]?office|on[\s\-]?site|onsite)\b|\b(?:in[\s\-]?office|on[\s\-]?site|onsite)\s+and\s+remote\b|\b\d+\s*(?:days?|x)\s+(?:a|per)\s+week\s+in\s+(?:the\s+)?(?:office|on[\s\-]?site)\b|\b(?:partially|part[\s\-]?time)\s+remote\b)/i;
 const WORK_MODE_REMOTE_RE = /(\bfully\s+remote\b|\bremote[\s\-]?first\b|\bwork\s+from\s+home\b|\bwfh\b|\bremote\b)/i;
 const WORK_MODE_ONSITE_RE = /(\bon[\s\-]?site\b|\bonsite\b|\bin[\s\-]?person\b|\bin[\s\-]?office\b|\bmust\s+relocate\b|\brelocation\s+required\b|\bon[\s\-]?campus\b)/i;
@@ -475,10 +490,31 @@ function updateEnabledRegionsFromDiscovery(disc) {
 // Prefers the stamped job.region, else derives from location. Kept in sync
 // with scripts/discovery_filters.py region_for_location.
 let regionFilter = "";
+
+/** True when a stamped/tag value is marked approximate with a leading ~. */
+function stampedApproxPrefix(v) {
+  return typeof v === "string" && v.trim().startsWith("~");
+}
+
+/** Criterion filters keep missing and ~approx metrics; explicit mismatches fail.
+ *  Exception: work-mode is categorical (see jobMatchesWorkModeFilter). */
+function listFilterUnsurePasses(unknown, approx) {
+  return !!(unknown || approx);
+}
+
 function jobMatchesRegion(j) {
   if (!regionFilter) return true;
-  const r = j.region || regionForLocation(j.location);
-  return r === regionFilter;
+  const stamped = j && j.region != null ? String(j.region).trim() : "";
+  if (stampedApproxPrefix(stamped)) return true;
+  if (stamped === "us" || stamped === "india") return stamped === regionFilter;
+  const loc = j && j.location != null ? String(j.location).trim() : "";
+  if (!loc || stampedApproxPrefix(loc)) return true;
+  const r = regionForLocation(loc);
+  if (r === regionFilter) return true;
+  if (r === "us" || r === "india") return false;
+  if (regionFilter === "us") return !isClearlyNonUsLocation(loc);
+  if (regionFilter === "india") return isIndiaLocation(loc) || !isClearlyNonUsLocation(loc);
+  return true;
 }
 
 function isIntelAgencyEmployer(company, url) {
@@ -493,7 +529,9 @@ function requiresSecurityClearance({ title, company, location, description, url 
   if (isIntelAgencyEmployer(company, url)) return true;
   const blob = [title, company, location, description].map(x => x || "").join(" ");
   if (!blob.trim()) return false;
-  const cleaned = blob.replace(CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE, " ");
+  const cleaned = blob
+    .replace(CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE, " ")
+    .replace(CLEARANCE_PREFERRED_ONLY_RE, " ");
   return CLEARANCE_REQUIREMENT_RE.test(cleaned);
 }
 
@@ -516,13 +554,19 @@ function extractMinRequiredYoeWith(text, title, description, rangeRe, singleRes)
   let blob = [text, title, description].filter(Boolean).map(x => String(x || "")).join(" ");
   if (!blob.trim()) return null;
   blob = blob.replace(/\\\+/g, "+").replace(/\\-/g, "-");
-  const isTenure = (start) => YOE_TENURE_BEFORE_RE.test(blob.slice(Math.max(0, start - 64), start));
+  const isSoft = (start, end) => {
+    if (YOE_TENURE_BEFORE_RE.test(blob.slice(Math.max(0, start - 64), start))) return true;
+    if (YOE_SOFT_BEFORE_RE.test(blob.slice(Math.max(0, start - 100), start))) return true;
+    if (end != null && YOE_SOFT_AFTER_RE.test(blob.slice(end, end + 48))) return true;
+    if (yoeMatchIsEducationEquivalent(blob, start, end)) return true;
+    return false;
+  };
   const mins = [];
   const rangeSpans = [];
   let m;
   rangeRe.lastIndex = 0;
   while ((m = rangeRe.exec(blob)) !== null) {
-    if (isTenure(m.index)) continue;
+    if (isSoft(m.index, m.index + m[0].length)) continue;
     const lo = parseInt(m[1], 10);
     const hi = parseInt(m[2], 10);
     mins.push(Math.min(lo, hi));
@@ -533,7 +577,7 @@ function extractMinRequiredYoeWith(text, title, description, rangeRe, singleRes)
     rx.lastIndex = 0;
     while ((m = rx.exec(blob)) !== null) {
       if (inRangeSpan(m.index)) continue;
-      if (isTenure(m.index)) continue;
+      if (isSoft(m.index, m.index + m[0].length)) continue;
       mins.push(parseInt(m[1], 10));
     }
   }
@@ -565,22 +609,29 @@ function extractMinRequiredYoeFallback(text, title, description) {
   ]);
 }
 
-function requiresExcessiveExperience({ title, description, text } = {}) {
-  const ymin = extractMinRequiredYoe(text, title, description);
-  return ymin != null && ymin > MAX_ACCEPTABLE_MIN_YOE;
+function requiresUsPerson({ title, description, text } = {}) {
+  const blob = [text, title, description].filter(Boolean).map(x => String(x || "")).join(" ");
+  if (!blob.trim()) return false;
+  const cleaned = blob
+    .replace(US_PERSON_PREFERRED_ONLY_RE, " ")
+    .replace(US_PERSON_IF_EXPORT_BOILERPLATE_RE, " ");
+  return US_PERSON_REQUIRED_RE.test(cleaned);
 }
 
 function requiresUsCitizenOrGreencard({ title, description, text } = {}) {
   const blob = [text, title, description].filter(Boolean).map(x => String(x || "")).join(" ");
   if (!blob.trim()) return false;
-  return CITIZENSHIP_OR_GC_REQUIREMENT_RE.test(blob);
+  if (CITIZENSHIP_OR_GC_REQUIREMENT_RE.test(blob)) return true;
+  return requiresUsPerson({ title, description, text });
 }
 
 // Shared body for the strict + fallback work-mode detectors: only the regex
 // set differs between the two. Kept in lock-step with the Python policy module.
 function detectWorkModeWith({ title, location, description } = {}, { hybridRe, remoteRe, onsiteRe }) {
-  const blob = [title, location, description].map(x => x || "").join(" ");
+  let blob = [title, location, description].map(x => x || "").join(" ");
   if (!blob.trim()) return "unknown";
+  // "Non-Remote" must not match \\bremote\\b (hyphen is a word boundary).
+  blob = blob.replace(/\bnon[\s\-]?remote\b/gi, " ");
   if (hybridRe.test(blob)) return "hybrid";
   const remote = remoteRe.test(blob);
   const onsite = onsiteRe.test(blob);
@@ -621,13 +672,29 @@ function jobMinYoe(job) {
     const n = Number(job.min_yoe);
     if (!Number.isNaN(n)) return n;
   }
+  // Stamped null/empty means backfill looked and found nothing — don't
+  // re-parse title ("Engineer (10+ years)") for list filters.
+  if (job && Object.prototype.hasOwnProperty.call(job, "min_yoe")) {
+    return null;
+  }
   return extractMinRequiredYoe(null, job && job.title, jobDescriptionText(job));
 }
 
 /** Display YOE: strict first, else fallback. approx=true → prefix ~. */
 function jobMinYoeDisplay(job) {
-  const strict = jobMinYoe(job);
-  if (strict != null) return { n: strict, approx: false };
+  if (job && Object.prototype.hasOwnProperty.call(job, "min_yoe")) {
+    if (job.min_yoe != null && job.min_yoe !== "") {
+      const n = Number(job.min_yoe);
+      if (!Number.isNaN(n)) return { n, approx: false };
+    }
+    if (job.min_yoe_fallback != null && job.min_yoe_fallback !== "") {
+      const n = Number(job.min_yoe_fallback);
+      if (!Number.isNaN(n)) return { n, approx: true };
+    }
+    return { n: null, approx: false };
+  }
+  const live = extractMinRequiredYoe(null, job && job.title, jobDescriptionText(job));
+  if (live != null) return { n: live, approx: false };
   if (job && job.min_yoe_fallback != null && job.min_yoe_fallback !== "") {
     const n = Number(job.min_yoe_fallback);
     if (!Number.isNaN(n)) return { n, approx: true };
@@ -643,27 +710,213 @@ function jobWorkModeDisplay(job) {
   if (raw === "remote" || raw === "hybrid" || raw === "onsite") {
     return { mode: raw, approx: false };
   }
-  const strict = detectWorkMode({
+  // Stamped work_mode (including "unknown") must not re-detect from a
+  // location like "Remote, US" — that flooded the Remote filter.
+  if (job && Object.prototype.hasOwnProperty.call(job, "work_mode")) {
+    const stampedFb = job.work_mode_fallback;
+    if (stampedFb === "remote" || stampedFb === "hybrid" || stampedFb === "onsite") {
+      return { mode: stampedFb, approx: true };
+    }
+    return { mode: "unknown", approx: false };
+  }
+  const args = {
     title: job && job.title,
     location: job && job.location,
     description: jobDescriptionText(job),
-  });
+  };
+  const strict = resolveListWorkMode(args, { fallback: false });
   if (strict !== "unknown") return { mode: strict, approx: false };
   const stampedFb = job && job.work_mode_fallback;
   if (stampedFb === "remote" || stampedFb === "hybrid" || stampedFb === "onsite") {
     return { mode: stampedFb, approx: true };
   }
-  const fb = detectWorkModeFallback({
-    title: job && job.title,
-    location: job && job.location,
-    description: jobDescriptionText(job),
-  });
+  const fb = resolveListWorkMode(args, { fallback: true });
   if (fb !== "unknown") return { mode: fb, approx: true };
   return { mode: "unknown", approx: false };
 }
 
-function jobWorkMode(job) {
-  return jobWorkModeDisplay(job).mode;
+/** Stamp list chips from cached full JD onto the matching jobs[] row (by id). */
+function stampListTagsFromCachedJd(jobId) {
+  if (!jobId) return false;
+  const job = jobs.find(j => j.id === jobId);
+  if (!job) return false;
+  const cached = jdCache.get(jobId);
+  const text = cached && cached.text;
+  if (!text) return false;
+  let changed = false;
+  const title = job.title;
+  if (job.salary_min == null || job.salary_min === "") {
+    const live = extractSalary(null, title, text);
+    if (live && live.min != null) {
+      job.salary_min = live.min;
+      if (live.max != null) job.salary_max = live.max;
+      changed = true;
+    } else if (job.salary_min_fallback == null || job.salary_min_fallback === "") {
+      const fb = extractSalaryFallback(null, title, text);
+      if (fb && fb.min != null) {
+        job.salary_min_fallback = fb.min;
+        if (fb.max != null) job.salary_max_fallback = fb.max;
+        changed = true;
+      }
+    }
+  }
+  if (job.min_yoe == null || job.min_yoe === "") {
+    const yoe = extractMinRequiredYoe(null, title, text);
+    if (yoe != null) {
+      job.min_yoe = yoe;
+      changed = true;
+    } else if (job.min_yoe_fallback == null || job.min_yoe_fallback === "") {
+      const yoeFb = extractMinRequiredYoeFallback(null, title, text);
+      if (yoeFb != null) {
+        job.min_yoe_fallback = yoeFb;
+        changed = true;
+      }
+    }
+  }
+  if (job.work_mode !== "remote" && job.work_mode !== "hybrid" && job.work_mode !== "onsite") {
+    const wm = resolveListWorkMode({ title, location: job.location, description: text });
+    if (wm === "remote" || wm === "hybrid" || wm === "onsite") {
+      job.work_mode = wm;
+      changed = true;
+    } else if (
+      job.work_mode_fallback !== "remote"
+      && job.work_mode_fallback !== "hybrid"
+      && job.work_mode_fallback !== "onsite"
+    ) {
+      const wmFb = resolveListWorkMode(
+        { title, location: job.location, description: text },
+        { fallback: true },
+      );
+      if (wmFb === "remote" || wmFb === "hybrid" || wmFb === "onsite") {
+        job.work_mode_fallback = wmFb;
+        changed = true;
+      }
+    }
+  }
+  if (!job.clearance) {
+    if (requiresSecurityClearance({
+      title,
+      company: job.company,
+      location: job.location,
+      description: text,
+      url: job.apply_url || job.job_url || "",
+    })) {
+      job.clearance = true;
+      changed = true;
+    }
+  }
+  if (!job.us_person) {
+    if (requiresUsPerson({ title, description: text })) {
+      job.us_person = true;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function bindJobListRow(row) {
+  if (!row) return;
+  const id = row.getAttribute("data-id");
+  if (!id) return;
+  row.addEventListener("click", e => {
+    e.stopPropagation();
+    selectJob(id, { appliedFocus: true });
+  });
+  row.addEventListener("keydown", e => {
+    if (e.key === "Enter") selectJob(id, { appliedFocus: true });
+  });
+  // Hover/focus warm — never blocks list paint; cache hit makes click instant.
+  row.addEventListener("pointerenter", () => {
+    loadJobDescription(id, { background: true });
+  });
+  row.addEventListener("focus", () => {
+    loadJobDescription(id, { background: true });
+  });
+}
+
+/** Re-apply list-chip stamps for every id already in jdCache (after poll merge). */
+function restampAllFromJdCache() {
+  if (typeof jdCache === "undefined" || !jdCache || typeof jdCache.keys !== "function") {
+    return;
+  }
+  for (const id of jdCache.keys()) {
+    stampListTagsFromCachedJd(id);
+  }
+}
+
+/** True when work_mode is a displayable enum. */
+function isDeterminedWorkMode(mode) {
+  return mode === "remote" || mode === "hybrid" || mode === "onsite";
+}
+
+/**
+ * Merge /api/jobs payload with local chip stamps so a poll cannot wipe
+ * tags that were stamped from jd_full (or a prior slim response) when the
+ * incoming row still has unknown/null for that field.
+ */
+function mergeJobsPreservingListTags(incoming) {
+  const prevById = new Map((jobs || []).map(j => [j && j.id, j]));
+  return (incoming || []).map(j => {
+    if (!j || !j.id) return j;
+    const prev = prevById.get(j.id);
+    if (!prev) return j;
+    const out = j;
+    if (!isDeterminedWorkMode(out.work_mode) && isDeterminedWorkMode(prev.work_mode)) {
+      out.work_mode = prev.work_mode;
+    }
+    if (!isDeterminedWorkMode(out.work_mode_fallback)
+      && isDeterminedWorkMode(prev.work_mode_fallback)) {
+      out.work_mode_fallback = prev.work_mode_fallback;
+    }
+    if ((out.salary_min == null || out.salary_min === "")
+      && prev.salary_min != null && prev.salary_min !== "") {
+      out.salary_min = prev.salary_min;
+      if (out.salary_max == null || out.salary_max === "") {
+        out.salary_max = prev.salary_max;
+      }
+    }
+    if ((out.salary_min_fallback == null || out.salary_min_fallback === "")
+      && prev.salary_min_fallback != null && prev.salary_min_fallback !== "") {
+      out.salary_min_fallback = prev.salary_min_fallback;
+      if (out.salary_max_fallback == null || out.salary_max_fallback === "") {
+        out.salary_max_fallback = prev.salary_max_fallback;
+      }
+    }
+    if ((out.min_yoe == null || out.min_yoe === "")
+      && prev.min_yoe != null && prev.min_yoe !== "") {
+      out.min_yoe = prev.min_yoe;
+    }
+    if ((out.min_yoe_fallback == null || out.min_yoe_fallback === "")
+      && prev.min_yoe_fallback != null && prev.min_yoe_fallback !== "") {
+      out.min_yoe_fallback = prev.min_yoe_fallback;
+    }
+    if (!out.clearance && prev.clearance) out.clearance = true;
+    if (!out.us_person && prev.us_person) out.us_person = true;
+    return out;
+  });
+}
+
+/** Re-render one list row after tags stamp — do not wait for a later select. */
+function refreshJobListRow(jobId) {
+  if (!jobId) return;
+  const job = jobs.find(j => j.id === jobId);
+  if (!job) return;
+  const list = document.getElementById("job-list");
+  if (!list) return;
+  let row = null;
+  list.querySelectorAll(".job-row[data-id]").forEach(el => {
+    if (el.getAttribute("data-id") === jobId) row = el;
+  });
+  if (!row) return;
+  const nested = row.classList.contains("nested");
+  const showCompany = !!row.querySelector(".co");
+  const wrap = document.createElement("div");
+  wrap.innerHTML = renderJobRow(job, { nested, showCompany });
+  const fresh = wrap.firstElementChild;
+  if (!fresh) return;
+  row.replaceWith(fresh);
+  bindJobListRow(fresh);
+  if (typeof syncListSelection === "function") syncListSelection();
 }
 
 /** Display salary: strict stamp/extract first, else fallback. approx → ~. */
@@ -748,18 +1001,41 @@ function formatSalaryLabel(min, max, { approx = false, compact = true } = {}) {
   return `${approx ? "~" : ""}${body}`;
 }
 
+/** Display labels: sentence case only (Remote / Hybrid / In-person). Enums stay lowercase. */
 function formatWorkMode(mode, approx = false) {
   const m = String(mode || "").toLowerCase();
   let label = "";
   if (m === "remote") label = "Remote";
   else if (m === "hybrid") label = "Hybrid";
-  else if (m === "onsite" || m === "on-site") label = "In person";
-  else return "—";
+  else if (m === "onsite" || m === "on-site" || m === "in-person" || m === "in person") {
+    label = "In-person";
+  } else return "—";
   return `${approx ? "~" : ""}${label}`;
 }
 
+/**
+ * Resolve work mode for list/dossier chips.
+ * Prefer combined title+location+JD; if unknown, prefer JD body over a
+ * conflicting aggregator location (e.g. location "Remote" vs onsite JD).
+ */
+function resolveListWorkMode({ title, location, description } = {}, { fallback = false } = {}) {
+  const detect = fallback ? detectWorkModeFallback : detectWorkMode;
+  const modes = new Set(["remote", "hybrid", "onsite"]);
+  const combined = detect({ title, location, description });
+  if (modes.has(combined)) return combined;
+  if (description && String(description).trim()) {
+    const body = detect({ title, location: "", description });
+    if (modes.has(body)) return body;
+  }
+  if (location && String(location).trim()) {
+    const locOnly = detect({ title, location, description: "" });
+    if (modes.has(locOnly)) return locOnly;
+  }
+  return "unknown";
+}
+
 function isStaleListing(job) {
-  // jobPostedDisplay: exact date_posted, else created_at (discovery). Never ~ fallback.
+  // Exact date_posted only (via jobPostedDisplay). Never ~ fallback, never created_at.
   const { time, approx } = jobPostedDisplay(job);
   if (time == null || approx) return false;
   const ageDays = (Date.now() - time) / 86400000;
@@ -803,9 +1079,22 @@ let selectedId = null;
 let activityEvents = [];
 /** Lazy-loaded cleaned JDs: jobId -> { loading, text, error, source } */
 const jdCache = new Map();
+/** In-flight GET /description promises — dedupe click + prefetch. */
+const jdInflight = new Map();
+/** Cap idle prefetch so we never pull ~6k full JDs. */
+const JD_PREFETCH_MAX = 48;
+const JD_PREFETCH_CHUNK = 6;
+const JD_RECENT_MAX = 12;
+let _jdPrefetchGen = 0;
+let _jdPrefetchIdleHandle = null;
+/** Recently opened dossier ids (ring) — warm these first. */
+const _jdRecentlyViewed = [];
 /** Job id whose JD copy button is showing the transient "copied" checkmark. */
 let jdCopyFlashJobId = null;
 let jdCopyFlashTimer = null;
+let jdEditJobId = null;
+let jdEditDraft = "";
+let jdEditSaving = false;
 let queue = "open"; // stuck | ready | progress | open | applied | deleted | all
 /** Company key when "Same company" siblings panel is open in the dossier. */
 let siblingsPanelCompany = null;
@@ -844,6 +1133,9 @@ const selectedFillModeByJob = new Map();
 /** Server: headed fill/CAPTCHA/Ready hold still live (UI-008). */
 let fillHoldActive = false;
 let searchText = "";
+/** Map token → Set(jobId) from GET /api/jobs/search (JD body hits). */
+let jdSearchTokenHits = null;
+let jdSearchGen = 0;
 let sourceFilter = "";
 let groupBy = "none"; // none | company | source
 let sortBy = "date"; // date | company | status | yoe | salary | salary_asc | multi_opening
@@ -851,14 +1143,13 @@ let workModeFilter = ""; // "" | remote | hybrid | onsite | unknown
 let yoeFilter = ""; // "" | le3 | le5 | le6 | has | unknown
 let dateFilter = ""; // "" | 1d | 2d | 3d | 7d | 14d | 30d | older
 let salaryFilter = ""; // "" | has | unknown | ge100 | ge150 | ge200 | le120
-/** Lean pipeline statuses (mission stats cover Open/Stuck/Ready/Applied). */
-let statusFilter = ""; // "" | tailoring | navigating | filling | blocked_captcha
-/** Merged apply-URL + multi flags. */
-let extrasFilter = ""; // "" | has_url | missing_url | multi_opening | multi_source
+/** Merged apply-URL + multi flags + missing JD. */
+let extrasFilter = ""; // "" | has_url | missing_url | multi_opening | multi_source | no_jd
 let expandedGroups = new Set();
 let appliedSortKey = "date";
 let appliedSortDir = "desc";
 let editingAppliedId = null;
+let editingApplyUrlId = null;
 let scrollToAppliedDetail = false;
 /** Applied queue: hide center tracking table when a sidebar job is selected (session-only). */
 let appliedTableHidden = false;
@@ -872,10 +1163,6 @@ const FILTER_STATE_BY_QUEUE_KEY = "opsFilterStateByQueue";
 const FILTER_FAMILY_KEYS = ["open", "applied", "pipeline", "deleted"];
 /** Old sidebar queues that shared one pipeline family before unification. */
 const LEGACY_PIPELINE_QUEUE_KEYS = ["stuck", "ready", "progress"];
-/** Statuses duplicated by mission-stat clicks — drop on load if previously saved. */
-const MISSION_REDUNDANT_STATUSES = new Set([
-  "discovered", "stuck", "ready_for_review", "applied",
-]);
 const TL_KEY = "ops-timeline-collapsed";
 /** Auto-collapse after the user expands the timeline (ms). */
 const TL_AUTO_COLLAPSE_MS = 10000;
@@ -909,7 +1196,6 @@ function captureFilterState() {
     yoe: yoeFilter,
     date: dateFilter,
     salary: salaryFilter,
-    status: statusFilter,
     extras: extrasFilter,
     region: regionFilter,
   };
@@ -927,7 +1213,6 @@ function applyFilterState(state) {
   yoeFilter = str(s.yoe);
   dateFilter = str(s.date);
   salaryFilter = str(s.salary);
-  statusFilter = MISSION_REDUNDANT_STATUSES.has(s.status) ? "" : str(s.status);
   extrasFilter = migrateExtrasFromLegacy(s);
   regionFilter = str(s.region);
 }
@@ -941,7 +1226,6 @@ const TODAY_FILTER_PRESET = {
   yoe: "le5",
   date: "2d",
   salary: "",
-  status: "",
   extras: "",
   region: "us",
 };
@@ -1020,7 +1304,6 @@ function filterStateActivity(s) {
   if (s.yoe) n++;
   if (s.date) n++;
   if (s.salary) n++;
-  if (s.status) n++;
   if (s.extras) n++;
   if (s.region) n++;
   return n;
@@ -1078,6 +1361,7 @@ function swapQueueFilterState(nextQueue) {
   if (curFamily !== nextFamily) {
     applyFilterState(filterStateByFamily[nextFamily] || {});
     syncFilterControlsFromState();
+    scheduleJdSearch();
   }
 }
 
@@ -1086,6 +1370,8 @@ function clearListFilters() {
   applyFilterState(null);
   const searchEl = document.getElementById("search");
   if (searchEl) searchEl.value = "";
+  jdSearchTokenHits = null;
+  jdSearchGen++;
   syncFilterControlsFromState();
   saveFilterState();
   updateFiltersChrome();
@@ -1098,6 +1384,7 @@ function applyTodayFilterPreset() {
   saveFilterState();
   updateFiltersChrome();
   render();
+  scheduleJdSearch();
 }
 
 function syncFilterControlsFromState() {
@@ -1113,7 +1400,6 @@ function syncFilterControlsFromState() {
   set("yoe-filter", yoeFilter);
   set("date-filter", dateFilter);
   set("salary-filter", salaryFilter);
-  set("status-filter", statusFilter);
   set("extras-filter", extrasFilter);
   set("region-filter", regionFilter);
 }
@@ -1132,7 +1418,6 @@ function activeFilterCount() {
   if (yoeFilter) n++;
   if (dateFilter) n++;
   if (salaryFilter) n++;
-  if (statusFilter) n++;
   if (extrasFilter) n++;
   if (regionFilter) n++;
   return n;
@@ -1165,10 +1450,20 @@ function updateFiltersChrome(visibleCount) {
   if (popClear) popClear.disabled = n === 0;
 }
 
+const FILTERS_HOVER_OPEN_MS = 667;
+let filtersHoverOpenTimer = null;
+
+function clearFiltersHoverOpenTimer() {
+  if (filtersHoverOpenTimer == null) return;
+  clearTimeout(filtersHoverOpenTimer);
+  filtersHoverOpenTimer = null;
+}
+
 function setFiltersPopoverOpen(open) {
   const wrap = document.getElementById("list-filters");
   const toggle = document.getElementById("filters-toggle");
   if (!wrap || !toggle) return;
+  clearFiltersHoverOpenTimer();
   wrap.classList.toggle("open", !!open);
   toggle.setAttribute("aria-expanded", open ? "true" : "false");
   if (!open) {
@@ -1179,13 +1474,7 @@ function setFiltersPopoverOpen(open) {
 
 function filtersPopoverIsVisible() {
   const wrap = document.getElementById("list-filters");
-  if (!wrap) return false;
-  if (wrap.classList.contains("open")) return true;
-  try {
-    return wrap.matches(":hover") || wrap.matches(":focus-within");
-  } catch (_) {
-    return false;
-  }
+  return !!(wrap && wrap.classList.contains("open"));
 }
 
 function setAddJobPopoverOpen(open) {
@@ -1220,10 +1509,10 @@ const PARTYROCK_STORAGE_KEY = "jobHunterPartyRock";
 // India-only discovery sources (mirror server INDIA_ONLY_SOURCE_IDS): only run
 // when the India region is on; greyed/forced-off in the popover otherwise.
 const INDIA_ONLY_SOURCE_IDS = ["internshala", "hirist", "cutshort", "adzuna"];
-// Keep in sync with dashboard/server.py DISCOVERY_SOURCE_DEFS.
+// Keep in sync with dashboard/discovery_sources.py DISCOVERY_SOURCE_DEFS.
 const DISCOVERY_SOURCE_CATALOG = [
-  { id: "indeed", label: "Indeed" },
-  { id: "linkedin", label: "LinkedIn" },
+  { id: "indeed", label: "Indeed", recency: true },
+  { id: "linkedin", label: "LinkedIn", recency: true },
   { id: "greenhouse", label: "Greenhouse" },
   { id: "lever", label: "Lever" },
   { id: "ashby", label: "Ashby" },
@@ -1234,23 +1523,27 @@ const DISCOVERY_SOURCE_CATALOG = [
   { id: "rippling", label: "Rippling" },
   { id: "breezy", label: "Breezy" },
   { id: "bamboohr", label: "BambooHR" },
-  { id: "builtin", label: "Built In" },
+  { id: "teamtailor", label: "Teamtailor" },
+  { id: "jazzhr", label: "JazzHR" },
+  { id: "pinpoint", label: "Pinpoint" },
+  { id: "builtin", label: "Built In", recency: true },
+  { id: "remoteok", label: "RemoteOK" },
+  { id: "remotive", label: "Remotive" },
+  { id: "jobicy", label: "Jobicy" },
+  { id: "rss_feeds", label: "RSS feeds" },
+  { id: "adzuna_us", label: "Adzuna (US)", recency: true },
   { id: "internshala", label: "Internshala", india_only: true },
   { id: "hirist", label: "Hirist", india_only: true },
   { id: "cutshort", label: "Cutshort", india_only: true },
-  { id: "adzuna", label: "Adzuna (IN)", india_only: true },
+  { id: "adzuna", label: "Adzuna (IN)", india_only: true, recency: true },
 ];
 function isIndiaOnlySource(id) {
   return INDIA_ONLY_SOURCE_IDS.includes(id)
     || DISCOVERY_SOURCE_CATALOG.some(c => c.id === id && c.india_only);
 }
 const DISCOVERY_SOURCES_STORAGE_KEY = "jobHunterDiscoverySources";
-const BUILTIN_DAYS_OPTIONS = [
-  { value: 1, label: "24 hours" },
-  { value: 3, label: "3 days" },
-  { value: 7, label: "7 days" },
-  { value: 30, label: "30 days" },
-];
+const SOURCE_DAYS_MIN = 1;
+const SOURCE_DAYS_MAX = 10;
 
 const STUCK_STATUSES = new Set(["stuck", "blocked_captcha"]);
 const READY_STATUSES = new Set(["ready_for_review"]);
@@ -1332,23 +1625,40 @@ function enabledDiscoverySourceIds() {
   return DISCOVERY_SOURCE_CATALOG.map(s => s.id).filter(id => map[id] !== false);
 }
 
-function selectedBuiltinDays() {
-  const select = document.getElementById("builtin-days-since-updated");
-  const value = Number(select?.value ?? discoveryState?.builtin_days_since_updated ?? 1);
-  return BUILTIN_DAYS_OPTIONS.some(o => o.value === value) ? value : 1;
+function sourceSupportsRecency(source) {
+  if (source && typeof source.recency === "boolean") return source.recency;
+  const id = typeof source === "string" ? source : source?.id;
+  return DISCOVERY_SOURCE_CATALOG.some(s => s.id === id && s.recency);
 }
 
-async function saveBuiltinDaysSetting(value) {
+function clampSourceDays(value, fallback = 7) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(SOURCE_DAYS_MIN, Math.min(SOURCE_DAYS_MAX, Math.round(n)));
+}
+
+function effectiveSourceDays(sourceId, disc) {
+  const pinned = disc?.source_days?.[sourceId];
+  if (pinned != null && pinned !== "") return clampSourceDays(pinned);
+  const adaptive = Number(disc?.adaptive_recency_days || disc?.builtin_days_since_updated || 7);
+  return clampSourceDays(adaptive, 7);
+}
+
+async function saveSourceDaysSetting(sourceId, value) {
   const days = Number(value);
-  if (!BUILTIN_DAYS_OPTIONS.some(o => o.value === days)) return;
-  const { ok } = await apiPost("/api/discover/settings", { builtin_days_since_updated: days }, {
-    onError: (data) => {
-      alert(data.error || "Could not save Built In date period.");
+  if (days < SOURCE_DAYS_MIN || days > SOURCE_DAYS_MAX) return;
+  const { ok, data } = await apiPost("/api/discover/settings", { source_days: { [sourceId]: days } }, {
+    onError: (err) => {
+      alert(err.error || "Could not save lookback period.");
       renderDiscoverPopover(discoveryState);
     },
   });
   if (!ok) return;
-  discoveryState = {...(discoveryState || {}), builtin_days_since_updated: days};
+  discoveryState = {
+    ...(discoveryState || {}),
+    source_days: data.source_days || { ...((discoveryState || {}).source_days || {}), [sourceId]: days },
+    builtin_days_since_updated: data.builtin_days_since_updated,
+  };
 }
 
 function toggleDiscoverySource(sourceId, checked) {
@@ -1438,6 +1748,7 @@ function normalizeDeletedReasonCode(code) {
   if (key === "seniority") return "management_track";
   if (key === "non_us") return "non_us_location";
   if (key === "manual") return "user";
+  if (key === "apply_resolve_failed") return "unresolved_apply_url";
   return key;
 }
 
@@ -1619,32 +1930,42 @@ function jobMatchesQueue(j) {
 
 function jobMatchesWorkModeFilter(j) {
   if (!workModeFilter) return true;
-  return jobWorkMode(j) === workModeFilter;
+  // Categorical mode: require Remote/~Remote (etc.). Unlike YOE/pay/date,
+  // unknown and other modes do not pass — Remote must not flood with
+  // unstamped or clearly Hybrid/In-person rows.
+  if (stampedApproxPrefix(j && j.work_mode)) {
+    const raw = String(j.work_mode).trim().replace(/^~+/, "").toLowerCase();
+    if (workModeFilter === "unknown") return false;
+    return raw === workModeFilter;
+  }
+  const { mode } = jobWorkModeDisplay(j);
+  if (workModeFilter === "unknown") return mode === "unknown";
+  return mode === workModeFilter;
 }
 
 function jobMatchesYoeFilter(j) {
   if (!yoeFilter) return true;
-  const { n: ymin } = jobMinYoeDisplay(j);
+  const { n: ymin, approx } = jobMinYoeDisplay(j);
   if (yoeFilter === "has") return ymin != null;
   if (yoeFilter === "unknown") return ymin == null;
-  if (yoeFilter === "le3") return ymin != null && ymin <= 3;
-  if (yoeFilter === "le5") return ymin != null && ymin <= 5;
-  if (yoeFilter === "le6") return ymin != null && ymin <= 6;
+  if (listFilterUnsurePasses(ymin == null, approx)) return true;
+  if (yoeFilter === "le3") return ymin <= 3;
+  if (yoeFilter === "le5") return ymin <= 5;
+  if (yoeFilter === "le6") return ymin <= 6;
   return true;
 }
 
 function jobMatchesDateFilter(j) {
   if (!dateFilter) return true;
-  const t = datePostedTime(j);
+  const posted = typeof jobPostedDisplay === "function"
+    ? jobPostedDisplay(j)
+    : { time: datePostedTime(j), approx: false };
+  const t = posted.time;
   const unknown = t == null;
-  if (dateFilter === "older") {
-    // UI-040: unknown dates are not "older than 30d" — use Posted unknown via All.
-    if (unknown) return false;
-    const ageDays = (Date.now() - t) / 86400000;
-    return ageDays > 30;
-  }
-  if (unknown) return false;
+  const approx = !!posted.approx;
+  if (listFilterUnsurePasses(unknown, approx)) return true;
   const ageDays = (Date.now() - t) / 86400000;
+  if (dateFilter === "older") return ageDays > 30;
   const windowMatch = /^(\d+)d$/.exec(dateFilter);
   if (windowMatch) return ageDays <= Number(windowMatch[1]);
   return true;
@@ -1652,10 +1973,10 @@ function jobMatchesDateFilter(j) {
 
 function jobMatchesSalaryFilter(j) {
   if (!salaryFilter) return true;
-  const { min } = jobSalaryDisplay(j);
+  const { min, approx } = jobSalaryDisplay(j);
   if (salaryFilter === "has") return min != null;
   if (salaryFilter === "unknown") return min == null;
-  if (min == null) return false;
+  if (listFilterUnsurePasses(min == null, approx)) return true;
   if (salaryFilter === "ge100") return min >= 100000;
   if (salaryFilter === "ge150") return min >= 150000;
   if (salaryFilter === "ge200") return min >= 200000;
@@ -1663,9 +1984,17 @@ function jobMatchesSalaryFilter(j) {
   return true;
 }
 
-function jobMatchesStatusFilter(j) {
-  if (!statusFilter) return true;
-  return j.status === statusFilter;
+/** List rows omit JD bodies; prefer has_description, then cache, then preview. */
+function jobHasDescription(job) {
+  if (!job) return false;
+  try {
+    if (typeof jdCache !== "undefined" && jdCache && job.id) {
+      const cached = jdCache.get(job.id);
+      if (cached && String(cached.text || "").trim()) return true;
+    }
+  } catch (_) { /* node tests / no cache */ }
+  if (job.has_description === true) return true;
+  return String(job.job_description || "").trim().length > 0;
 }
 
 function jobMatchesExtrasFilter(j) {
@@ -1674,21 +2003,285 @@ function jobMatchesExtrasFilter(j) {
   if (extrasFilter === "missing_url") return !applicationHref(j);
   if (extrasFilter === "multi_opening") return !!j.multi_opening;
   if (extrasFilter === "multi_source") return jobSourceNames(j).length > 1;
+  if (extrasFilter === "no_jd") return j.jd_incomplete === true;
   return true;
 }
 
 function jobMatchesSourceFilter(j) {
   if (!sourceFilter) return true;
-  const names = jobSourceNames(j).map(n => n.toLowerCase());
-  return names.includes(sourceFilter.toLowerCase()) || (j.source || "") === sourceFilter;
+  const names = jobSourceNames(j);
+  if (!names.length) return true;
+  if (names.some(n => stampedApproxPrefix(n))) return true;
+  const want = sourceFilter.toLowerCase();
+  return names.some(n => String(n).toLowerCase() === want) || (j.source || "") === sourceFilter;
+}
+
+/** Placeholder hint for fielded search (kept in sync with index.html). */
+const SEARCH_PLACEHOLDER = "Search… or company: x jd: y";
+
+const SEARCH_FIELD_ALIAS = {
+  jd: "jd",
+  description: "jd",
+  title: "title",
+  company: "company",
+  id: "id",
+  source: "source",
+  location: "location",
+  tag: "tag",
+  mode: "tag",
+};
+
+/** Tokenize search input; quoted segments stay intact (commas literal). */
+function tokenizeSearchInput(raw) {
+  const s = String(raw || "");
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    while (i < s.length && /\s/.test(s[i])) i++;
+    if (i >= s.length) break;
+    if (s[i] === '"') {
+      i++;
+      let buf = "";
+      while (i < s.length && s[i] !== '"') buf += s[i++];
+      if (i < s.length && s[i] === '"') i++;
+      out.push({ quoted: true, text: buf });
+      continue;
+    }
+    let buf = "";
+    while (i < s.length && !/\s/.test(s[i]) && s[i] !== '"') buf += s[i++];
+    if (buf) out.push({ quoted: false, text: buf });
+  }
+  return out;
+}
+
+/**
+ * Parse list search.
+ * - Bare tokens (whitespace): AND across combined haystack. Commas in bare ≈ whitespace (still AND).
+ * - field: values — prefixes combinable with AND; comma-separated values within one field = OR.
+ * - Optional quotes: company: "foo, bar" is one literal needle.
+ */
+function parseSearchQuery(raw) {
+  const tokens = tokenizeSearchInput(raw);
+  const fields = {};
+  const bare = [];
+  const fieldRe = /^(jd|description|title|company|id|source|location|tag|mode):(.*)$/i;
+
+  const addFieldAlts = (key, alts) => {
+    const canon = SEARCH_FIELD_ALIAS[String(key || "").toLowerCase()];
+    if (!canon) return;
+    if (!fields[canon]) fields[canon] = [];
+    for (const alt of alts) {
+      const v = String(alt || "").trim().toLowerCase();
+      if (v && !fields[canon].includes(v)) fields[canon].push(v);
+    }
+  };
+
+  const isFieldTok = (tok) => !!(tok && !tok.quoted && fieldRe.test(tok.text));
+
+  const pushUnquotedAlts = (s, alts) => {
+    for (const part of String(s || "").split(",")) {
+      const v = part.trim();
+      if (v) alts.push(v);
+    }
+  };
+
+  let i = 0;
+  while (i < tokens.length) {
+    const tok = tokens[i];
+    if (!tok.quoted) {
+      const m = tok.text.match(fieldRe);
+      if (m) {
+        const alts = [];
+        if (m[2]) pushUnquotedAlts(m[2], alts);
+        i++;
+        while (i < tokens.length && !isFieldTok(tokens[i])) {
+          const n = tokens[i];
+          if (n.quoted) alts.push(n.text);
+          else pushUnquotedAlts(n.text, alts);
+          i++;
+        }
+        addFieldAlts(m[1], alts);
+        continue;
+      }
+    }
+    if (tok.quoted) {
+      const v = String(tok.text || "").trim().toLowerCase();
+      if (v) bare.push(v);
+    } else {
+      pushUnquotedAlts(tok.text, bare);
+    }
+    i++;
+  }
+
+  // Dedupe bare while preserving order (pushUnquoted may re-add)
+  const bareOut = [];
+  for (const t of bare) {
+    const v = String(t || "").trim().toLowerCase();
+    if (v && !bareOut.includes(v)) bareOut.push(v);
+  }
+  return { fields, bare: bareOut };
+}
+
+/** Slim list fields + chip/tag text (no JD body). */
+function jobSearchSlimHaystack(job) {
+  if (!job) return "";
+  const parts = [
+    job.company,
+    job.title,
+    job.id,
+    job.location,
+  ];
+  try {
+    if (typeof jobSourceNames === "function") {
+      for (const n of jobSourceNames(job)) parts.push(n);
+    }
+  } catch (_) { /* tests */ }
+  try {
+    const wm = typeof jobWorkModeDisplay === "function"
+      ? jobWorkModeDisplay(job)
+      : { mode: job.work_mode, approx: false };
+    if (wm && wm.mode && wm.mode !== "unknown") {
+      parts.push(wm.mode);
+      if (typeof formatWorkMode === "function") {
+        parts.push(formatWorkMode(wm.mode, !!wm.approx));
+      }
+    }
+  } catch (_) { /* ignore */ }
+  try {
+    const y = typeof jobMinYoeDisplay === "function"
+      ? jobMinYoeDisplay(job)
+      : { n: job.min_yoe, approx: false };
+    if (y && y.n != null && typeof formatYoeLabel === "function") {
+      parts.push(formatYoeLabel(y.n, !!y.approx, true));
+    }
+  } catch (_) { /* ignore */ }
+  try {
+    const s = typeof jobSalaryDisplay === "function"
+      ? jobSalaryDisplay(job)
+      : { min: null, max: null, approx: false };
+    if (s && (s.min != null || s.max != null) && typeof formatSalaryLabel === "function") {
+      parts.push(formatSalaryLabel(s.min, s.max, { approx: !!s.approx, compact: true }));
+    }
+  } catch (_) { /* ignore */ }
+  if (job.clearance) parts.push("clearance");
+  if (job.us_person) parts.push("us person", "us_person");
+  if (job.unresolved_apply_url) parts.push("unresolved url", "unresolved_apply_url");
+  if (job.multi_opening) parts.push("multi");
+  if (job.jd_incomplete) parts.push("incomplete");
+  return parts.filter(Boolean).join(" ").toLowerCase();
+}
+
+/** JD text available without a server round-trip (cache and/or preview). */
+function jobSearchLocalJd(job) {
+  if (!job) return "";
+  const parts = [];
+  try {
+    if (typeof jdCache !== "undefined" && jdCache && job.id) {
+      const cached = jdCache.get(job.id);
+      if (cached && cached.text) parts.push(String(cached.text));
+    }
+  } catch (_) { /* node tests */ }
+  if (job.job_description) parts.push(String(job.job_description));
+  return parts.join("\n").toLowerCase();
+}
+
+function searchFieldOrMatch(haystack, alts) {
+  if (!alts || !alts.length) return true;
+  const h = String(haystack || "");
+  return alts.some(a => h.includes(a));
+}
+
+function searchTokenInJd(job, token, hits) {
+  const t = String(token || "").toLowerCase();
+  if (!t) return true;
+  if (jobSearchLocalJd(job).includes(t)) return true;
+  if (hits && typeof hits.get === "function") {
+    const set = hits.get(t);
+    if (set && typeof set.has === "function" && job && set.has(job.id)) return true;
+  }
+  return false;
+}
+
+/** Tokens that may need server-side jd_full grep (jd: + bare). */
+function searchTokensNeedingJd(parsed) {
+  const out = [];
+  const add = (t) => {
+    const v = String(t || "").trim().toLowerCase();
+    if (v && !out.includes(v)) out.push(v);
+  };
+  if (!parsed) return out;
+  for (const t of (parsed.fields && parsed.fields.jd) || []) add(t);
+  for (const t of parsed.bare || []) add(t);
+  return out;
+}
+
+/**
+ * Match one job against a parsed query.
+ * hits: Map<token, Set<jobId>> from GET /api/jobs/search (optional).
+ */
+function jobMatchesSearchQuery(job, parsed, hits) {
+  if (!parsed) return true;
+  const fields = parsed.fields || {};
+  const bare = parsed.bare || [];
+  if (!Object.keys(fields).length && !bare.length) return true;
+
+  const slim = jobSearchSlimHaystack(job);
+  const company = String(job && job.company || "").toLowerCase();
+  const title = String(job && job.title || "").toLowerCase();
+  const id = String(job && job.id || "").toLowerCase();
+  const location = String(job && job.location || "").toLowerCase();
+  let source = "";
+  try {
+    source = (typeof jobSourceNames === "function" ? jobSourceNames(job) : [])
+      .join(" ").toLowerCase();
+  } catch (_) {
+    source = String(job && job.source || "").toLowerCase();
+  }
+
+  if (fields.company && !searchFieldOrMatch(company, fields.company)) return false;
+  if (fields.title && !searchFieldOrMatch(title, fields.title)) return false;
+  if (fields.id && !searchFieldOrMatch(id, fields.id)) return false;
+  if (fields.location && !searchFieldOrMatch(location, fields.location)) return false;
+  if (fields.source && !searchFieldOrMatch(source, fields.source)) return false;
+  if (fields.tag && !searchFieldOrMatch(slim, fields.tag)) return false;
+  if (fields.jd) {
+    if (!fields.jd.some(t => searchTokenInJd(job, t, hits))) return false;
+  }
+  for (const t of bare) {
+    if (slim.includes(t) || searchTokenInJd(job, t, hits)) continue;
+    return false;
+  }
+  return true;
+}
+
+function scheduleJdSearch() {
+  const parsed = parseSearchQuery(searchText);
+  const tokens = searchTokensNeedingJd(parsed);
+  const gen = ++jdSearchGen;
+  if (!tokens.length) {
+    jdSearchTokenHits = null;
+    return;
+  }
+  const q = tokens.join(" ");
+  fetch(`/api/jobs/search?q=${encodeURIComponent(q)}`)
+    .then(res => (res.ok ? res.json() : null))
+    .then(data => {
+      if (gen !== jdSearchGen) return;
+      if (!data || !data.hits) return;
+      const map = new Map();
+      for (const [tok, ids] of Object.entries(data.hits)) {
+        map.set(String(tok).toLowerCase(), new Set(Array.isArray(ids) ? ids : []));
+      }
+      jdSearchTokenHits = map;
+      try { render(); } catch (_) { /* boot */ }
+    })
+    .catch(() => { /* keep prior hits */ });
 }
 
 function jobMatchesSearch(j) {
-  if (!searchText) return true;
-  const q = searchText.toLowerCase();
-  return (j.company || "").toLowerCase().includes(q)
-    || (j.title || "").toLowerCase().includes(q)
-    || (j.id || "").toLowerCase().includes(q);
+  if (!searchText || !String(searchText).trim()) return true;
+  const parsed = parseSearchQuery(searchText);
+  return jobMatchesSearchQuery(j, parsed, jdSearchTokenHits);
 }
 
 /** Sidebar list filters (not the KPI tab / queue). Shared by list + KPI counts. */
@@ -1697,7 +2290,6 @@ function jobMatchesListFilters(j) {
     && jobMatchesYoeFilter(j)
     && jobMatchesDateFilter(j)
     && jobMatchesSalaryFilter(j)
-    && jobMatchesStatusFilter(j)
     && jobMatchesExtrasFilter(j)
     && jobMatchesRegion(j)
     && jobMatchesSourceFilter(j)
@@ -1861,12 +2453,379 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
-/** Inline **bold** / *italic* on already-classified line text (escaped). */
-function formatJdInline(raw) {
-  let s = escapeHtml(raw == null ? "" : String(raw));
+/** Private-use sentinels so prune wraps survive escapeHtml + markdown. */
+const JD_PRUNE_MARK_OPEN = "\uE000";
+const JD_PRUNE_MARK_CLOSE = "\uE001";
+/** Search-hit sentinels (distinct from prune so both can nest). */
+const SEARCH_MARK_OPEN = "\uE002";
+const SEARCH_MARK_CLOSE = "\uE003";
+
+/**
+ * Needles for a rendered surface from a parsed query.
+ * Fielded prefixes only hit their surface; bare terms hit every surface.
+ * Returns lowercase needle strings (not the "company:" / "jd:" prefix).
+ */
+function searchNeedlesForSurface(parsed, surface) {
+  if (!parsed) return [];
+  const out = [];
+  const add = (alts) => {
+    for (const a of alts || []) {
+      const v = String(a || "").trim().toLowerCase();
+      if (v && !out.includes(v)) out.push(v);
+    }
+  };
+  add(parsed.bare);
+  const fields = parsed.fields || {};
+  const surf = String(surface || "").toLowerCase();
+  if (surf === "company") add(fields.company);
+  else if (surf === "title") add(fields.title);
+  else if (surf === "jd") add(fields.jd);
+  else if (surf === "location") add(fields.location);
+  else if (surf === "source") add(fields.source);
+  else if (surf === "tag") add(fields.tag);
+  else if (surf === "id") add(fields.id);
+  return out;
+}
+
+/** Active search needles for a surface (empty search → []). */
+function activeSearchNeedles(surface) {
+  try {
+    if (typeof searchText === "undefined" || !String(searchText || "").trim()) return [];
+    return searchNeedlesForSurface(parseSearchQuery(searchText), surface);
+  } catch (_) {
+    return [];
+  }
+}
+
+/** Case-insensitive substring ranges for needles; merged overlapping spans. */
+function collectSearchMatchRanges(text, needles) {
+  const s = String(text || "");
+  if (!s || !needles || !needles.length) return [];
+  const lower = s.toLowerCase();
+  const ranges = [];
+  for (const needle of needles) {
+    const n = String(needle || "").toLowerCase();
+    if (!n) continue;
+    let from = 0;
+    while (from < lower.length) {
+      const idx = lower.indexOf(n, from);
+      if (idx === -1) break;
+      ranges.push([idx, idx + n.length]);
+      from = idx + Math.max(1, n.length);
+    }
+  }
+  return mergePruneMatchRanges(ranges);
+}
+
+function applySearchHighlightMarks(raw, ranges) {
+  let s = String(raw == null ? "" : raw);
+  if (!ranges || !ranges.length) return s;
+  for (let i = ranges.length - 1; i >= 0; i--) {
+    const start = Math.max(0, ranges[i][0]);
+    const end = Math.min(s.length, ranges[i][1]);
+    if (end <= start) continue;
+    s = s.slice(0, start) + SEARCH_MARK_OPEN + s.slice(start, end) + SEARCH_MARK_CLOSE + s.slice(end);
+  }
+  return s;
+}
+
+function finalizeSearchHighlightHtml(html) {
+  return String(html)
+    .replaceAll(SEARCH_MARK_OPEN, '<mark class="search-hit">')
+    .replaceAll(SEARCH_MARK_CLOSE, "</mark>");
+}
+
+/**
+ * Layered private-use marks on raw text. layers[0] is outermost.
+ * Overlap: prune outer + search inner (nested marks) — prune orange stays visible.
+ */
+function applyLayeredHighlightMarks(raw, layers) {
+  const s = String(raw == null ? "" : raw);
+  if (!layers || !layers.length) return s;
+  const n = s.length;
+  const opens = Array.from({ length: n + 1 }, () => []);
+  const closes = Array.from({ length: n + 1 }, () => []);
+  for (const layer of layers) {
+    if (!layer || !layer.ranges || !layer.ranges.length) continue;
+    for (const pair of layer.ranges) {
+      const start = Math.max(0, pair[0]);
+      const end = Math.min(n, pair[1]);
+      if (end <= start) continue;
+      opens[start].push(layer.open);
+      closes[end].push(layer.close);
+    }
+  }
+  let out = "";
+  for (let i = 0; i < n; i++) {
+    if (closes[i].length) {
+      for (let j = closes[i].length - 1; j >= 0; j--) out += closes[i][j];
+    }
+    for (const o of opens[i]) out += o;
+    out += s[i];
+  }
+  if (closes[n].length) {
+    for (let j = closes[n].length - 1; j >= 0; j--) out += closes[n][j];
+  }
+  return out;
+}
+
+/** Escape + green search marks for a list/meta surface (company, title, …). */
+function highlightSearchInText(text, surface) {
+  const raw = text == null ? "" : String(text);
+  if (!raw) return "";
+  const needles = activeSearchNeedles(surface);
+  if (!needles.length) return escapeHtml(raw);
+  const ranges = collectSearchMatchRanges(raw, needles);
+  if (!ranges.length) return escapeHtml(raw);
+  return finalizeSearchHighlightHtml(escapeHtml(applySearchHighlightMarks(raw, ranges)));
+}
+
+function mergePruneMatchRanges(ranges) {
+  if (!ranges.length) return [];
+  const sorted = ranges.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const out = [[sorted[0][0], sorted[0][1]]];
+  for (let i = 1; i < sorted.length; i++) {
+    const [start, end] = sorted[i];
+    const last = out[out.length - 1];
+    if (start <= last[1]) last[1] = Math.max(last[1], end);
+    else out.push([start, end]);
+  }
+  return out;
+}
+
+function yoePruneMatchOk(match) {
+  const nums = [];
+  for (let i = 1; i < match.length; i++) {
+    const raw = match[i];
+    if (raw == null || raw === "") continue;
+    if (!/^\d{1,2}$/.test(String(raw))) continue;
+    nums.push(parseInt(raw, 10));
+  }
+  if (!nums.length) return false;
+  return Math.min(...nums) > MAX_ACCEPTABLE_MIN_YOE;
+}
+
+function isYoePruneHighlightRegex(rx) {
+  return (
+    rx === YOE_RANGE_RE ||
+    rx === YOE_MIN_PLUS_RE ||
+    rx === YOE_YEARS_PLUS_RE ||
+    rx === YOE_YEARS_EXPERIENCE_RE ||
+    rx === YOE_LABEL_RE ||
+    rx === YOE_PLAIN_YEARS_EXP_RE
+  );
+}
+
+function isYoeTagHighlightRegex(rx) {
+  return isYoePruneHighlightRegex(rx) || (
+    rx === YOE_FALLBACK_YEARS_OF_WORDS_EXP_RE ||
+    rx === YOE_FALLBACK_YEARS_APOS_RE ||
+    rx === YOE_FALLBACK_AT_LEAST_RE ||
+    rx === YOE_FALLBACK_YEARS_MINIMUM_RE ||
+    rx === YOE_FALLBACK_EXP_LABEL_RE ||
+    rx === YOE_FALLBACK_YOE_ABBREV_RE ||
+    rx === YOE_FALLBACK_RANGE_RE ||
+    rx === YOE_FALLBACK_IN_ROLE_RE ||
+    rx === YOE_FALLBACK_WORKING_AS_RE ||
+    rx === YOE_FALLBACK_YEARS_IN_FIELD_RE
+  );
+}
+
+function yoeMatchIsEducationEquivalent(blob, start, end) {
+  const s = String(blob || "");
+  const windowEnd = end == null ? s.length : Math.min(s.length, end + 48);
+  if (!/\bequivalent\b/i.test(s.slice(start, windowEnd))) return false;
+  return /\bor\s+$/i.test(s.slice(Math.max(0, start - 24), start));
+}
+
+function yoeMatchIsSoft(blob, start, end) {
+  const s = String(blob || "");
+  if (YOE_TENURE_BEFORE_RE.test(s.slice(Math.max(0, start - 64), start))) return true;
+  if (YOE_SOFT_BEFORE_RE.test(s.slice(Math.max(0, start - 100), start))) return true;
+  if (end != null && YOE_SOFT_AFTER_RE.test(s.slice(end, end + 48))) return true;
+  if (yoeMatchIsEducationEquivalent(s, start, end)) return true;
+  return false;
+}
+
+/** Pay / YOE / work-mode / visa substrings — always-on JD orange, not prune. */
+function jdTagHighlightRegexes() {
+  return [
+    YOE_RANGE_RE,
+    YOE_MIN_PLUS_RE,
+    YOE_YEARS_PLUS_RE,
+    YOE_YEARS_EXPERIENCE_RE,
+    YOE_LABEL_RE,
+    YOE_PLAIN_YEARS_EXP_RE,
+    YOE_FALLBACK_YEARS_OF_WORDS_EXP_RE,
+    YOE_FALLBACK_YEARS_APOS_RE,
+    YOE_FALLBACK_AT_LEAST_RE,
+    YOE_FALLBACK_YEARS_MINIMUM_RE,
+    YOE_FALLBACK_EXP_LABEL_RE,
+    YOE_FALLBACK_YOE_ABBREV_RE,
+    YOE_FALLBACK_RANGE_RE,
+    YOE_FALLBACK_IN_ROLE_RE,
+    YOE_FALLBACK_WORKING_AS_RE,
+    YOE_FALLBACK_YEARS_IN_FIELD_RE,
+    WORK_MODE_HYBRID_RE,
+    WORK_MODE_REMOTE_RE,
+    WORK_MODE_ONSITE_RE,
+    WORK_MODE_FALLBACK_HYBRID_RE,
+    WORK_MODE_FALLBACK_REMOTE_RE,
+    WORK_MODE_FALLBACK_ONSITE_RE,
+    CITIZENSHIP_OR_GC_REQUIREMENT_RE,
+    NO_VISA_SPONSORSHIP_RE,
+    SPONSORS_VISA_RE,
+    US_PERSON_REQUIRED_RE,
+    JD_VISA_VISIBILITY_RE,
+    CLEARANCE_REQUIREMENT_RE,
+  ];
+}
+
+function salaryRangeHighlightGate(m) {
+  const aRaw = m[1];
+  const bRaw = m[2];
+  const hasCur = /(?:\$|USD)/i.test(aRaw) || /(?:\$|USD)/i.test(bRaw);
+  const bothKOrPlain = /(?:[kK]|\d{5,7})/.test(aRaw) && /(?:[kK]|\d{5,7})/.test(bRaw);
+  return hasCur || bothKOrPlain;
+}
+
+function collectSalaryHighlightRanges(text) {
+  const blob = String(text || "");
+  if (!blob.trim()) return [];
+  const ranges = [];
+  const rangeSpans = [];
+  const specs = [
+    { re: SALARY_LABEL_RE, amounts: (m) => [m[1], m[2]] },
+    { re: SALARY_RANGE_RE, amounts: (m) => [m[1], m[2]], gate: salaryRangeHighlightGate },
+    { re: SALARY_DOLLAR_SINGLE_RE, amounts: (m) => [m[1], null], skipInSpan: true },
+    { re: SALARY_FALLBACK_NEAR_KW_RE, amounts: (m) => [m[1] || m[3], m[2] || m[4]] },
+    { re: SALARY_FALLBACK_UP_TO_RE, amounts: (m) => [m[1], null] },
+    { re: SALARY_FALLBACK_FROM_RE, amounts: (m) => [m[1], null] },
+    { re: SALARY_FALLBACK_BARE_K_RANGE_RE, amounts: (m) => [m[1], m[2]] },
+  ];
+  for (const { re, amounts, gate, skipInSpan } of specs) {
+    if (!re || !re.source) continue;
+    const sticky = new RegExp(re.source, `${String(re.flags || "").replace(/[gy]/g, "")}y`);
+    for (let i = 0; i < blob.length; i++) {
+      sticky.lastIndex = i;
+      const match = sticky.exec(blob);
+      if (!match || !match[0]) continue;
+      const start = i;
+      const end = i + match[0].length;
+      if (skipInSpan && rangeSpans.some(([rs, rEnd]) => rs <= start && start < rEnd)) continue;
+      if (gate && !gate(match)) continue;
+      if (salaryIsHourly(blob, start, end)) continue;
+      if (salaryIsFundingNoise(blob, start, end)) continue;
+      const [aRaw, bRaw] = amounts(match);
+      if (!salaryPairFromAmounts(aRaw, bRaw)) continue;
+      ranges.push([start, end]);
+      if (bRaw) rangeSpans.push([start, end]);
+    }
+  }
+  return mergePruneMatchRanges(ranges);
+}
+
+function collectRegexMatchRanges(text, regexes, opts) {
+  const s = String(text || "");
+  const yoePruneOnly = !!(opts && opts.yoePruneOnly);
+  if (!s || !regexes || !regexes.length) return [];
+  const ranges = [];
+  for (const rx of regexes) {
+    if (!rx || !rx.source) continue;
+    const sticky = new RegExp(rx.source, `${String(rx.flags || "").replace(/[gy]/g, "")}y`);
+    for (let i = 0; i < s.length; i++) {
+      sticky.lastIndex = i;
+      const match = sticky.exec(s);
+      if (!match || !match[0]) continue;
+      if (isYoeTagHighlightRegex(rx) && yoeMatchIsSoft(s, i, i + match[0].length)) continue;
+      if (yoePruneOnly && isYoePruneHighlightRegex(rx) && !yoePruneMatchOk(match)) continue;
+      ranges.push([i, i + match[0].length]);
+    }
+  }
+  return mergePruneMatchRanges(ranges);
+}
+
+function collectJdHighlightRanges(text, extraRegexes) {
+  return mergePruneMatchRanges([
+    ...collectSalaryHighlightRanges(text),
+    ...collectRegexMatchRanges(text, jdTagHighlightRegexes(), { yoePruneOnly: false }),
+    ...collectPruneMatchRanges(text, extraRegexes),
+  ]);
+}
+
+/** Map a prune/delete reason code to the discovery regexes that produced it. */
+function pruneHighlightRegexesForReason(code) {
+  const key = normalizeDeletedReasonCode(code);
+  if (key === "citizenship_or_greencard") {
+    return [CITIZENSHIP_OR_GC_REQUIREMENT_RE, US_PERSON_REQUIRED_RE];
+  }
+  if (key === "clearance_or_intel") {
+    return [CLEARANCE_REQUIREMENT_RE, INTEL_AGENCY_COMPANY_RE];
+  }
+  if (key === "excessive_yoe") {
+    return [
+      YOE_RANGE_RE,
+      YOE_MIN_PLUS_RE,
+      YOE_YEARS_PLUS_RE,
+      YOE_YEARS_EXPERIENCE_RE,
+      YOE_LABEL_RE,
+      YOE_PLAIN_YEARS_EXP_RE,
+    ];
+  }
+  if (key === "management_track") return [SENIORITY_EXCLUDE_RE];
+  if (key === "non_us_location") {
+    return [NON_US_LOCATION_RE, INDIA_LOCATION_RE, INDIA_REMOTE_RE];
+  }
+  return [];
+}
+
+function jobPruneHighlightRegexes(job) {
+  if (!job || job.status !== "deleted") return [];
+  const codes = deletedReasonCodes(job);
+  const seen = new Set();
+  const out = [];
+  for (const code of codes) {
+    for (const rx of pruneHighlightRegexesForReason(code)) {
+      if (!rx || seen.has(rx)) continue;
+      seen.add(rx);
+      out.push(rx);
+    }
+  }
+  return out;
+}
+
+function collectPruneMatchRanges(text, regexes) {
+  return collectRegexMatchRanges(text, regexes, { yoePruneOnly: true });
+}
+
+function finalizePruneHighlightHtml(html) {
+  return String(html)
+    .replaceAll(JD_PRUNE_MARK_OPEN, '<mark class="jd-prune-hit">')
+    .replaceAll(JD_PRUNE_MARK_CLOSE, "</mark>");
+}
+
+/**
+ * Inline **bold** / *italic* on already-classified line text (escaped).
+ * searchSurface: field-aware needles (default "jd" for body; identity uses title/company/location).
+ */
+function formatJdInline(raw, pruneRanges, searchSurface) {
+  const surface = searchSurface == null ? "jd" : searchSurface;
+  const prune = Array.isArray(pruneRanges) ? pruneRanges : [];
+  const searchRanges = collectSearchMatchRanges(raw, activeSearchNeedles(surface));
+  const layers = [];
+  if (prune.length) {
+    layers.push({ open: JD_PRUNE_MARK_OPEN, close: JD_PRUNE_MARK_CLOSE, ranges: prune });
+  }
+  if (searchRanges.length) {
+    layers.push({ open: SEARCH_MARK_OPEN, close: SEARCH_MARK_CLOSE, ranges: searchRanges });
+  }
+  const source = layers.length
+    ? applyLayeredHighlightMarks(raw, layers)
+    : (raw == null ? "" : String(raw));
+  let s = escapeHtml(source);
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong class="jd-strong">$1</strong>');
   s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em class="jd-em">$2</em>');
-  return s;
+  return finalizeSearchHighlightHtml(finalizePruneHighlightHtml(s));
 }
 
 /**
@@ -1930,8 +2889,13 @@ function classifyJdLine(line) {
  * Safe structured HTML for JD text (escape + tiny markdown/ATS subset).
  * No raw HTML passthrough — only tags we emit after escaping.
  */
-function formatJobDescriptionHtml(text) {
+function formatJobDescriptionHtml(text, pruneRegexes) {
   if (text == null || text === "") return "";
+  const extra = Array.isArray(pruneRegexes) ? pruneRegexes : [];
+  const inline = (piece) => formatJdInline(
+    piece,
+    collectJdHighlightRanges(piece, extra),
+  );
   const lines = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
   const out = [];
   let paraLines = [];
@@ -1939,13 +2903,13 @@ function formatJobDescriptionHtml(text) {
 
   const flushPara = () => {
     if (!paraLines.length) return;
-    const body = paraLines.map(formatJdInline).join("<br>");
+    const body = paraLines.map(inline).join("<br>");
     out.push(`<p class="jd-p">${body}</p>`);
     paraLines = [];
   };
   const flushList = () => {
     if (!bullets.length) return;
-    const items = bullets.map(b => `<li>${formatJdInline(b)}</li>`).join("");
+    const items = bullets.map(b => `<li>${inline(b)}</li>`).join("");
     out.push(`<ul class="jd-list">${items}</ul>`);
     bullets = [];
   };
@@ -1960,7 +2924,7 @@ function formatJobDescriptionHtml(text) {
     if (c.type === "heading") {
       flushList();
       flushPara();
-      out.push(`<div class="jd-heading">${formatJdInline(c.text)}</div>`);
+      out.push(`<div class="jd-heading">${inline(c.text)}</div>`);
       continue;
     }
     if (c.type === "bullet") {
@@ -2005,16 +2969,6 @@ function toggleCompanySiblings(company) {
 
 function collapseCompanySiblings() {
   siblingsPanelCompany = null;
-  renderDossier();
-}
-
-function toggleResumePanel(jobId) {
-  if (!jobId) return;
-  const job = jobs.find(j => j.id === jobId);
-  if (!jobHasDiskResume(job)) return;
-  resumeLatexPanelJobId = null;
-  copyKitPanelJobId = null;
-  resumePanelJobId = resumePanelJobId === jobId ? null : jobId;
   renderDossier();
 }
 
@@ -2343,7 +3297,7 @@ function showConnectionBanner(visible) {
     "font-size:11px",
     "letter-spacing:0.03em",
   ].join(";");
-  bar.innerHTML = `<span>Dashboard can’t reach the server at <code style="font-family:var(--mono)">127.0.0.1:8787</code>. Retrying…</span>`
+  bar.innerHTML = `<span>Dashboard can’t reach the server at <code style="font-family:var(--mono)">${escapeHtml(window.location.host || "127.0.0.1:8787")}</code>. Retrying…</span>`
     + `<button type="button" class="act" id="connection-retry-btn">Retry</button>`;
   const header = document.querySelector(".ops-header");
   if (header && header.parentNode) {
@@ -2800,40 +3754,89 @@ function mountResumePreview(job) {
   if (have !== src) frame.src = src;
 }
 
+/** Push one list-row chip per visible label (case-insensitive). */
+function pushUniqueListTag(tags, seenLabels, label, html) {
+  const key = String(label || "").trim().toLowerCase();
+  if (!key || seenLabels.has(key)) return false;
+  seenLabels.add(key);
+  tags.push(html);
+  return true;
+}
+
 function renderJobRow(job, { nested = false, showCompany = true } = {}) {
   const bucket = queueBucket(job.status);
   const activity = jobActivityDot(job);
   const activityCls = activity ? ` activity-${activity}` : "";
   const outcome = fillOutcome(job);
   const tags = [];
-  if (job.multi_opening) tags.push(`<span class="tag multi" title="Multiple openings in JD — filter/sort only">Multi</span>`);
+  const seenTagLabels = new Set();
+  if (job.multi_opening) {
+    pushUniqueListTag(tags, seenTagLabels, "Multi",
+      `<span class="tag multi" title="Multiple openings in JD — filter/sort only">Multi</span>`);
+  }
   const { mode, approx: modeApprox } = jobWorkModeDisplay(job);
   if (mode && mode !== "unknown") {
-    tags.push(`<span class="tag work-mode mode-tag ${escapeHtml(mode)}">${escapeHtml(formatWorkMode(mode, modeApprox))}</span>`);
+    const modeLabel = formatWorkMode(mode, modeApprox);
+    pushUniqueListTag(tags, seenTagLabels, modeLabel,
+      `<span class="tag work-mode mode-tag ${escapeHtml(mode)}">${highlightSearchInText(modeLabel, "tag")}</span>`);
   }
   const { n: yminTag, approx: yoeApprox } = jobMinYoeDisplay(job);
   if (yminTag != null && !Number.isNaN(Number(yminTag))) {
     const label = formatYoeLabel(yminTag, yoeApprox, true);
-    if (label) tags.push(`<span class="tag yoe">${escapeHtml(label)}</span>`);
+    if (label) {
+      pushUniqueListTag(tags, seenTagLabels, label,
+        `<span class="tag yoe">${highlightSearchInText(label, "tag")}</span>`);
+    }
   }
   const { min: salMin, max: salMax, approx: salApprox } = jobSalaryDisplay(job);
   if (salMin != null || salMax != null) {
     const salLabel = formatSalaryLabel(salMin, salMax, { approx: salApprox, compact: true });
-    if (salLabel) tags.push(`<span class="tag salary">${escapeHtml(salLabel)}</span>`);
+    if (salLabel) {
+      pushUniqueListTag(tags, seenTagLabels, salLabel,
+        `<span class="tag salary">${highlightSearchInText(salLabel, "tag")}</span>`);
+    }
   }
-  const delReason = bucket === "deleted" ? formatDeletedReasons(job, { short: true }) : null;
-  if (delReason) {
-    tags.push(`<span class="tag deleted-reason">${escapeHtml(delReason)}</span>`);
+  // Prefer dedicated clearance / US Person chips over deleted-reason text.
+  if (job.clearance) {
+    pushUniqueListTag(tags, seenTagLabels, "Clearance",
+      `<span class="tag clearance" title="Security clearance / eligibility to obtain">${highlightSearchInText("Clearance", "tag")}</span>`);
+  }
+  if (job.us_person) {
+    pushUniqueListTag(tags, seenTagLabels, "US Person",
+      `<span class="tag us-person" title="U.S. Person / ITAR / export-controlled">${highlightSearchInText("US Person", "tag")}</span>`);
+  }
+  if (job.unresolved_apply_url) {
+    pushUniqueListTag(tags, seenTagLabels, "Unresolved URL",
+      `<span class="tag unresolved-url" title="Apply URL still LinkedIn / aggregator after resolve">${highlightSearchInText("Unresolved URL", "tag")}</span>`);
+  }
+  if (bucket === "deleted") {
+    const reasonParts = [];
+    for (const code of deletedReasonCodes(job)) {
+      const label = deletedReasonLabel(code, { short: true });
+      const key = String(label || "").trim().toLowerCase();
+      if (!key || seenTagLabels.has(key)) continue;
+      seenTagLabels.add(key);
+      reasonParts.push(label);
+    }
+    if (reasonParts.length) {
+      const reasonText = reasonParts.join(" · ");
+      tags.push(`<span class="tag deleted-reason">${highlightSearchInText(reasonText, "tag")}</span>`);
+    }
   }
   const srcChips = sourceChipsHtml(job);
   if (srcChips) tags.push(srcChips);
   const selected = job.id === selectedId ? " selected" : "";
   const nestedCls = nested ? " nested" : "";
+  const coHtml = showCompany
+    ? (job.company
+      ? highlightSearchInText(job.company, "company")
+      : escapeHtml("(fetching…)"))
+    : "";
   return `<div class="job-row${selected}${nestedCls}" role="button" tabindex="0" data-id="${escapeHtml(job.id)}">
     <div class="status-rail ${bucket}${activityCls}" title="${escapeHtml(statusLabel(job.status))}"></div>
     <div>
-      ${showCompany ? `<div class="co">${escapeHtml(job.company) || "(fetching…)"}${companyApplyCountBadgeHtml(job)}</div>` : ""}
-      <div class="ttl">${escapeHtml(job.title) || ""}</div>
+      ${showCompany ? `<div class="co">${coHtml}${companyApplyCountBadgeHtml(job)}</div>` : ""}
+      <div class="ttl">${highlightSearchInText(job.title || "", "title")}</div>
       ${tags.length ? `<div class="meta-line">${tags.join("")}</div>` : ""}
       ${outcome && (bucket === "stuck" || bucket === "ready")
         ? `<div class="outcome">${escapeHtml(outcome)}</div>` : ""}
@@ -3001,16 +4004,7 @@ function renderList() {
 
   list.innerHTML = html;
 
-  list.querySelectorAll(".job-row[data-id]").forEach(row => {
-    const id = row.getAttribute("data-id");
-    row.addEventListener("click", e => {
-      e.stopPropagation();
-      selectJob(id, { appliedFocus: true });
-    });
-    row.addEventListener("keydown", e => {
-      if (e.key === "Enter") selectJob(id, { appliedFocus: true });
-    });
-  });
+  list.querySelectorAll(".job-row[data-id]").forEach(bindJobListRow);
   list.querySelectorAll(".job-row.group-header[data-group]").forEach(row => {
     const key = row.getAttribute("data-group");
     row.addEventListener("click", () => toggleGroup(key));
@@ -3019,6 +4013,8 @@ function renderList() {
     });
   });
   syncListSelection();
+  // After first paint: idle-warm JDs for visible/open-queue rows (never blocks /api/jobs).
+  scheduleJdCacheWarm();
 }
 
 function selectJob(id, opts = {}) {
@@ -3041,9 +4037,11 @@ function selectJob(id, opts = {}) {
     }
   }
   activityEvents = synthesizeTimelineFromJob(job);
+  rememberJdViewed(id);
   render();
   loadActivity();
   loadJobDescription(id);
+  prefetchJdNeighbors(id);
 }
 
 function isAggregatorHost(url) {
@@ -3108,7 +4106,7 @@ function jobSourceNames(job) {
 function sourceChipsHtml(job) {
   const names = jobSourceNames(job);
   if (!names.length) return "";
-  return names.map(n => `<span class="tag source">${escapeHtml(n)}</span>`).join("");
+  return names.map(n => `<span class="tag source">${highlightSearchInText(n, "source")}</span>`).join("");
 }
 
 /** Equality key for apply/alt URLs: lowercased host+path (Ashby org slug twins, etc.). */
@@ -3191,40 +4189,152 @@ function secondaryApplyLinks(job) {
   return links;
 }
 
-const DISCOVER_ICON_SVG = `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-  <path fill="currentColor" d="M8 1a.75.75 0 0 1 .75.75V9.4l2.1-2.1a.75.75 0 1 1 1.06 1.06l-3.4 3.4a.75.75 0 0 1-1.06 0l-3.4-3.4A.75.75 0 0 1 5.1 7.3l2.15 2.15V1.75A.75.75 0 0 1 8 1zM2.5 12.25a.75.75 0 0 1 .75-.75h9.5a.75.75 0 0 1 0 1.5H3.25a.75.75 0 0 1-.75-.75z"/>
+const DISCOVER_RADAR_IDLE_SVG = `<svg class="radar-idle" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="9"/>
+  <circle cx="12" cy="12" r="5.5"/>
+  <circle cx="12" cy="12" r="1.35" fill="currentColor" stroke="none"/>
 </svg>`;
-// UI-031: stop glyph while running (distinct from start/download icon).
-const DISCOVER_ABORT_ICON_SVG = `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-  <rect x="3.5" y="3.5" width="9" height="9" rx="1.25" fill="currentColor"/>
+const DISCOVER_RADAR_SVG = `<svg class="radar-sweeping" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="9"/>
+  <circle cx="12" cy="12" r="5.5"/>
+  <g class="radar-sweep-arm">
+    <path d="M12 12 L12 3 A9 9 0 0 1 18.36 6.36 Z" fill="currentColor" fill-opacity="0.22" stroke="none"/>
+    <line x1="12" y1="12" x2="12" y2="3"/>
+  </g>
+  <circle cx="12" cy="12" r="1.35" fill="currentColor" stroke="none"/>
 </svg>`;
 
-async function loadJobDescription(jobId) {
+async function loadJobDescription(jobId, { background = false } = {}) {
   if (!jobId) return;
   const existing = jdCache.get(jobId);
   if (existing && !existing.loading && (existing.text != null || existing.error)) {
-    if (selectedId === jobId) renderDossier();
+    if (existing.text && !background) {
+      if (stampListTagsFromCachedJd(jobId)) refreshJobListRow(jobId);
+    }
+    if (!background && selectedId === jobId) renderDossier();
     return;
   }
-  jdCache.set(jobId, { loading: true, text: "", error: null, source: null });
-  if (selectedId === jobId) renderDossier();
-  try {
-    const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/description`);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      jdCache.set(jobId, { loading: false, text: "", error: data.error || `Failed (${res.status})`, source: null });
-    } else {
+  if (jdInflight.has(jobId)) {
+    if (!background && selectedId === jobId) renderDossier();
+    return jdInflight.get(jobId);
+  }
+  // Keep any prior text while fetching so dossier never blanks on re-entry.
+  const priorText = (existing && existing.text) || "";
+  jdCache.set(jobId, {
+    loading: true,
+    text: priorText,
+    error: null,
+    source: (existing && existing.source) || null,
+  });
+  if (!background && selectedId === jobId) renderDossier();
+
+  const promise = (async () => {
+    try {
+      const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/description`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        jdCache.set(jobId, {
+          loading: false,
+          text: priorText,
+          error: data.error || `Failed (${res.status})`,
+          source: null,
+        });
+      } else {
+        jdCache.set(jobId, {
+          loading: false,
+          text: data.job_description || "",
+          error: null,
+          source: data.source || null,
+        });
+        if (stampListTagsFromCachedJd(jobId)) refreshJobListRow(jobId);
+      }
+    } catch (e) {
       jdCache.set(jobId, {
         loading: false,
-        text: data.job_description || "",
-        error: null,
-        source: data.source || null,
+        text: priorText,
+        error: "Failed to load job description",
+        source: null,
       });
+    } finally {
+      jdInflight.delete(jobId);
     }
-  } catch (e) {
-    jdCache.set(jobId, { loading: false, text: "", error: "Failed to load job description", source: null });
+    if (selectedId === jobId) renderDossier();
+  })();
+  jdInflight.set(jobId, promise);
+  return promise;
+}
+
+function rememberJdViewed(jobId) {
+  if (!jobId) return;
+  const idx = _jdRecentlyViewed.indexOf(jobId);
+  if (idx >= 0) _jdRecentlyViewed.splice(idx, 1);
+  _jdRecentlyViewed.unshift(jobId);
+  while (_jdRecentlyViewed.length > JD_RECENT_MAX) _jdRecentlyViewed.pop();
+}
+
+function jdNeedsFetch(jobId) {
+  if (!jobId) return false;
+  const job = jobs.find(j => j.id === jobId);
+  if (!job || !jobHasDescription(job)) return false;
+  if (jdInflight.has(jobId)) return false;
+  const cached = jdCache.get(jobId);
+  if (cached && !cached.loading && (cached.text || cached.error)) return false;
+  return true;
+}
+
+function scheduleJdCacheWarm() {
+  const gen = ++_jdPrefetchGen;
+  const kick = () => {
+    if (gen !== _jdPrefetchGen) return;
+    warmJdCacheForVisible(gen);
+  };
+  if (_jdPrefetchIdleHandle != null) {
+    if (typeof cancelIdleCallback === "function" && typeof _jdPrefetchIdleHandle === "number") {
+      try { cancelIdleCallback(_jdPrefetchIdleHandle); } catch (_) { /* ignore */ }
+    }
+    clearTimeout(_jdPrefetchIdleHandle);
+    _jdPrefetchIdleHandle = null;
   }
-  if (selectedId === jobId) renderDossier();
+  if (typeof requestIdleCallback === "function") {
+    _jdPrefetchIdleHandle = requestIdleCallback(kick, { timeout: 1200 });
+  } else {
+    _jdPrefetchIdleHandle = setTimeout(kick, 80);
+  }
+}
+
+async function warmJdCacheForVisible(gen) {
+  const ids = [];
+  const push = (id) => {
+    if (!id || ids.includes(id)) return;
+    ids.push(id);
+  };
+  push(selectedId);
+  for (const id of _jdRecentlyViewed) push(id);
+  for (const job of visibleJobs()) {
+    if (ids.length >= JD_PREFETCH_MAX) break;
+    push(job.id);
+  }
+  const need = ids.filter(jdNeedsFetch).slice(0, JD_PREFETCH_MAX);
+  for (let i = 0; i < need.length; i += JD_PREFETCH_CHUNK) {
+    if (gen !== _jdPrefetchGen) return;
+    const chunk = need.slice(i, i + JD_PREFETCH_CHUNK);
+    await Promise.all(chunk.map(id => loadJobDescription(id, { background: true })));
+    await new Promise(r => setTimeout(r, 0));
+  }
+}
+
+function prefetchJdNeighbors(jobId) {
+  const vis = visibleJobs();
+  const idx = vis.findIndex(j => j.id === jobId);
+  if (idx < 0) return;
+  const neighborIds = [];
+  for (const off of [-2, -1, 1, 2, 3]) {
+    const j = vis[idx + off];
+    if (j) neighborIds.push(j.id);
+  }
+  for (const id of neighborIds) {
+    if (jdNeedsFetch(id)) loadJobDescription(id, { background: true });
+  }
 }
 
 const JD_COPY_ICON_SVG = `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
@@ -3246,6 +4356,12 @@ const DELETE_ICON_SVG = `<svg class="icon-trash" viewBox="0 0 16 16" aria-hidden
 const CANCEL_ICON_SVG = `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
   <circle cx="8" cy="8" r="5.75" fill="none" stroke="currentColor" stroke-width="1.65"/>
   <path fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" d="M4.75 4.75 11.25 11.25"/>
+</svg>`;
+
+const APPLY_URL_EDIT_ICON_SVG = `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+  <path fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"
+    d="M10.85 2.4 13.6 5.15 5.7 13.05 2.75 13.25l.2-2.95 7.9-7.9z"/>
+  <path fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" d="M9.55 3.7 12.3 6.45"/>
 </svg>`;
 
 /** Icon-only dossier action button (Fast copy, Mark applied, Delete, Cancel). */
@@ -3284,12 +4400,18 @@ function jdIdentityFields(job) {
 function jdIdentityHtml(job) {
   const { title, company, location } = jdIdentityFields(job);
   if (!title && !company && !location) return "";
-  const sub = [company, location]
-    .filter(Boolean)
-    .map(escapeHtml)
-    .join(`<span class="jd-ident-sep">·</span>`);
+  const pruneRx = jobPruneHighlightRegexes(job);
+  const identInline = (value, surface) => formatJdInline(
+    value,
+    collectJdHighlightRanges(value, pruneRx),
+    surface,
+  );
+  const subParts = [];
+  if (company) subParts.push(identInline(company, "company"));
+  if (location) subParts.push(identInline(location, "location"));
+  const sub = subParts.join(`<span class="jd-ident-sep">·</span>`);
   return `<div class="jd-ident">
-    ${title ? `<div class="jd-ident-title">${escapeHtml(title)}</div>` : ""}
+    ${title ? `<div class="jd-ident-title">${identInline(title, "title")}</div>` : ""}
     ${sub ? `<div class="jd-ident-sub">${sub}</div>` : ""}
   </div>`;
 }
@@ -3322,6 +4444,96 @@ function jdCopyButtonHtml(job) {
     onclick="event.stopPropagation(); copyJobDescription('${jsStringEscape(job.id)}')">
     ${copied ? JD_COPIED_ICON_SVG : JD_COPY_ICON_SVG}
   </button>`;
+}
+
+function jdEditButtonHtml(job) {
+  if (!job || !job.id) return "";
+  const open = jdEditJobId === job.id;
+  return `<button type="button" class="jd-edit-btn${open ? " open" : ""}"
+    id="jd-edit-btn"
+    title="Edit job description" aria-label="Edit job description"
+    onclick="event.stopPropagation(); openJdEditor('${jsStringEscape(job.id)}')">
+    ${APPLY_URL_EDIT_ICON_SVG}
+  </button>`;
+}
+
+function jdToolbarHtml(job) {
+  return `<div class="jd-toolbar">${jdCopyButtonHtml(job)}${jdEditButtonHtml(job)}</div>`;
+}
+
+function snapshotJdEditDraft() {
+  const ta = document.getElementById("jd-edit-textarea");
+  if (ta && jdEditJobId) jdEditDraft = ta.value;
+}
+
+async function openJdEditor(jobId) {
+  const job = jobs.find(j => j.id === jobId);
+  if (!job) return;
+  let cached = jdCache.get(jobId);
+  if (!cached || cached.loading) {
+    await loadJobDescription(jobId);
+    cached = jdCache.get(jobId);
+  }
+  jdEditJobId = jobId;
+  jdEditDraft = (cached && !cached.error && cached.text) || jdCopySourceText(job) || "";
+  renderDossier();
+  requestAnimationFrame(() => {
+    const ta = document.getElementById("jd-edit-textarea");
+    if (ta) {
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }
+  });
+}
+
+function cancelJdEdit() {
+  jdEditJobId = null;
+  jdEditDraft = "";
+  jdEditSaving = false;
+  renderDossier();
+}
+
+async function saveJdEdit(jobId) {
+  snapshotJdEditDraft();
+  if (jdEditSaving) return;
+  const ta = document.getElementById("jd-edit-textarea");
+  const text = ta ? ta.value : jdEditDraft;
+  const saveBtn = document.getElementById("jd-edit-save");
+  jdEditSaving = true;
+  if (saveBtn) saveBtn.disabled = true;
+  try {
+    const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/jd`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ job_description: text }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "Could not save job description");
+    const updated = result.job;
+    if (updated && updated.id) {
+      const idx = jobs.findIndex(j => j.id === updated.id);
+      if (idx >= 0) jobs[idx] = { ...jobs[idx], ...updated };
+      lastJobsJSON = JSON.stringify(jobs);
+    }
+    jdCache.set(jobId, {
+      loading: false,
+      text: result.job_description != null ? result.job_description : text,
+      error: null,
+      source: result.source || "jd_full.txt",
+    });
+    jdEditJobId = null;
+    jdEditDraft = "";
+    invalidateJobsListCache();
+    stampListTagsFromCachedJd(jobId);
+    refreshJobListRow(jobId);
+    renderDossier();
+  } catch (error) {
+    alert(error.message || "Could not save job description");
+  } finally {
+    jdEditSaving = false;
+    const btn = document.getElementById("jd-edit-save");
+    if (btn) btn.disabled = false;
+  }
 }
 
 /** Clipboard write with a document.execCommand fallback for non-secure contexts. */
@@ -3372,21 +4584,40 @@ async function copyJobDescription(jobId) {
 }
 
 function jdEvidenceHtml(job) {
+  if (jdEditJobId === job.id) {
+    const jid = jsStringEscape(job.id);
+    return `<div class="jd-editor">
+      <textarea id="jd-edit-textarea" class="jd-edit-textarea" spellcheck="false"
+        aria-label="Edit job description"
+        oninput="snapshotJdEditDraft()"
+        onkeydown="${escapeAttr(`if (event.key === 'Escape') { event.preventDefault(); cancelJdEdit(); }`)}">${escapeHtml(jdEditDraft)}</textarea>
+      <div class="jd-editor-actions">
+        <button type="button" class="linkish" id="jd-edit-save"
+          ${jdEditSaving ? "disabled" : ""}
+          onclick="${escapeAttr(`event.stopPropagation(); saveJdEdit('${jid}')`)}">Save</button>
+        <button type="button" class="linkish muted"
+          onclick="${escapeAttr(`event.stopPropagation(); cancelJdEdit()`)}">Cancel</button>
+      </div>
+    </div>`;
+  }
   const cached = jdCache.get(job.id);
-  const expectJd = job.has_description || (cached && (cached.loading || cached.text || cached.error));
+  const text = (cached && cached.text) || "";
+  // Optimistic: show cached/prefetched text immediately (even while a refresh loads).
+  if (text) {
+    return `<div class="evidence jd-body">${jdIdentityHtml(job)}${formatJobDescriptionHtml(text, jobPruneHighlightRegexes(job))}</div>`;
+  }
+  const expectJd = job.has_description || (cached && (cached.loading || cached.error));
   if (!expectJd && !cached) {
     return `<div class="evidence jd-empty">No job description on file.</div>`;
   }
-  if (!cached || cached.loading) {
-    return `<div class="evidence jd-loading">Loading job description…</div>`;
-  }
-  if (cached.error) {
+  if (cached && cached.error) {
     return `<div class="evidence jd-error">${escapeHtml(cached.error)}</div>`;
   }
-  if (!cached.text) {
-    return `<div class="evidence jd-empty">No job description available.</div>`;
+  if (!cached || cached.loading) {
+    // Short placeholder — prefetch usually fills this before notice is readable.
+    return `<div class="evidence jd-loading" aria-busy="true">…</div>`;
   }
-  return `<div class="evidence jd-body">${jdIdentityHtml(job)}${formatJobDescriptionHtml(cached.text)}</div>`;
+  return `<div class="evidence jd-empty">No job description available.</div>`;
 }
 
 function formatDate(d) {
@@ -3490,6 +4721,46 @@ function pathHintHtml(job) {
   return `<span class="hint-strong">No resume on file</span> · Fill will run PartyRock then apply`;
 }
 
+function applyResolveLabel(job) {
+  if (!job) return "";
+  const status = String(job.apply_resolve_status || "").trim();
+  if (!status || status === "ok") return "";
+  const reason = String(job.apply_resolve_reason || "").trim();
+  const human = {
+    no_external_apply: "no external apply",
+    easy_apply: "Easy Apply only",
+    not_logged_in: "not logged in",
+    authwall: "not logged in",
+    blocked_captcha: "CAPTCHA",
+    no_ats_host: "no ATS found",
+    unfetchable_ats: "Workday/iCIMS",
+    browser_error: "browser error",
+    http_error: "HTTP error",
+    profile_in_use: "profile in use",
+    medium_no_overwrite: "medium confidence",
+    not_needed: "not needed",
+    low_confidence: "low confidence",
+  };
+  const short = human[reason] || reason.replace(/_/g, " ") || status;
+  if (status === "easy_apply") return `Resolve: ${short}`;
+  if (status === "no_external") return `Resolve: ${short}`;
+  if (status === "skipped") {
+    if (reason === "not_needed") return "";
+    return `Resolve: ${short}`;
+  }
+  if (status === "failed") return `Resolve failed: ${short}`;
+  return `Resolve: ${short}`;
+}
+
+function applyResolveNoteHtml(job) {
+  const label = applyResolveLabel(job);
+  if (!label) return "";
+  const status = String(job.apply_resolve_status || "").trim();
+  const title = String(job.apply_resolve_message || label).trim();
+  const cls = status === "failed" ? "apply-resolve-note failed" : "apply-resolve-note";
+  return `<span class="${cls}" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+}
+
 function idMetaHtml(job, appHref) {
   const parts = [];
   const push = (html) => { if (html) parts.push(html); };
@@ -3521,7 +4792,16 @@ function idMetaHtml(job, appHref) {
   if (updated) push(`Updated ${escapeHtml(updated)}`);
 
   let hostHtml = "";
-  if (appHref) {
+  if (editingApplyUrlId === job.id) {
+    const current = job.apply_url || job.job_url || "";
+    hostHtml = `<span class="apply-url-editor">
+      <input type="url" id="apply-url-input" class="apply-url-input" value="${escapeHtml(current)}"
+        placeholder="https://…" autocomplete="off"
+        onkeydown="${escapeAttr(`if (event.key === 'Enter') { event.preventDefault(); saveApplyUrl('${jsStringEscape(job.id)}'); } if (event.key === 'Escape') { event.preventDefault(); cancelApplyUrlEditor(); }`)}">
+      <button type="button" class="linkish" onclick="${escapeAttr(`event.stopPropagation(); saveApplyUrl('${jsStringEscape(job.id)}')`)}">Save</button>
+      <button type="button" class="linkish muted" onclick="${escapeAttr(`event.stopPropagation(); cancelApplyUrlEditor()`)}">Cancel</button>
+    </span>`;
+  } else if (appHref) {
     let host = appHref;
     try { host = new URL(appHref).hostname.replace(/^www\./, ""); } catch (_) { /* keep */ }
     const unresolved = applyUrlNeedsResolution(job);
@@ -3529,16 +4809,26 @@ function idMetaHtml(job, appHref) {
       ? `${appHref} — company ATS apply link not resolved yet (LinkedIn/aggregator)`
       : appHref;
     const hostCls = unresolved ? "meta-host unresolved" : "meta-host";
-    hostHtml = `<a class="${hostCls}" href="${escapeHtml(appHref)}" target="_blank" rel="noopener" title="${escapeHtml(hostTitle)}">${escapeHtml(host)}</a>`;
+    hostHtml = `<span class="apply-url-host"><a class="${hostCls}" href="${escapeHtml(appHref)}" target="_blank" rel="noopener" title="${escapeHtml(hostTitle)}">${escapeHtml(host)}</a>${applyUrlEditBtnHtml(job.id, "Edit apply link")}</span>`;
     if (unresolved && job.id) {
       hostHtml += ` <button type="button" class="linkish resolve-apply-btn"
-        title="Search for the company ATS apply URL (does not submit, does not sign in to LinkedIn)"
+        title="Resolve company ATS apply URL (LinkedIn profile redirect when signed in; never submits, never CAPTCHA)"
         onclick="${escapeAttr(`event.stopPropagation(); resolveApplyUrl('${jsStringEscape(job.id)}')`)}">Resolve ATS</button>`;
     }
+  } else if (job.id) {
+    hostHtml = `<span class="apply-url-host"><span class="apply-url-placeholder">set apply link</span>${applyUrlEditBtnHtml(job.id, "Set apply link")}</span>`;
   }
   if (hostHtml) push(hostHtml);
+  const resolveNote = applyResolveNoteHtml(job);
+  if (resolveNote) push(resolveNote);
 
   return parts.join(sep);
+}
+
+function applyUrlEditBtnHtml(jobId, label) {
+  const title = label || "Edit apply link";
+  return `<button type="button" class="apply-url-edit-btn" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}"
+    onclick="${escapeAttr(`event.stopPropagation(); openApplyUrlEditor('${jsStringEscape(jobId)}')`)}">${APPLY_URL_EDIT_ICON_SVG}</button>`;
 }
 
 function dossierSourceChipsHtml(job) {
@@ -3658,6 +4948,7 @@ function renderResumePopover(job) {
 
 function renderDossier() {
   snapshotResumeLatexDraft();
+  snapshotJdEditDraft();
   const root = document.getElementById("dossier");
   if (!root) return;
 
@@ -3683,6 +4974,11 @@ function renderDossier() {
   }
   if (copyKitPanelJobId && copyKitPanelJobId !== job.id) {
     copyKitPanelJobId = null;
+  }
+  if (jdEditJobId && jdEditJobId !== job.id) {
+    jdEditJobId = null;
+    jdEditDraft = "";
+    jdEditSaving = false;
   }
   const resumeOpen = !!(jobHasDiskResume(job) && resumePanelJobId === job.id);
   const appliedInfo = companyAppliedInfo(job.company);
@@ -3731,6 +5027,7 @@ function renderDossier() {
       <h2>${escapeHtml(job.title) || ""}</h2>
       <span class="status-pill ${bucket}">${escapeHtml(statusPillText)}</span>
       ${job.multi_opening ? `<span class="tag multi" title="JD advertises multiple openings — informational tag only; fill/apply path is unchanged">Multi-opening</span>` : ""}
+      ${job.unresolved_apply_url ? `<span class="tag unresolved-url" title="Apply URL still LinkedIn / aggregator after resolve">Unresolved URL</span>` : ""}
     </div>
     <div class="id-meta">
       ${idMetaHtml(job, appHref)}
@@ -3854,7 +5151,7 @@ function renderDossier() {
     <div class="sec-head">
       <span class="micro">Evidence · JD</span>
       <div class="sec-head-right">
-        ${jdCopyButtonHtml(job)}
+        ${jdToolbarHtml(job)}
       </div>
     </div>
     ${jdEvidenceHtml(job)}
@@ -4197,6 +5494,9 @@ function bindOpsChrome() {
   let searchTimer;
   const searchEl = document.getElementById("search");
   if (searchEl) {
+    if (typeof SEARCH_PLACEHOLDER === "string" && SEARCH_PLACEHOLDER) {
+      searchEl.placeholder = SEARCH_PLACEHOLDER;
+    }
     searchEl.value = searchText;
     searchEl.addEventListener("input", e => {
       clearTimeout(searchTimer);
@@ -4205,6 +5505,7 @@ function bindOpsChrome() {
         saveFilterState();
         updateFiltersChrome();
         render();
+        scheduleJdSearch();
       }, 180);
     });
     searchEl.addEventListener("keydown", e => {
@@ -4214,6 +5515,8 @@ function bindOpsChrome() {
       if (!searchEl.value) return;
       searchEl.value = "";
       searchText = "";
+      jdSearchTokenHits = null;
+      jdSearchGen++;
       saveFilterState();
       updateFiltersChrome();
       render();
@@ -4235,21 +5538,37 @@ function bindOpsChrome() {
   onFilterChange("yoe-filter", v => { yoeFilter = v; });
   onFilterChange("date-filter", v => { dateFilter = v; });
   onFilterChange("salary-filter", v => { salaryFilter = v; });
-  onFilterChange("status-filter", v => {
-    statusFilter = v;
-  });
   onFilterChange("extras-filter", v => { extrasFilter = v; });
   onFilterChange("region-filter", v => { regionFilter = v; });
 
   syncFilterControlsFromState();
   updateFiltersChrome();
+  scheduleJdSearch();
 
-  // Hover/focus-within opens via CSS (Discover/Filters pattern).
-  // Click/Enter/Space pins .open for touch + keyboard; Escape dismisses.
+  // Filters: click toggles; optional ~2/3s hover opens (not instant CSS :hover).
+  // Always closes on mouseleave of #list-filters (toggle + panel + hit bridge),
+  // plus outside click / Escape.
   document.getElementById("filters-toggle")?.addEventListener("click", e => {
     e.stopPropagation();
     const wrap = document.getElementById("list-filters");
     setFiltersPopoverOpen(!wrap?.classList.contains("open"));
+  });
+  const filtersWrap = document.getElementById("list-filters");
+  filtersWrap?.addEventListener("mouseenter", () => {
+    if (filtersWrap.classList.contains("open")) return;
+    clearFiltersHoverOpenTimer();
+    filtersHoverOpenTimer = setTimeout(() => {
+      filtersHoverOpenTimer = null;
+      if (!filtersWrap.classList.contains("open")) {
+        setFiltersPopoverOpen(true);
+      }
+    }, FILTERS_HOVER_OPEN_MS);
+  });
+  filtersWrap?.addEventListener("mouseleave", () => {
+    clearFiltersHoverOpenTimer();
+    if (filtersWrap.classList.contains("open")) {
+      setFiltersPopoverOpen(false);
+    }
   });
   document.getElementById("filters-popover")?.addEventListener("click", e => {
     e.stopPropagation();
@@ -4267,11 +5586,19 @@ function bindOpsChrome() {
     setAddJobPopoverOpen(!wrap?.classList.contains("open"));
   });
   document.getElementById("add-job-wrap")?.addEventListener("mouseenter", () => {
-    // Focus URL on hover-open so paste works immediately (pin click also focuses).
+    // Focus URL on hover-open so paste works immediately — but never steal
+    // focus from Search (or other non-add controls) while the user is typing.
     const input = document.getElementById("add-job-url");
-    if (input && document.activeElement !== input) {
-      requestAnimationFrame(() => input.focus());
+    const active = document.activeElement;
+    if (!input || active === input) return;
+    if (active && active !== document.body && active !== document.documentElement) {
+      const wrap = document.getElementById("add-job-wrap");
+      if (!wrap || !wrap.contains(active)) return;
     }
+    requestAnimationFrame(() => {
+      if (document.activeElement === document.getElementById("search")) return;
+      input.focus();
+    });
   });
   document.getElementById("add-job-popover")?.addEventListener("click", e => {
     e.stopPropagation();
@@ -4297,6 +5624,13 @@ function bindOpsChrome() {
   document.addEventListener("keydown", e => {
     if (e.key !== "Escape") return;
     // Blur so :focus-within hover-pops dismiss; also close pinned Filters/Add/Fill/Resume.
+    const brand = document.getElementById("brand-wrap");
+    if (brand?.classList.contains("open") || brand?.contains(document.activeElement)) {
+      e.preventDefault();
+      setBrandPopoverOpen(false);
+      (document.activeElement)?.blur?.();
+      return;
+    }
     const pinnedHover = document.querySelector(".hover-pop.open");
     if (pinnedHover) {
       e.preventDefault();
@@ -4405,6 +5739,22 @@ async function resolveApplyUrl(jobId) {
     { failLabel: "Resolve apply" },
   );
   if (!ok) return;
+  // Stamp resolve fields immediately so detail refreshes before poll lands.
+  const local = (typeof jobs !== "undefined" && Array.isArray(jobs))
+    ? jobs.find(j => j && j.id === jobId)
+    : null;
+  if (local && data) {
+    if (data.apply_url) local.apply_url = data.apply_url;
+    if (data.apply_resolve_status != null) local.apply_resolve_status = data.apply_resolve_status;
+    if (data.apply_resolve_reason != null) local.apply_resolve_reason = data.apply_resolve_reason;
+    if (data.apply_resolve_at != null) local.apply_resolve_at = data.apply_resolve_at;
+    if (data.apply_resolve_message != null) {
+      local.apply_resolve_message = data.apply_resolve_message;
+    } else if (data.apply_resolve_status === "ok") {
+      delete local.apply_resolve_message;
+    }
+    if (typeof render === "function") render();
+  }
   const conf = data.confidence || "low";
   const url = data.url || "";
   if (conf === "medium") {
@@ -4415,9 +5765,25 @@ async function resolveApplyUrl(jobId) {
   } else if (conf !== "high") {
     const reason = data.reason || "";
     let msg = "Could not resolve a company ATS apply URL.";
-    if (reason === "easy_apply") msg = "Easy Apply listings are left on LinkedIn.";
-    else if (reason === "no_ats_host") msg = "Search did not find a known ATS apply URL.";
-    else if (reason === "not_needed") msg = "This job already has a company/ATS apply URL.";
+    if (reason === "easy_apply") {
+      msg = "Easy Apply only (stays on LinkedIn) — not automating apply. Leave as Easy Apply.";
+    } else if (reason === "not_logged_in" || reason === "authwall") {
+      msg = data.message
+        || "Open LinkedIn resolve browser first: ./open_linkedin_resolve.sh";
+    } else if (reason === "blocked_captcha") {
+      msg = data.message
+        || "CAPTCHA / bot check on LinkedIn — stopped (never solve). Try again later or resolve manually.";
+    } else if (reason === "no_ats_host") {
+      msg = "Search did not find a known ATS apply URL.";
+    } else if (reason === "not_needed") {
+      msg = "This job already has a company/ATS apply URL.";
+    } else if (reason === "no_external_apply") {
+      msg = data.message || "No offsite Apply redirect found on LinkedIn.";
+    } else if (reason === "unfetchable_ats") {
+      msg = data.message || "Landed on Workday/iCIMS — left unresolved.";
+    } else if (data.message) {
+      msg = data.message;
+    }
     alert(msg);
   }
   await poll();
@@ -4928,7 +6294,7 @@ async function runDiscover(fresh = false) {
   }
   btn.disabled = true;
   btn.classList.add("running");
-  btn.innerHTML = `<span class="btn-spinner" aria-hidden="true"></span>`;
+  if (!btn.querySelector(".radar-sweeping")) btn.innerHTML = DISCOVER_RADAR_SVG;
   const startLabel = fresh
     ? "Starting fresh…"
     : ((discoveryState && discoveryState.resume_available) ? "Continuing previous run…" : "Discovering…");
@@ -4940,7 +6306,7 @@ async function runDiscover(fresh = false) {
     body: JSON.stringify({
       sources,
       fresh: !!fresh,
-      builtin_days_since_updated: selectedBuiltinDays(),
+      source_days: (discoveryState && discoveryState.source_days) || {},
       discover_us: getEnabledRegions().includes("us"),
       discover_india: getEnabledRegions().includes("india"),
     }),
@@ -5052,18 +6418,6 @@ function renderDiscoverPopover(disc) {
         : "Toggle sources, then Discover"));
   const lastRun = lastDiscoverRunLabel(disc);
   const total = runSources.reduce((n, s) => n + (s.count || 0), 0);
-  const builtinDays = BUILTIN_DAYS_OPTIONS.some(
-    o => o.value === Number(disc?.builtin_days_since_updated)
-  ) ? Number(disc.builtin_days_since_updated) : 1;
-  const builtinDaysControl = `<label class="discover-builtin-days" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0">
-    <span>Built In: last</span>
-    <select id="builtin-days-since-updated"
-      onchange="saveBuiltinDaysSetting(this.value)" ${running ? "disabled" : ""}>
-      ${BUILTIN_DAYS_OPTIONS.map(o =>
-        `<option value="${o.value}" ${o.value === builtinDays ? "selected" : ""}>${o.label}</option>`
-      ).join("")}
-    </select>
-  </label>`;
   const cronOn = !!(cronState && cronState.enabled);
   const cronHm = (cronState && cronState.hm) || "09:00";
   const cronHint = (cronState && cronState.hint) || "Enables job-hunter-daily OpenClaw cron.";
@@ -5113,17 +6467,31 @@ function renderDiscoverPopover(disc) {
       ? "India region off"
       : (live ? (live.detail || "") : (on ? "" : "Disabled"));
     const canAbortSrc = running && live && live.status === "collecting";
+    const recency = sourceSupportsRecency(c);
+    const daysVal = effectiveSourceDays(c.id, disc);
+    const daysOpts = Array.from({ length: SOURCE_DAYS_MAX - SOURCE_DAYS_MIN + 1 }, (_, i) => {
+      const d = SOURCE_DAYS_MIN + i;
+      return `<option value="${d}" ${d === daysVal ? "selected" : ""}>${d}d</option>`;
+    }).join("");
+    const daysControl = recency
+      ? `<select class="src-days" data-source-id="${escapeHtml(c.id)}"
+          title="Look back this many days"
+          onchange="saveSourceDaysSetting(this.dataset.sourceId, this.value)"
+          ${running || forcedOff ? "disabled" : ""}>${daysOpts}</select>`
+      : `<span class="src-days src-days-na" title="This source has no date filter">full board</span>`;
+    const srcDomId = `disc-src-${c.id}`;
     return `<div class="discover-src-opt ${on ? "src-on" : "src-off"} ${forcedOff ? "src-forced-off" : ""} ${escapeHtml(st)}">
-      <label style="display:flex;align-items:center;gap:6px;flex:1;min-width:0">
-        <input type="checkbox" data-source-id="${escapeHtml(c.id)}" ${on ? "checked" : ""}
-          ${forcedOff ? "disabled" : ""}
-          onchange="toggleDiscoverySource(this.dataset.sourceId, this.checked)">
+      <input type="checkbox" id="${escapeHtml(srcDomId)}" class="src-check" data-source-id="${escapeHtml(c.id)}" ${on ? "checked" : ""}
+        ${forcedOff ? "disabled" : ""}
+        onchange="toggleDiscoverySource(this.dataset.sourceId, this.checked)">
+      <label class="src-main" for="${escapeHtml(srcDomId)}">
         <span class="src-label ${on ? "src-on" : "src-off"}">${escapeHtml(c.label || c.id)}${indiaOnly ? " <span class=\"src-tag\">IN</span>" : ""}</span>
+        ${detail ? `<span class="src-detail">${escapeHtml(detail)}</span>` : ""}
       </label>
+      ${daysControl}
       <span class="src-count">${count}</span>
       <span class="src-status">${escapeHtml(sourceStatusLabel(st === "idle" ? "pending" : st))}</span>
       ${canAbortSrc ? `<button type="button" class="src-abort" onclick="abortDiscoverSource('${jsStringEscape(c.id)}')" title="Stop ${escapeAttr(c.label || c.id)}">Abort</button>` : ""}
-      ${detail ? `<span class="src-detail">${escapeHtml(detail)}</span>` : ""}
     </div>`;
   }).join("");
   el.innerHTML = `
@@ -5134,7 +6502,6 @@ function renderDiscoverPopover(disc) {
       <div class="pop-phase">${escapeHtml(phase)}</div>
     </div>
     ${lastRun ? `<div class="pop-hint discover-last-run" style="margin:0 0 8px">${escapeHtml(lastRun)}</div>` : ""}
-    ${builtinDaysControl}
     ${rows}
     <div class="pop-actions">
       <span style="flex:1;color:var(--text-dim);font-size:11px">${
@@ -5149,30 +6516,22 @@ function renderDiscoverPopover(disc) {
     </div>`;
 }
 
-function discoverButtonIdleLabel(disc) {
-  if (disc && disc.resume_available) return "Discover · continue";
-  const age = formatDiscoverAge(disc && (disc.last_finished_at || disc.finished_at));
-  const outcome = disc && disc.last_outcome;
-  if (outcome && age) return `Discover · ${outcome} · ${age}`;
-  return age ? `Discover · ${age}` : "Discover";
-}
-
 function syncDiscoverUI() {
   const btn = document.getElementById("discover-btn");
   const wrap = document.getElementById("discover-wrap");
   const disc = discoveryState;
   const running = !!(disc && disc.running);
   if (btn) {
+    const wasRunning = btn.classList.contains("running");
+    btn.disabled = false;
     if (running) {
-      btn.disabled = false;
       btn.classList.add("running");
-      btn.innerHTML = `${DISCOVER_ABORT_ICON_SVG}<span class="btn-spinner" aria-hidden="true"></span>`;
+      if (!wasRunning) btn.innerHTML = DISCOVER_RADAR_SVG;
       btn.dataset.tooltip = "Abort discovery (stop)";
       btn.setAttribute("aria-label", "Abort discovery");
     } else {
-      btn.disabled = false;
       btn.classList.remove("running");
-      btn.innerHTML = DISCOVER_ICON_SVG;
+      if (wasRunning || !btn.querySelector(".radar-idle")) btn.innerHTML = DISCOVER_RADAR_IDLE_SVG;
       btn.setAttribute("aria-label", "Start discovery");
       btn.dataset.tooltip = "Start discovery";
     }
@@ -5193,9 +6552,15 @@ function updateStatusBar(runtime) {
     bar.classList.add("visible", "discovery");
     text.textContent = disc.phase_label
       || (disc.resumed ? "Continuing previous run…" : "Discovering…");
-    const collecting = (disc.sources || []).filter(s => s.status === "collecting").length;
-    const total = (disc.sources || []).reduce((n, s) => n + (s.count || 0), 0);
-    if (meta) meta.textContent = `${total} listings · ${collecting} source${collecting === 1 ? "" : "s"} active`;
+    if (meta) {
+      if (disc.phase === "resolving" && disc.resolve_total != null) {
+        meta.textContent = `${disc.resolve_done || 0}/${disc.resolve_total} apply links`;
+      } else {
+        const collecting = (disc.sources || []).filter(s => s.status === "collecting").length;
+        const total = (disc.sources || []).reduce((n, s) => n + (s.count || 0), 0);
+        meta.textContent = `${total} listings · ${collecting} source${collecting === 1 ? "" : "s"} active`;
+      }
+    }
     return;
   }
   if (jobs.length) {
@@ -5224,34 +6589,6 @@ async function pollStatus() {
     updateStatusBar(data);
     // Region toggles affect the Open list + mission stats — re-render on change.
     if (regionsChanged) render();
-  } catch (e) { /* ignore */ }
-}
-
-async function pollFillMetrics() {
-  try {
-    const res = await fetch("/api/metrics/timeline");
-    if (!res.ok) return;
-    const data = await res.json();
-    const rateEl = document.getElementById("fill-metrics-rate");
-    const ratchetEl = document.getElementById("fill-metrics-ratchet");
-    if (!rateEl || !ratchetEl) return;
-    const latest = data.latest;
-    if (!latest || latest.pass_rate == null) {
-      rateEl.textContent = "—";
-      ratchetEl.textContent = "no evals";
-      ratchetEl.dataset.ok = "";
-      return;
-    }
-    rateEl.textContent = `${Math.round(Number(latest.pass_rate) * 100)}%`;
-    const ok = !!data.ratchet_ok;
-    ratchetEl.textContent = ok ? "ratchet ok" : "ratchet FAIL";
-    ratchetEl.dataset.ok = ok ? "1" : "0";
-    const host = document.getElementById("fill-metrics");
-    if (host && Array.isArray(data.ratchet_violations) && data.ratchet_violations.length) {
-      host.title = data.ratchet_violations.join("; ");
-    } else if (host) {
-      host.title = `Eval pass-rate ratchet · n=${latest.n || 0} · ${latest.label || "eval"}`;
-    }
   } catch (e) { /* ignore */ }
 }
 
@@ -5422,6 +6759,67 @@ function openAppliedEditor(jobId) {
 function cancelAppliedEditor() {
   editingAppliedId = null;
   render();
+}
+
+function openApplyUrlEditor(jobId) {
+  editingApplyUrlId = jobId;
+  selectedId = jobId;
+  render();
+  requestAnimationFrame(() => {
+    const input = document.getElementById("apply-url-input");
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  });
+}
+
+function cancelApplyUrlEditor() {
+  editingApplyUrlId = null;
+  render();
+}
+
+async function saveApplyUrl(jobId) {
+  const input = document.getElementById("apply-url-input");
+  if (!input) return;
+  const applyUrl = String(input.value || "").trim();
+  if (!applyUrl) {
+    alert("Apply URL is required");
+    return;
+  }
+  try {
+    new URL(applyUrl);
+  } catch (_) {
+    alert("Apply URL must be a valid http(s) URL");
+    return;
+  }
+  if (!/^https?:\/\//i.test(applyUrl)) {
+    alert("Apply URL must start with http:// or https://");
+    return;
+  }
+  const saveBtn = document.querySelector(".apply-url-editor .linkish:not(.muted)");
+  if (saveBtn) saveBtn.disabled = true;
+  try {
+    const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/apply-url`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ apply_url: applyUrl }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not save apply URL");
+    const updated = result.job;
+    if (updated && updated.id) {
+      const idx = jobs.findIndex(j => j.id === updated.id);
+      if (idx >= 0) jobs[idx] = { ...jobs[idx], ...updated };
+      lastJobsJSON = JSON.stringify(jobs);
+    }
+    editingApplyUrlId = null;
+    invalidateJobsListCache();
+    render();
+  } catch (error) {
+    alert(error.message || "Could not save apply URL");
+    if (saveBtn) saveBtn.disabled = false;
+  }
 }
 
 async function saveAppliedJob(jobId) {
@@ -5665,11 +7063,12 @@ async function poll() {
     }
     fillHoldActive = hold;
     lastJobsJSON = newJobsJSON;
-    jobs = data.jobs || [];
+    jobs = mergeJobsPreservingListTags(data.jobs || []);
+    restampAllFromJdCache();
     checkReadyForReviewAnnouncements(jobs);
     syncPollTimers();
     // Keep unsaved inline edits intact if another job changes during polling.
-    if (editingAppliedId) {
+    if (editingAppliedId || editingApplyUrlId) {
       setSyncState("live");
       return;
     }
@@ -5859,11 +7258,6 @@ if (typeof jobPostedDisplay !== "function") {
       const t = Date.parse(fb);
       if (!Number.isNaN(t)) return { time: t, iso: fb, approx: true };
     }
-    const discovered = job && job.created_at;
-    if (discovered != null && discovered !== "") {
-      const t = Date.parse(discovered);
-      if (!Number.isNaN(t)) return { time: t, iso: discovered, approx: false };
-    }
     return { time: null, iso: null, approx: false };
   };
 }
@@ -5881,13 +7275,11 @@ try {
   markDashboardPainted();
   poll();
   pollStatus();
-  pollFillMetrics();
   loadCron();
   loadPruneSettings();
   renderDiscoverPopover(null);
   syncTestModeToggleUI();
   syncPollTimers();
-  setInterval(pollFillMetrics, 15000);
   setInterval(loadCron, 15000);
   window.addEventListener("online", () => {
     poll();
@@ -5959,7 +7351,8 @@ function shouldRunUiLifecycle() {
 const REFRESH_BTN_ICON_HTML = `
   <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
     <path fill="currentColor" d="M13.65 2.35A7.96 7.96 0 0 0 8 0C3.58 0 0 3.58 0 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 8 14A6 6 0 1 1 8 2c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z"/>
-  </svg>`.trim();
+  </svg>
+  <span>Refresh dashboard</span>`.trim();
 
 function dashboardClientId() {
   let id = sessionStorage.getItem(UI_CLIENT_STORAGE_KEY);
@@ -6027,7 +7420,8 @@ async function restartDashboard() {
     });
   } catch (e) { /* server dying mid-response is expected */ }
   // Keep this window open. Launcher respawns server only; we reload in place.
-  for (let i = 0; i < 60; i++) {
+  // ~60s covers shutdown cleanup + preferred-port reclaim (avoid :8788 hop).
+  for (let i = 0; i < 120; i++) {
     await new Promise((r) => setTimeout(r, 500));
     try {
       const res = await fetch("/api/status", { cache: "no-store" });
@@ -6043,7 +7437,7 @@ async function restartDashboard() {
   }
   if (quitBtn) quitBtn.disabled = false;
   _dashboardRestartInFlight = false;
-  alert("Dashboard did not come back within ~30s. Check logs/dashboard_server.out.");
+  alert("Dashboard did not come back within ~60s. Check logs/dashboard_server.out.");
 }
 
 async function quitDashboard() {
@@ -6085,9 +7479,27 @@ document.addEventListener("click", (e) => {
   const wrap = document.getElementById("discover-wrap");
   if (wrap && !wrap.contains(e.target)) wrap.classList.remove("open");
 });
+// Logo hover menu: click/tap pins Refresh / Quit (hover/focus-within still works).
+function setBrandPopoverOpen(open) {
+  const wrap = document.getElementById("brand-wrap");
+  if (!wrap) return;
+  wrap.classList.toggle("open", !!open);
+  wrap.setAttribute("aria-expanded", open ? "true" : "false");
+}
+document.getElementById("brand-wrap")?.addEventListener("click", (e) => {
+  const wrap = document.getElementById("brand-wrap");
+  if (!wrap) return;
+  if (e.target.closest("button")) return;
+  setBrandPopoverOpen(!wrap.classList.contains("open"));
+});
+document.addEventListener("click", (e) => {
+  const wrap = document.getElementById("brand-wrap");
+  if (wrap && !wrap.contains(e.target)) setBrandPopoverOpen(false);
+});
 // Checkbox focus keeps :focus-within popovers open after mouseleave — blur on leave
 // unless the wrap is explicitly pinned (.open).
-["test-mode-wrap", "discover-wrap", "list-filters", "add-job-wrap", "prune-wrap"].forEach((id) => {
+// list-filters is click / delayed-hover only (no :focus-within open).
+["test-mode-wrap", "discover-wrap", "add-job-wrap", "prune-wrap", "brand-wrap"].forEach((id) => {
   const wrap = document.getElementById(id);
   if (!wrap) return;
   wrap.addEventListener("mouseleave", () => {

@@ -174,9 +174,11 @@ def ensure_openclaw_executable_is_cft(
 def _clear_stale_singleton(profile: Path) -> None:
     if not profile.is_dir():
         return
+    # macOS: ``pgrep -f --user-data-dir=...`` treats the pattern as a flag;
+    # always use ``pgrep -f -- <pattern>``.
     try:
         out = subprocess.check_output(
-            ["/usr/bin/pgrep", "-f", f"--user-data-dir={profile}"],
+            ["/usr/bin/pgrep", "-f", "--", f"--user-data-dir={profile}"],
             text=True,
             stderr=subprocess.DEVNULL,
         )

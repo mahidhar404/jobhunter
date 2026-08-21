@@ -10,6 +10,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -749,6 +750,8 @@ def test_app_js_company_apply_count_badge():
     row = src.split("function renderJobRow(", 1)[1].split("\nfunction ", 1)[0]
     assert 'class="co"' in row
     assert "companyApplyCountBadgeHtml(job)" in row
+    assert 'class="tag clearance"' in row
+    assert 'class="tag us-person"' in row
     sib = src.split("function toggleCompanySiblings(", 1)[1].split("\nfunction ", 1)[0]
     assert "normalizeCompanyName(company)" in sib
     html = INDEX_HTML.read_text(encoding="utf-8")
@@ -919,17 +922,15 @@ def test_pipeline_milestone_skips_detail_when_aborted():
         assert af.called
 
 
-def test_app_js_date_older_excludes_unknown():
-    """UI-040: Posted 'older' must not include unknown dates."""
+def test_app_js_date_older_includes_unknown():
+    """Posted 'older' keeps missing/~ dates; only exact young dates drop out."""
     src = APP_JS.read_text(encoding="utf-8")
     chunk = src.split("function jobMatchesDateFilter", 1)[1].split(
         "function jobMatchesSalaryFilter", 1
     )[0]
     assert 'dateFilter === "older"' in chunk
-    # Within the older branch, unknown must return false (not true).
-    older = chunk.split('dateFilter === "older"', 1)[1].split("ageDays", 1)[0]
-    assert "if (unknown) return true" not in older
-    assert "if (unknown) return false" in older
+    assert "listFilterUnsurePasses" in chunk
+    assert "jobPostedDisplay" in chunk
 
 
 def test_agent_fallback_missing_tex_forces_stuck_in_source():
@@ -1008,6 +1009,9 @@ def test_launch_script_post_reboot_port_and_python():
     src = (HERE / "launch_dashboard.sh").read_text(encoding="utf-8")
     assert "resolve_dashboard_port" in src
     assert "port_is_bindable" in src
+    assert "SO_REUSEADDR" in src
+    assert "wait_for_preferred_port_ready" in src
+    assert '[[ "${RESTARTING}" -eq 1 ]]' in src
     assert "resolve_dashboard_python" in src
     assert "remember_dashboard_port" in src
     assert "restore_dashboard_port_from_file" in src
@@ -1205,6 +1209,67 @@ def test_app_js_job_sort_fallbacks():
     assert "job_sort.js missing" in src
 
 
+def test_deleted_toolbar_filters_and_empty_deleted_side_by_side():
+    """Deleted queue: Filters and Empty deleted share the toolbar 50/50."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    src = APP_JS.read_text(encoding="utf-8")
+    assert 'class="list-filters-toolbar"' in html
+    assert re.search(
+        r'<div class="list-filters-toolbar">\s*<div class="list-filters"',
+        html,
+    )
+    assert re.search(
+        r'id="list-filters">[\s\S]*id="filters-toggle"[\s\S]*</div>\s*'
+        r'<button type="button" class="empty-deleted-btn" id="empty-deleted-btn"',
+        html,
+    )
+    assert "Empty deleted" in html
+    assert html.count('id="empty-deleted-btn"') == 1
+    assert "flex: 1 1 50%" in html
+    empty_fn = src.split("async function emptyDeleted()", 1)[1].split(
+        "\nasync function ", 1
+    )[0]
+    assert 'confirm(`Permanently remove ${n} deleted job(s)?' in empty_fn
+    assert '"/api/jobs/empty-deleted"' in empty_fn
+    assert 'classList.toggle("visible", queue === "deleted")' in src
+
+
+def test_description_api_prefers_jd_full_over_preview():
+    """Evidence JD must be the full on-disk posting, not the 500-char preview."""
+    srv = _load_server()
+    job_id = "nextgenfed-senior-statistician"
+    preview = (
+        "NextGen Federal Systems, LLC (NextGen) is seeking a Senior "
+        "Statistician … [full text in resumes/<id>/jd_full.txt]"
+    )
+    full = (
+        "NextGen Federal Systems, LLC (NextGen) is seeking a Senior Statistician "
+        "at Scott AFB.\n\nPosition Requirements\nExtensive experience in "
+        "statistical analysis, including quantitative and qualitative methods.\n"
+        "Desired Skills\nAdvanced skills in Excel, JMP, MATLAB, R, SAS.\n"
+        "NextGen is an Equal Opportunity Employer.\n"
+    )
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        resumes = td_path / "resumes" / job_id
+        resumes.mkdir(parents=True)
+        (resumes / "jd_full.txt").write_text(full, encoding="utf-8")
+        job = {
+            "id": job_id,
+            "title": "Senior Statistician",
+            "company": "nextgenfed",
+            "job_description": preview,
+        }
+        with mock.patch.object(srv, "RESUMES_DIR", td_path / "resumes"):
+            raw, source = srv.load_raw_job_description(job)
+            cleaned = srv.sanitize_job_description_for_display(raw)
+        assert source == "jd_full.txt"
+        assert "Position Requirements" in cleaned
+        assert "Equal Opportunity Employer" in cleaned
+        assert "full text in resumes" not in cleaned
+        assert len(cleaned) > len(preview)
+
+
 def test_header_branding_omnidex_without_insights():
     """Logo is OmniDex; Insights toggle must not sit under the KPI strip."""
     html = (HERE / "static" / "index.html").read_text(encoding="utf-8")
@@ -1215,10 +1280,25 @@ def test_header_branding_omnidex_without_insights():
     assert "<summary>Insights</summary>" not in html
     assert 'id="mission-stats"' in html
     assert 'id="stat-stuck"' in html
+    # Refresh / Quit live under the OmniDex logo hover menu, not header-actions.
+    assert 'id="brand-wrap"' in html
+    assert 'id="brand-popover"' in html
+    brand_idx = html.index('id="brand-wrap"')
+    pop_idx = html.index('id="brand-popover"')
+    refresh_idx = html.index('id="refresh-btn"')
+    quit_idx = html.index('id="quit-btn"')
+    header_actions_idx = html.index('id="header-actions"')
+    assert brand_idx < pop_idx < refresh_idx < quit_idx < header_actions_idx
+    assert "restartDashboard()" in html[refresh_idx : refresh_idx + 200]
+    assert "quitDashboard()" in html[quit_idx : quit_idx + 200]
+    assert "Refresh dashboard" in html[pop_idx:header_actions_idx]
+    assert "Quit dashboard" in html[pop_idx:header_actions_idx]
     src = APP_JS.read_text(encoding="utf-8")
     assert "function pollStats" not in src
     assert "function renderInsights" not in src
     assert "insightsStats" not in src
+    assert "setBrandPopoverOpen" in src
+    assert '"brand-wrap"' in src
 
 
 def test_app_js_activity_dot_active_vs_ready():
@@ -1301,6 +1381,16 @@ def test_app_js_activity_dot_active_vs_ready():
         "",
         "",
     ]
+
+
+def test_add_job_hover_does_not_steal_search_focus():
+    """Add-URL mouseenter must not yank focus from #search while typing."""
+    src = APP_JS.read_text(encoding="utf-8")
+    assert 'getElementById("add-job-wrap")' in src
+    # Guard: skip autofocus when another control (e.g. Search) is active.
+    assert "wrap.contains(active)" in src
+    assert 'getElementById("search")' in src
+    assert "add-job-url" in src
 
 
 def test_index_html_embedded_browser_boot():
@@ -1768,7 +1858,7 @@ if __name__ == "__main__":
     test_ready_hold_copy_no_cancel()
     test_ingest_hold_honors_full_abort_set()
     test_pipeline_milestone_skips_detail_when_aborted()
-    test_app_js_date_older_excludes_unknown()
+    test_app_js_date_older_includes_unknown()
     test_agent_fallback_missing_tex_forces_stuck_in_source()
     test_app_js_surfaces_deleted_and_skip_without_classic()
     test_classic_routes_redirect_to_ops()
@@ -1798,11 +1888,14 @@ if __name__ == "__main__":
     test_app_js_start_failure_invalidates_etag_not_just_json()
     test_app_js_optimistic_fill_restores_fast_poll()
     test_temp_applied_count_override_is_null()
-    test_kpi_counts_use_active_list_filters()
-    test_list_filters_persist_globally_in_localstorage()
+    test_kpi_counts_use_per_family_filter_state()
+    test_list_filters_persist_per_family_in_localstorage()
     test_app_js_setqueue_only_from_user_tab_clicks()
     test_app_js_boot_render_without_auto_queue()
     test_header_tooltip_css_covers_nested_buttons_without_click_capture()
+    test_deleted_toolbar_filters_and_empty_deleted_side_by_side()
+    test_description_api_prefers_jd_full_over_preview()
     test_header_branding_omnidex_without_insights()
     test_app_js_activity_dot_active_vs_ready()
+    test_add_job_hover_does_not_steal_search_focus()
     print("OK test_dashboard_bugs")

@@ -17,15 +17,28 @@ Policy:
     "Senior Architect" (and any other * Architect) is dropped.
   - Clearance / intel: drop when title, company, location, description, or
     URL clearly requires or emphasizes security clearance (TS/SCI,
-    polygraph, Secret/Q/L clearance, “clearance required”, …) OR when the
+    polygraph, Secret/Q/L clearance, “clearance required”, eligibility to
+    obtain/maintain Secret or TS even if “desirable”, …) OR when the
     employer is an identifiable US intel / IC agency (NSA, CIA, DIA, NGA,
-    …). Do NOT drop civilian product “Security Engineer” roles at normal
-    tech companies that lack clearance-requirement language.
+    …). Preferred-only Secret with no obtain language stays. Do NOT drop
+    civilian product “Security Engineer” roles at normal tech companies
+    that lack clearance-requirement language.
   - YOE: drop when an explicit minimum required experience is **> 6**
     (≥7). Keep ≤6, ranges with lower bound ≤6, no number, undetermined.
-  - Citizenship / green card: drop only on explicit citizen-only or
-    green-card / permanent-resident **required**. Bare “authorized to
-    work” and EEO fluff stay.
+  - Citizenship / green card / U.S. Person: drop on explicit citizen-only
+    or green-card / permanent-resident **required**, recruiter slang
+    (USC/GC, “Visa: USC and GC only”), **U.S. Person required**, ITAR, or
+    export-controlled data. Mere “U.S. Person preferred” without required
+    stays. Bare “authorized to work”, EEO fluff, and **no visa
+    sponsorship** / “unable to sponsor” stay (those are not USC/GC-only).
+    Jobs that clearly **do** sponsor H-1B/visas also stay unless a
+    citizen/GC/US-Person hard requirement is present.
+  - Staffing agencies: drop when the *company name* matches known
+    agency/staffing tokens (Insight Global, Randstad, …). JD boilerplate
+    about not accepting staffing submissions is ignored.
+  - Employment type: drop when ``job_type`` is an explicit non-full-time
+    label (contract, C2C, part-time, temp, intern, volunteer, …). Empty /
+    unknown / fulltime stays.
   - Work mode (remote/hybrid/onsite): detection for UI only — never prune.
   - Salary: extract for UI display only — never prune. Strict clear
     ranges/figures; softer fallback stamped separately (UI ``~``).
@@ -41,7 +54,7 @@ import unicodedata
 # Mirror the same semantic set in dashboard/static/app.js.
 SENIORITY_EXCLUDE_RE = re.compile(
     r"\b("
-    r"principal|staff|lead|manager|mgr|director|vp|svp|evp|"
+    r"principal|(?<!technical\s)staff|lead|manager|mgr|director|vp|svp|evp|"
     r"vice[\s-]+president|head\s+of|chief|founder|partner|fellow|"
     r"distinguished|supervisor|architect|cto|ceo|cpo|cfo|coo|cio"
     r")\b",
@@ -432,6 +445,25 @@ CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE = re.compile(
     re.I,
 )
 
+# Preferred-only *Secret* (no obtain/maintain) is not a hard prune.
+# Eligibility to obtain/maintain Secret or TS — including "desirable" —
+# is a barrier and must NOT be stripped here.
+CLEARANCE_PREFERRED_ONLY_RE = re.compile(
+    r"("
+    r"\b(?:an?\s+)?(?:active\s+)?"
+    r"(?:secret|top[\s\-]*secret|ts(?:[\s_/.\-]*sci)?|security)?[\s\-]*"
+    r"clearance\s+is\s+preferred\b|"
+    r"\b(?:active\s+)?(?:secret|top[\s\-]*secret|security)[\s\-]*"
+    r"clearance\s+preferred\b|"
+    r"\bclearance[\s\-]*preferred\b|"
+    r"\bpreferred[\s:]+(?:an?\s+)?(?:active\s+)?"
+    r"(?:secret|top[\s\-]*secret|ts|security)?[\s\-]*clearance\b|"
+    r"\bsecurity[\s\-]*clearance\s+verification\b|"
+    r"\bclearance\s+verification\b"
+    r")",
+    re.I,
+)
+
 # Strong clearance-requirement / cleared-role signals. Intentionally avoids
 # bare "secret" / "security" / "classified as" so product Security Engineer
 # and "trade secret" copy stay keepable.
@@ -440,7 +472,7 @@ CLEARANCE_REQUIREMENT_RE = re.compile(
     # Common cleared-role tokens (title + JD)
     r"\bts[\s_/.\-]*sci\b|"
     r"\btop[\s\-]*secret\b|"
-    r"\bpolygraph\b|"
+    r"(?<!employee\s)\bpolygraph\b|"
     r"\b(?:ci|full[\s\-]*scope)[\s\-]*poly(?:graph)?\b|"
     r"\b(?:q|l)[\s\-]*clearance\b|"
     r"\bdoe[\s\-]*(?:q|l)\b|"
@@ -450,8 +482,8 @@ CLEARANCE_REQUIREMENT_RE = re.compile(
     r"\bactive[\s\-]*(?:ts|sci|secret|top[\s\-]*secret|security)?[\s\-]*clearance\b|"
     r"\b(?:ts|secret|top[\s\-]*secret)[\s\-]*cleared\b|"
     r"\bcleared[\s\-]*(?:candidate|personnel|position|role|engineer|scientist)\b|"
-    # Soft "clearance requirements" (plural) + required/preferred/…
-    r"\bclearance[\s\-]*(?:required|preferred|mandatory|needed|necessary|"
+    # Soft "clearance requirements" (plural) + required/mandatory/…
+    r"\bclearance[\s\-]*(?:required|mandatory|needed|necessary|"
     r"eligibility|level|requirements?)\b|"
     # Requirement verbs near "clearance"
     r"\b(?:must|require[ds]?|required|need(?:s|ed)?|possess(?:es|ing)?|"
@@ -459,7 +491,7 @@ CLEARANCE_REQUIREMENT_RE = re.compile(
     r"ability\s+to\s+obtain|able\s+to\s+obtain|"
     r"currently\s+(?:hold|have)|have\s+an?\s+active)"
     r".{0,48}clearance\b|"
-    r"\bclearance(?![\s:\-|*]*\bnot\b).{0,24}(?:required|preferred|mandatory|needed)\b|"
+    r"\bclearance(?![\s:\-|*]*\bnot\b).{0,24}(?:required|mandatory|needed)\b|"
     # Classified-work phrasing (not "classified as full-time")
     r"\bclassified\s+(?:information|environment|program|material|data|"
     r"systems?|networks?|work|facility|facilities)\b|"
@@ -487,7 +519,7 @@ CLEARANCE_REQUIREMENT_RE = re.compile(
     r"currently\s+(?:hold|have)|have\s+an?\s+active|maintain(?:ing)?)"
     r".{0,48}public\s+trust\b|"
     r"\bpublic\s+trust(?:\s+clearance)?[\s\-]*"
-    r"(?:required|preferred|mandatory|needed)\b"
+    r"(?:required|mandatory|needed)\b"
     r")",
     re.I,
 )
@@ -614,6 +646,48 @@ _YOE_TENURE_BEFORE_RE = re.compile(
     r")\s*$",
     re.I,
 )
+# Immediate trailing context: "10 years ago", "12 years old", "18 years of age".
+_YOE_TENURE_AFTER_RE = re.compile(
+    r"^\s*(?:ago|old|in\s+business|of\s+age|"
+    r"of\s+(?:excellence|service|operation|history))\b",
+    re.I,
+)
+
+# Preferred / approximate YOE near a match — never a hard prune.
+_YOE_SOFT_BEFORE_RE = re.compile(
+    r"(?:"
+    r"~|"
+    r"\b(?:preferred|desired|ideally|optional|bonus)\b|"
+    r"\bideal(?:ly)?(?:\s+candidate)?\b|"
+    r"\bnice\s+to\s+have\b|"
+    r"\ba\s+plus\b|"
+    r"\bexcited\s+if\s+you\s+have\b|"
+    r"\bwe(?:['’]re|\s+are)\s+excited\s+if\b"
+    r").{0,100}$",
+    re.I | re.S,
+)
+_YOE_SOFT_AFTER_RE = re.compile(
+    r"^\s*(?:is\s+)?(?:preferred|desired|a\s+plus|nice\s+to\s+have|bonus)\b",
+    re.I,
+)
+
+
+def _yoe_match_is_soft(blob: str, start: int, end: int | None = None) -> bool:
+    """True when the YOE hit is tenure, preferred, or approximate — not required."""
+    if _yoe_match_is_company_tenure(blob, start, end):
+        return True
+    pre = blob[max(0, start - 100) : start]
+    if _YOE_SOFT_BEFORE_RE.search(pre):
+        return True
+    if end is not None and _YOE_SOFT_AFTER_RE.search(blob[end : end + 48]):
+        return True
+    window_end = len(blob) if end is None else min(len(blob), end + 48)
+    chunk = blob[start:window_end]
+    if re.search(r"\bequivalent\b", chunk, re.I) and re.search(
+        r"\bor\s+$", blob[max(0, start - 24) : start], re.I
+    ):
+        return True
+    return False
 
 # Tier-2 YOE (display only — never prune). Prefer recall over precision; UI ~.
 # Strict uses contiguous \w+ {0,3}; fallback allows hyphens/slashes, truncations
@@ -715,7 +789,85 @@ CITIZENSHIP_OR_GC_REQUIREMENT_RE = re.compile(
     r"\bmust\s+be\s+(?:a\s+)?(?:permanent\s+resident|lawful\s+permanent\s+resident)\b|"
     r"\b(?:permanent\s+resident|lawful\s+permanent\s+resident)\s+(?:status\s+)?"
     r"required\b|"
-    r"\bonly\s+(?:u\.?s\.?|us)\s+(?:citizens?|permanent\s+residents?)\b"
+    r"\bonly\s+(?:u\.?s\.?|us)\s+(?:citizens?|permanent\s+residents?)\b|"
+    r"\bgreen\s*card\s+holders?\s+only\b|"
+    r"\bonly\s+green\s*card\s+holders?\b|"
+    r"\bgreen\s*cards?\s+only\b|"
+    r"\b(?:u\.?s\.?|us|united\s+states)\s+citizens?\s+(?:and|or)\s+"
+    r"(?:green\s*card(?:\s+holders?)?|permanent\s+residents?|gc)\s+only\b|"
+    r"\busc\s*(?:and|&|/)\s*gc(?:\s+only)?\b(?!\s+(?:is\s+)?preferred)|"
+    r"\bgc\s*(?:and|&|/)\s*usc(?:\s+only)?\b(?!\s+(?:is\s+)?preferred)|"
+    r"\busc\s*/\s*gc\b(?!\s+(?:is\s+)?preferred)|"
+    r"\bgc\s*/\s*usc\b(?!\s+(?:is\s+)?preferred)|"
+    r"\bvisa\s*:\s*usc\b(?!\s+(?:and\s+gc\s+)?(?:is\s+)?preferred)"
+    r")",
+    re.I,
+)
+
+# Mere "U.S. Person preferred" is not a hard prune. Strip before matching
+# required / ITAR / export-controlled language.
+US_PERSON_PREFERRED_ONLY_RE = re.compile(
+    r"("
+    r"\b(?:u\.?s\.?|us)\s+persons?(?:\s+status)?\s+(?:is\s+)?preferred\b|"
+    r"\bpreferred[\s:]+(?:a\s+)?(?:u\.?s\.?|us)\s+person(?:\s+status)?\b"
+    r")",
+    re.I,
+)
+
+# ITAR / export-controlled / U.S. Person **required** (not citizenship-only).
+# Bare "(ITAR)" in an EAR/OFAC regulation list, and "If access to
+# export-controlled … is required" license boilerplate, are not gates.
+US_PERSON_IF_EXPORT_BOILERPLATE_RE = re.compile(
+    r"\bif\s+access\s+to\s+export[\s\-]?controlled\b.{0,280}?\bis\s+required\b",
+    re.I | re.S,
+)
+US_PERSON_REQUIRED_RE = re.compile(
+    r"("
+    r"\b(?:u\.?s\.?|us)\s+persons?(?:\s+status)?\s+(?:is\s+)?required\b|"
+    r"\brequire[sd]?\s+(?:a\s+)?(?:u\.?s\.?|us)\s+person(?:\s+status)?\b|"
+    r"\bmust\s+be\s+(?:a\s+)?(?:u\.?s\.?|us)\s+person\b|"
+    r"\bonly\s+(?:u\.?s\.?|us)\s+persons?\b|"
+    r"\b(?:u\.?s\.?|us)\s+persons?\s+only\b|"
+    r"\bitar\s+requirements?\b|"
+    r"\bitar[\s\-]controlled\b|"
+    r"\bsubject\s+to\s+itar\b|"
+    r"\bitar\b.{0,48}(?:required|restricted|compliance)\b|"
+    r"\b(?:requires?|requiring|needs?|needing|must\s+have)\s+access\s+to\s+"
+    r"(?:u\.?s\.?\s+)?export[\s\-]?controlled\b|"
+    r"\baccess(?:es|ing)?(?:\s+to)?\s+export[\s\-]?controlled\s+"
+    r"(?:data|information|items?|material|technology|source)\b"
+    r")",
+    re.I,
+)
+
+# No H-1B / visa help. Distinct from citizen/GC-only so a posting that
+# *does* sponsor can still be kept when it lacks a citizen/GC hard gate.
+NO_VISA_SPONSORSHIP_RE = re.compile(
+    r"("
+    r"\bno\s+(?:visa\s+|h-?1b\s+|immigration\s+)?sponsorship\b|"
+    r"\bwithout\s+(?:(?:the\s+)?(?:need\s+for\s+)?)?(?:employer\s+|company\s+)?"
+    r"(?:visa\s+|h-?1b\s+|immigration\s+)?sponsorship\b|"
+    r"\b(?:does|do|will|can)\s+not\s+sponsor\b|"
+    r"\bunable\s+to\s+sponsor\b|"
+    r"\bcannot\s+sponsor\b|"
+    r"\bnot\s+(?:able|willing)\s+to\s+sponsor\b|"
+    r"\bno\s+(?:visa\s+)?sponsor(?:ship)?\s+(?:available|provided|offered)\b|"
+    r"\bsponsorship\s+(?:is\s+)?(?:not\s+available|unavailable)\b"
+    r")",
+    re.I,
+)
+
+# Positive "we sponsor" — must not match "we do not sponsor".
+SPONSORS_VISA_RE = re.compile(
+    r"("
+    r"\bwe\s+(?:do\s+)?sponsor(?:s)?\s+(?:h-?1b|visas?|work\s+visas?)\b|"
+    r"\b(?:company|employer)\s+sponsors?\s+(?:h-?1b|visas?)\b|"
+    r"\b(?:visa|h-?1b|immigration)\s+sponsorship\s+(?:is\s+)?"
+    r"(?:available|provided|offered|ok|okay)\b|"
+    r"\b(?:will|can|may)\s+sponsor\s+(?:h-?1b|visas?|work\s+visas?)\b|"
+    r"\bsponsorship\s+(?:is\s+)?(?:available|provided|offered)\b|"
+    r"\bopen\s+to\s+(?:visa|h-?1b|immigration)\s+sponsorship\b|"
+    r"\bprovides?\s+(?:visa|h-?1b)\s+sponsorship\b"
     r")",
     re.I,
 )
@@ -730,6 +882,10 @@ _WORK_MODE_HYBRID_RE = re.compile(
     r"\bremote\s+and\s+(?:in[\s\-]?office|on[\s\-]?site|onsite)\b|"
     r"\b(?:in[\s\-]?office|on[\s\-]?site|onsite)\s+and\s+remote\b|"
     r"\b\d+\s*(?:days?|x)\s+(?:a|per)\s+week\s+in\s+(?:the\s+)?(?:office|on[\s\-]?site)\b|"
+    r"\b\d+\s+days?\s+(?:a|per)\s+week\s+(?:in|at)\s+(?:the\s+|our\s+)?"
+    r"(?:\w+\s+){0,6}office\b|"
+    r"\boffice\s+\d+\s+days?\s+(?:a|per)\s+week\b|"
+    r"\bin\s+(?:the\s+|our\s+)?(?:\w+\s+){0,6}office\s+\d+\s+days?\s+(?:a|per)\s+week\b|"
     r"\b(?:partially|part[\s\-]?time)\s+remote\b"
     r")",
     re.I,
@@ -796,9 +952,47 @@ _WORK_MODE_FALLBACK_ONSITE_RE = re.compile(
     r"\bno\s+remote\b|"
     r"\bon[\s\-]?site\s+only\b|"
     r"\breport(?:ing)?\s+to\s+(?:the\s+)?(?:office|hq)\b|"
-    r"\boffice\s+presence\s+required\b"
+    r"\boffice\s+presence\s+required\b|"
+    r"\b(?:preferred|optional)\s+on[\s\-]?site\b|"
+    r"\bnot\s+a\s+remote\s+(?:position|role|job)\b|"
+    r"\bbased\s+at\s+.{0,48}headquarters\b"
     r")",
     re.I,
+)
+
+_REMOTE_PRODUCT_AFTER_RE = re.compile(
+    r"^\s*(?:access|support|desktop|monitoring|procedure|control|session|tools?)\b",
+    re.I,
+)
+_REMOTE_NEGATED_WINDOW_RE = re.compile(
+    r"("
+    r"\bnot\s+a\s+remote\s+(?:position|role|job|opportunity)\b|"
+    r"\bnot\s+remote\s+(?:position|role|job)\b|"
+    r"\bthis\s+is\s+not\s+remote\b|"
+    r"\bremote\s+(?:work|employment)?\s+is\s+not\s+available\b|"
+    r"\bno\s+remote\s+(?:work|option|positions?)\b|"
+    r"\bremote\s+applicants?\s+will\s+not\b|"
+    r"\bnot\s+available\s+for\s+remote\b|"
+    r"\bnon[\s\-]?remote\b"
+    r")",
+    re.I,
+)
+_REMOTE_STRONG_SPAN_RE = re.compile(
+    r"fully\s+remote|remote[\s\-]?first|work\s+from\s+home|\bwfh\b",
+    re.I,
+)
+_ONSITE_AMENITY_AFTER_RE = re.compile(
+    r"^\s*(?:gym|fitness|cafeteria|cafe|perks?|childcare|parking|"
+    r"clinic|doctor|medical|wellness)\b",
+    re.I,
+)
+_ONSITE_INTERVIEW_AFTER_RE = re.compile(
+    r"^\s*(?:interview|screening|whiteboarding)\b",
+    re.I,
+)
+_ONSITE_SOFT_BEFORE_RE = re.compile(
+    r"\b(?:preferred|optional)\b.{0,24}$",
+    re.I | re.S,
 )
 
 
@@ -806,6 +1000,47 @@ def _fold_accents(text: str) -> str:
     """NFKD fold so México / São Paulo match ascii country/city tokens."""
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def _remote_match_is_noise(blob: str, m: re.Match) -> bool:
+    """True when 'remote' is product language or an explicit not-remote role."""
+    span = m.group(0)
+    if _REMOTE_STRONG_SPAN_RE.search(span):
+        return False
+    # "Non-Remote" / "non remote" titles must not count as remote.
+    pre = blob[max(0, m.start() - 4) : m.start()]
+    if re.search(r"non[\s\-]?$", pre, re.I):
+        return True
+    post = blob[m.end() : m.end() + 24]
+    if _REMOTE_PRODUCT_AFTER_RE.search(post):
+        return True
+    window = blob[max(0, m.start() - 56) : m.end() + 56]
+    return bool(_REMOTE_NEGATED_WINDOW_RE.search(window))
+
+
+def _onsite_match_is_noise(blob: str, m: re.Match, *, strict: bool) -> bool:
+    """True when on-site is an amenity, interview, or (strict) preferred/optional."""
+    span = m.group(0)
+    if re.search(r"relocate|relocation", span, re.I):
+        return False
+    post = blob[m.end() : m.end() + 32]
+    if _ONSITE_AMENITY_AFTER_RE.search(post) or _ONSITE_INTERVIEW_AFTER_RE.search(post):
+        return True
+    if strict:
+        pre = blob[max(0, m.start() - 24) : m.start()]
+        if _ONSITE_SOFT_BEFORE_RE.search(pre):
+            return True
+    return False
+
+
+def _work_mode_hit(rx: re.Pattern, blob: str, kind: str, *, strict: bool) -> bool:
+    for m in rx.finditer(blob):
+        if kind == "remote" and _remote_match_is_noise(blob, m):
+            continue
+        if kind == "onsite" and _onsite_match_is_noise(blob, m, strict=strict):
+            continue
+        return True
+    return False
 
 
 def is_excluded_title(title: str | None) -> bool:
@@ -889,15 +1124,23 @@ def requires_security_clearance(
     )
     if not blob.strip():
         return False
-    # Drop explicit "required: No/None" labels, then re-check positives.
+    # Drop explicit "required: No/None" and preferred-only labels, then
+    # re-check hard positives.
     cleaned = CLEARANCE_EXPLICITLY_NOT_REQUIRED_RE.sub(" ", blob)
+    cleaned = CLEARANCE_PREFERRED_ONLY_RE.sub(" ", cleaned)
     return bool(CLEARANCE_REQUIREMENT_RE.search(cleaned))
 
 
-def _yoe_match_is_company_tenure(blob: str, start: int) -> bool:
+def _yoe_match_is_company_tenure(
+    blob: str, start: int, end: int | None = None
+) -> bool:
     """True when the match is company age / history, not a candidate requirement."""
     pre = blob[max(0, start - 64) : start]
-    return bool(_YOE_TENURE_BEFORE_RE.search(pre))
+    if _YOE_TENURE_BEFORE_RE.search(pre):
+        return True
+    if end is not None and _YOE_TENURE_AFTER_RE.search(blob[end : end + 32]):
+        return True
+    return False
 
 
 def extract_min_required_yoe(
@@ -926,7 +1169,7 @@ def extract_min_required_yoe(
     # the upper bound of "5-7 years".
     range_spans: list[tuple[int, int]] = []
     for m in _YOE_RANGE_RE.finditer(blob):
-        if _yoe_match_is_company_tenure(blob, m.start()):
+        if _yoe_match_is_soft(blob, m.start(), m.end()):
             continue
         lo, hi = int(m.group(1)), int(m.group(2))
         mins.append(min(lo, hi))
@@ -942,7 +1185,7 @@ def extract_min_required_yoe(
             start, end = m.span()
             if any(rs <= start < re_ for rs, re_ in range_spans):
                 continue
-            if _yoe_match_is_company_tenure(blob, start):
+            if _yoe_match_is_soft(blob, start, end):
                 continue
             mins.append(int(m.group(1)))
     if not mins:
@@ -976,7 +1219,7 @@ def extract_min_required_yoe_fallback(
     mins: list[int] = []
     range_spans: list[tuple[int, int]] = []
     for m in _YOE_FALLBACK_RANGE_RE.finditer(blob):
-        if _yoe_match_is_company_tenure(blob, m.start()):
+        if _yoe_match_is_soft(blob, m.start(), m.end()):
             continue
         lo, hi = int(m.group(1)), int(m.group(2))
         mins.append(min(lo, hi))
@@ -998,7 +1241,7 @@ def extract_min_required_yoe_fallback(
             start = m.start()
             if any(rs <= start < re_ for rs, re_ in range_spans):
                 continue
-            if _yoe_match_is_company_tenure(blob, start):
+            if _yoe_match_is_soft(blob, start, m.end()):
                 continue
             mins.append(int(m.group(1)))
     if not mins:
@@ -1021,13 +1264,17 @@ def requires_excessive_experience(
     return ymin is not None and ymin > MAX_ACCEPTABLE_MIN_YOE
 
 
-def requires_us_citizen_or_greencard(
+def requires_us_person(
     *,
     title: str | None = None,
     description: str | None = None,
     text: str | None = None,
 ) -> bool:
-    """True only on explicit US-citizen / green-card / PR hard requirements."""
+    """True on U.S. Person required, ITAR, or export-controlled data.
+
+    Mere “U.S. Person preferred” without required / ITAR / export-controlled
+    is False. No-sponsorship language is not a US-Person gate.
+    """
     blob = " ".join(
         str(part or "")
         for part in (text, title, description)
@@ -1035,7 +1282,53 @@ def requires_us_citizen_or_greencard(
     )
     if not blob.strip():
         return False
-    return bool(CITIZENSHIP_OR_GC_REQUIREMENT_RE.search(blob))
+    cleaned = US_PERSON_PREFERRED_ONLY_RE.sub(" ", blob)
+    cleaned = US_PERSON_IF_EXPORT_BOILERPLATE_RE.sub(" ", cleaned)
+    return bool(US_PERSON_REQUIRED_RE.search(cleaned))
+
+
+def stamp_clearance_us_person_tags(
+    *,
+    title: str | None = None,
+    company: str | None = None,
+    location: str | None = None,
+    description: str | None = None,
+    url: str | None = None,
+) -> dict[str, bool]:
+    """Card chips: clearance / us_person. Independent of prune timing."""
+    return {
+        "clearance": requires_security_clearance(
+            title=title,
+            company=company,
+            location=location,
+            description=description,
+            url=url,
+        ),
+        "us_person": requires_us_person(title=title, description=description),
+    }
+
+
+def requires_us_citizen_or_greencard(
+    *,
+    title: str | None = None,
+    description: str | None = None,
+    text: str | None = None,
+) -> bool:
+    """True on US-citizen / GC-only hard requirements or U.S. Person/ITAR.
+
+    No-sponsorship language (“unable to sponsor”, “no visa sponsorship”)
+    is not USC/GC-only and must not prune.
+    """
+    blob = " ".join(
+        str(part or "")
+        for part in (text, title, description)
+        if part
+    )
+    if not blob.strip():
+        return False
+    if CITIZENSHIP_OR_GC_REQUIREMENT_RE.search(blob):
+        return True
+    return requires_us_person(title=title, description=description, text=text)
 
 
 def detect_work_mode(
@@ -1058,8 +1351,8 @@ def detect_work_mode(
     hybrid = bool(_WORK_MODE_HYBRID_RE.search(blob))
     if hybrid:
         return "hybrid"
-    remote = bool(_WORK_MODE_REMOTE_RE.search(blob))
-    onsite = bool(_WORK_MODE_ONSITE_RE.search(blob))
+    remote = _work_mode_hit(_WORK_MODE_REMOTE_RE, blob, "remote", strict=True)
+    onsite = _work_mode_hit(_WORK_MODE_ONSITE_RE, blob, "onsite", strict=True)
     if remote and onsite:
         return "unknown"
     if remote:
@@ -1090,8 +1383,12 @@ def detect_work_mode_fallback(
     hybrid = bool(_WORK_MODE_FALLBACK_HYBRID_RE.search(blob))
     if hybrid:
         return "hybrid"
-    remote = bool(_WORK_MODE_FALLBACK_REMOTE_RE.search(blob))
-    onsite = bool(_WORK_MODE_FALLBACK_ONSITE_RE.search(blob))
+    remote = _work_mode_hit(
+        _WORK_MODE_FALLBACK_REMOTE_RE, blob, "remote", strict=False
+    )
+    onsite = _work_mode_hit(
+        _WORK_MODE_FALLBACK_ONSITE_RE, blob, "onsite", strict=False
+    )
     if remote and onsite:
         return "unknown"
     if remote:
@@ -1109,14 +1406,16 @@ def detect_work_mode_fallback(
 _SALARY_MIN_ANNUAL = 20_000
 _SALARY_MAX_ANNUAL = 1_000_000
 
-# Amount forms: $120,000 | 120,000 | $120k | 120k | USD 120000 | 120000
-_SAL_NUM_COMMA = r"\d{1,3}(?:,\d{3})+"
+# Amount forms: $120,000 | 120,000 | $120k | 120k | USD 120000 | 120000 | $8,488.33
+_SAL_NUM_COMMA = r"\d{1,3}(?:,\d{3})+(?:\\?\.\d{2})?"
 _SAL_NUM_K = r"\d{2,3}(?:\.\d{1,2})?\s*[kK]"
 _SAL_NUM_PLAIN = r"\d{5,7}"
 _SAL_NUM = rf"(?:{_SAL_NUM_COMMA}|{_SAL_NUM_K}|{_SAL_NUM_PLAIN})"
 _SAL_CUR = r"(?:\$|USD\s+)"
 _SAL_AMOUNT = rf"(?:{_SAL_CUR}\s*)?{_SAL_NUM}"
-_SAL_SEP = r"(?:\s*[-–—]\s*|\s+to\s+)"
+_SAL_SEP = (
+    r"(?:\s*(?:/(?:year|yr)|per\s+year)?\s*\\?[-–—]\s*|\s+to\s+)"
+)
 
 _SALARY_KW = (
     r"(?:salary|compensation|compensat(?:ed|ion)?|base(?:\s+pay|\s+salary)?|"
@@ -1184,7 +1483,12 @@ _SALARY_FUNDING_AMOUNT_RE = re.compile(
 )
 _SALARY_FUNDING_CTX_RE = re.compile(
     r"\b(?:series\s+[a-z]|raised|funding\s+round|valuation|seed\s+round|"
-    r"venture|invest(?:ed|ment)|arr\b|revenue\s+of)\b",
+    r"venture\s+(?:capital|funding|round|backed)|investment\s+round|"
+    r"\barr\b|revenue\s+of)\b",
+    re.I,
+)
+_SALARY_MONTHLY_WINDOW_RE = re.compile(
+    r"\b(?:per\s+month|monthly|/mo\b|pay\s+frequency\s*[:=]?\s*monthly)\b",
     re.I,
 )
 
@@ -1195,7 +1499,7 @@ def _parse_salary_amount(raw: str) -> int | None:
     if not s:
         return None
     s = re.sub(r"^(?:\$|USD)\s*", "", s, flags=re.I).strip()
-    s = s.replace(",", "").replace(" ", "")
+    s = s.replace(",", "").replace(" ", "").replace("\\", "")
     if not s:
         return None
     if re.search(r"[kK]$", s):
@@ -1223,6 +1527,34 @@ def _salary_is_hourly(blob: str, start: int, end: int) -> bool:
     )
 
 
+def _salary_is_monthly(blob: str, start: int, end: int) -> bool:
+    window = blob[max(0, start - 48) : min(len(blob), end + 96)]
+    return bool(_SALARY_MONTHLY_WINDOW_RE.search(window))
+
+
+def _salary_annualize_if_monthly(
+    pair: dict | None, blob: str, start: int, end: int
+) -> dict | None:
+    if not pair:
+        return None
+    if not _salary_is_monthly(blob, start, end):
+        return pair
+    lo = pair.get("min")
+    hi = pair.get("max")
+    if lo is not None and lo >= _SALARY_MIN_ANNUAL:
+        return pair  # already annual-sized
+    if lo is not None:
+        pair = dict(pair)
+        pair["min"] = int(round(lo * 12))
+        if hi is not None:
+            pair["max"] = int(round(hi * 12))
+    if not _salary_sane(pair.get("min")):
+        return None
+    if pair.get("max") is not None and not _salary_sane(pair["max"]):
+        pair["max"] = None
+    return pair
+
+
 def _salary_is_funding_noise(blob: str, start: int, end: int) -> bool:
     window = blob[max(0, start - 40) : min(len(blob), end + 40)]
     if _SALARY_FUNDING_AMOUNT_RE.search(window):
@@ -1232,18 +1564,23 @@ def _salary_is_funding_noise(blob: str, start: int, end: int) -> bool:
     return False
 
 
+def _salary_plausible_amount(n: int | None) -> bool:
+    """Allow monthly-sized figures; caller annualizes then applies annual bounds."""
+    return n is not None and 1_000 <= n <= _SALARY_MAX_ANNUAL
+
+
 def _salary_pair_from_groups(
     a_raw: str | None,
     b_raw: str | None,
 ) -> dict | None:
     a = _parse_salary_amount(a_raw) if a_raw else None
     b = _parse_salary_amount(b_raw) if b_raw else None
-    if not _salary_sane(a) and not _salary_sane(b):
+    if not _salary_plausible_amount(a) and not _salary_plausible_amount(b):
         return None
-    if _salary_sane(a) and _salary_sane(b):
+    if _salary_plausible_amount(a) and _salary_plausible_amount(b):
         lo, hi = (a, b) if a <= b else (b, a)
         return {"min": lo, "max": hi, "period": "year"}
-    n = a if _salary_sane(a) else b
+    n = a if _salary_plausible_amount(a) else b
     return {"min": n, "max": None, "period": "year"}
 
 
@@ -1275,18 +1612,25 @@ def extract_salary(
     candidates: list[dict] = []
     range_spans: list[tuple[int, int]] = []
 
-    def consider(m: re.Match, a_key: str = "a", b_key: str = "b") -> None:
+    def consider(
+        m: re.Match,
+        a_key: str = "a",
+        b_key: str = "b",
+        *,
+        ignore_funding: bool = False,
+    ) -> None:
         if _salary_is_hourly(blob, m.start(), m.end()):
             return
-        if _salary_is_funding_noise(blob, m.start(), m.end()):
+        if not ignore_funding and _salary_is_funding_noise(blob, m.start(), m.end()):
             return
         gd = m.groupdict()
         pair = _salary_pair_from_groups(gd.get(a_key), gd.get(b_key))
-        if pair:
+        pair = _salary_annualize_if_monthly(pair, blob, m.start(), m.end())
+        if pair and _salary_sane(pair.get("min")):
             candidates.append(pair)
 
     for m in _SALARY_LABEL_RE.finditer(blob):
-        consider(m)
+        consider(m, ignore_funding=True)
         if m.group("b"):
             range_spans.append(m.span())
     for m in _SALARY_RANGE_RE.finditer(blob):
@@ -1314,7 +1658,8 @@ def extract_salary(
         if _salary_is_funding_noise(blob, span_start, span_end):
             continue
         pair = _salary_pair_from_groups(m.group("a"), None)
-        if pair:
+        pair = _salary_annualize_if_monthly(pair, blob, span_start, span_end)
+        if pair and _salary_sane(pair.get("min")):
             candidates.append(pair)
 
     if not candidates:
@@ -1348,7 +1693,8 @@ def extract_salary_fallback(
         a_raw = gd.get(a_key) or gd.get("a2")
         b_raw = gd.get(b_key) or gd.get("b2")
         pair = _salary_pair_from_groups(a_raw, b_raw)
-        if pair:
+        pair = _salary_annualize_if_monthly(pair, blob, m.start(), m.end())
+        if pair and _salary_sane(pair.get("min")):
             candidates.append(pair)
 
     for m in _SALARY_FALLBACK_NEAR_KW_RE.finditer(blob):
@@ -1460,6 +1806,53 @@ def extract_inr_salary(
     return None
 
 
+# Company-name only. JDs often say "we do not accept staffing agencies".
+STAFFING_DENY_HINTS = (
+    "staffing",
+    "recruiting agency",
+    "talent acquisition partners",
+    "randstad",
+    "robert half",
+    "adecco",
+    "manpower",
+    "kforce",
+    "insight global",
+)
+
+
+def looks_like_staffing(company: str | None) -> bool:
+    """True when the employer name is a staffing / recruiting agency."""
+    blob = str(company or "").lower()
+    return any(h in blob for h in STAFFING_DENY_HINTS)
+
+
+# Explicit non-FT employment types from scrapers (JobSpy / Remotive / RSS).
+# Unknown / empty / "fulltime" stay keepable — under-prune when unsure.
+_EXCLUDED_JOB_TYPES = frozenset({
+    "contract",
+    "contractor",
+    "c2c",
+    "corpcorp",
+    "corp2corp",
+    "parttime",
+    "temporary",
+    "temp",
+    "intern",
+    "internship",
+    "freelance",
+    "volunteer",
+    "seasonal",
+})
+
+
+def is_excluded_job_type(job_type: str | None) -> bool:
+    """True when ``job_type`` is an explicit non-full-time employment label."""
+    jt = re.sub(r"[\s_\-]+", "", str(job_type or "").lower())
+    if not jt or jt in ("fulltime", "fullt", "permanent", "nan", "none", "null"):
+        return False
+    return jt in _EXCLUDED_JOB_TYPES
+
+
 def should_keep_listing(
     *,
     title: str | None = None,
@@ -1467,6 +1860,7 @@ def should_keep_listing(
     company: str | None = None,
     description: str | None = None,
     url: str | None = None,
+    job_type: str | None = None,
     regions=None,
 ) -> bool:
     """Discovery keep/drop: False = skip (seniority, region, clearance, YOE, citizen/GC).
@@ -1480,6 +1874,7 @@ def should_keep_listing(
         company=company,
         description=description,
         url=url,
+        job_type=job_type,
         regions=regions,
     ) is None
 
@@ -1491,6 +1886,7 @@ def auto_delete_reason(
     company: str | None = None,
     description: str | None = None,
     url: str | None = None,
+    job_type: str | None = None,
     regions=None,
 ) -> str | None:
     """Return prune reason code, or None if the listing should stay active.
@@ -1502,6 +1898,8 @@ def auto_delete_reason(
     """
     if is_excluded_title(title):
         return "management_track"
+    if is_excluded_job_type(job_type):
+        return "contract"
     if not location_matches_regions(location, regions):
         return "non_us_location"
     if requires_security_clearance(
@@ -1516,4 +1914,6 @@ def auto_delete_reason(
         return "excessive_yoe"
     if requires_us_citizen_or_greencard(title=title, description=description):
         return "citizenship_or_greencard"
+    if looks_like_staffing(company):
+        return "staffing"
     return None

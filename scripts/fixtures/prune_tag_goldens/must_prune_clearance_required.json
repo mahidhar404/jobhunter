@@ -1,0 +1,13 @@
+{
+  "id": "must_prune_clearance_required",
+  "title": "ML Engineer",
+  "company": "Fixture Defense",
+  "location": "Arlington, VA",
+  "description": "Active Top Secret / SCI clearance required. Must maintain clearance. On-site at customer facility.",
+  "expect": {
+    "keep": false,
+    "reason": "clearance_or_intel",
+    "tags": { "clearance": true, "us_person": false },
+    "work_mode": "onsite"
+  }
+}

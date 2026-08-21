@@ -36,12 +36,14 @@ RESUMES_DIR = ROOT / "resumes"
 sys.path.insert(0, str(Path(__file__).parent))
 from jobs_lock import locked_jobs_for_write
 from apply_urls import collect_all_urls, enrich_listing_urls  # noqa: E402
+from extract_job_posting import extract as extract_posting, jd_fetch_urls  # noqa: E402
 from text_normalize import (  # noqa: E402
     normalize_company,
     normalize_title,
     stamp_company_key,
 )
 from blocked_urls import (  # noqa: E402
+    block_deleted_job,
     block_keys_for_url,
     load_blocked_id_set,
     load_blocked_url_set,
@@ -63,8 +65,48 @@ from discovery_filters import (  # noqa: E402
     extract_salary,
     extract_salary_fallback,
     region_for_location,
+    stamp_clearance_us_person_tags,
 )
+from jd_quality import looks_truncated_jd  # noqa: E402
 DESCRIPTION_PREVIEW_CHARS = 500
+_NULLISH_POSTED = frozenset({"nan", "nat", "none", "null", ""})
+
+
+def _clean_posted_value(value) -> str | None:
+    """Normalize JobSpy/pandas nullish posted dates to None (never invent)."""
+    if value is None:
+        return None
+    if isinstance(value, float):
+        try:
+            import math
+            if math.isnan(value):
+                return None
+        except (TypeError, ValueError):
+            pass
+    text = str(value).strip()
+    if text.lower() in _NULLISH_POSTED:
+        return None
+    return text
+
+
+def _listing_text(*values) -> str:
+    """First usable string field; treat pandas NaN floats as empty."""
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, float):
+            try:
+                import math
+                if math.isnan(value):
+                    continue
+            except (TypeError, ValueError):
+                pass
+        text = str(value).strip()
+        if text.lower() in _NULLISH_POSTED:
+            continue
+        if text:
+            return text
+    return ""
 
 
 def trim_description(full_text: str) -> str:
@@ -161,12 +203,116 @@ def find_existing_match(item: dict, jobs: list[dict]) -> dict | None:
     return None
 
 
+def find_inactive_identity_match(item: dict, jobs: list[dict]) -> dict | None:
+    """Match deleted/inactive rows by posting key or URL so we don't mint copies."""
+    item_key = posting_key(item)
+    for job in jobs:
+        if _is_active_match_candidate(job):
+            continue
+        if item_key and item_key == posting_key(job):
+            return job
+        if exact_url_overlap(item, job):
+            return job
+    return None
+
+
+UNREACHABLE_URL_RE = re.compile(
+    r"myworkdayjobs\.com|myworkdaysite\.com|\.icims\.com|linkedin\.com",
+    re.I,
+)
+
+
+def _listing_urls(item: dict) -> list[str]:
+    urls: list[str] = []
+    for key in ("job_url_direct", "apply_url", "job_url"):
+        u = item.get(key)
+        if u and u not in urls:
+            urls.append(u)
+    return jd_fetch_urls(*urls)
+
+
+def _fetch_description_from_urls(item: dict) -> str:
+    for url in _listing_urls(item):
+        if UNREACHABLE_URL_RE.search(url or ""):
+            continue
+        try:
+            result = extract_posting(url, allow_playwright=False)
+        except Exception as exc:  # noqa: BLE001 — discovery must keep going
+            log(f"warn: JD extract failed for {url}: {exc}")
+            result = None
+        desc = ((result or {}).get("description") or "").strip()
+        if desc and not looks_truncated_jd(desc):
+            return desc
+        if desc:
+            kept = desc
+        else:
+            kept = ""
+        try:
+            result = extract_posting(url, allow_playwright=True)
+        except Exception as exc:  # noqa: BLE001
+            log(f"warn: JD playwright extract failed for {url}: {exc}")
+            result = None
+        desc = ((result or {}).get("description") or "").strip()
+        if desc and (not kept or len(desc) > len(kept)):
+            kept = desc
+        if kept and not looks_truncated_jd(kept):
+            return kept
+        if kept:
+            return kept
+    return ""
+
+
+def resolve_listing_description(item: dict) -> str:
+    """Prefer full listing text; re-fetch apply/job URL when the listing looks truncated."""
+    text = _listing_text(item.get("description"), item.get("job_description"))
+    if text and not looks_truncated_jd(text):
+        return text
+    fetched = _fetch_description_from_urls(item)
+    if fetched and (not text or len(fetched) > len(text)):
+        return fetched
+    return text
+
+
+def _existing_full_jd(existing: dict) -> str:
+    job_id = existing.get("id")
+    if job_id:
+        path = RESUMES_DIR / str(job_id) / "jd_full.txt"
+        if path.is_file():
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace").strip()
+                if text:
+                    return text
+            except OSError:
+                pass
+    return (existing.get("job_description") or "").strip()
+
+
 def fold_discovered_urls(existing: dict, item: dict) -> None:
     """Fold every discovered URL onto an existing winner without minting an id."""
     candidate = dict(item)
     if not candidate.get("job_description") and candidate.get("description"):
         candidate["job_description"] = candidate["description"]
+    incoming = (candidate.get("job_description") or "").strip()
+    existing_text = _existing_full_jd(existing)
+    if not incoming or looks_truncated_jd(incoming) or looks_truncated_jd(existing_text):
+        fetched = resolve_listing_description(item)
+        if fetched:
+            incoming = fetched
+            candidate["job_description"] = incoming
+            candidate["description"] = incoming
     fold_urls_into_winner(existing, candidate)
+    should_write = incoming and (
+        not existing_text
+        or (
+            looks_truncated_jd(existing_text)
+            and len(incoming) > len(existing_text)
+        )
+    )
+    if should_write:
+        existing["job_description"] = trim_description(incoming)
+        job_id = existing.get("id")
+        if job_id:
+            write_full_description(str(job_id), incoming)
     key = posting_key(existing) or posting_key(candidate)
     if key:
         existing["posting_key"] = key
@@ -179,6 +325,224 @@ def now_iso() -> str:
 
 def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def ingest_qualified_listings(
+    listings: list,
+    data: dict,
+    *,
+    skip_companies: set,
+    blocked_urls: set,
+    blocked_ids: set,
+    to_block: list | None = None,
+) -> dict:
+    """Append listings onto ``data['jobs']``. Prune hits become status=deleted.
+
+    Mutates ``data`` in place. ``to_block`` collects snapshots for
+    ``block_deleted_job`` after the jobs write lock is released.
+    """
+    added = upgraded = skipped_tracked = skipped_existing = skipped_blocked = 0
+    skipped_filtered: dict[str, int] = {}
+    if to_block is None:
+        to_block = []
+    existing_ids = {
+        j["id"] for j in data["jobs"] if isinstance(j, dict) and j.get("id")
+    }
+
+    for item in listings:
+        company = item.get("company") or ""
+        norm = normalize_company(company)
+        # Prefer ATS/company apply over LinkedIn/Indeed. Live search for
+        # offsite ATS links is scripts/resolve_apply_urls.py (not here —
+        # discovery must stay offline-fast and rate-limit friendly).
+        enriched = enrich_listing_urls(item)
+        url = enriched.get("job_url") or item.get("job_url") or ""
+        direct_url = item.get("job_url_direct") or ""
+        apply_url = enriched.get("apply_url") or ""
+
+        if norm in skip_companies:
+            skipped_tracked += 1
+            continue
+        base_id = f"{slugify(company)}-{slugify(item.get('title'))}"
+        if base_id in blocked_ids:
+            skipped_blocked += 1
+            continue
+        blocked_keys = set()
+        for u in collect_all_urls(item):
+            if u:
+                blocked_keys.update(block_keys_for_url(u))
+        if blocked_keys & blocked_urls:
+            skipped_blocked += 1
+            continue
+        existing_match = find_existing_match(item, data["jobs"])
+        upgrading_recovered = bool(
+            existing_match and is_recovered_stub(existing_match)
+        )
+        if existing_match and not upgrading_recovered:
+            fold_discovered_urls(existing_match, item)
+            stamp_company_key(existing_match)
+            skipped_existing += 1
+            continue
+        if not existing_match and find_inactive_identity_match(item, data["jobs"]):
+            skipped_existing += 1
+            continue
+
+        if upgrading_recovered:
+            job_id = str(existing_match["id"])
+        else:
+            job_id = generated_job_id(
+                item, existing_ids=existing_ids, blocked_ids=blocked_ids
+            )
+            if not job_id:
+                skipped_blocked += 1
+                continue
+        existing_ids.add(job_id)
+
+        # Prefer company/ATS apply; keep aggregator as job_url / source_url.
+        # Never leave apply_url empty when the listing had any URL.
+        if not apply_url:
+            apply_url = url or direct_url
+        date_posted = _clean_posted_value(item.get("date_posted"))
+        date_posted_fallback = _clean_posted_value(item.get("date_posted_fallback"))
+        # Prefer an exact posted date when present; drop redundant fallback.
+        if date_posted:
+            date_posted_fallback = None
+
+        full_description = resolve_listing_description(item)
+        title = item.get("title") or ""
+        location = item.get("location") or ""
+        prune_reason = auto_delete_reason(
+            title=title,
+            location=location,
+            company=company,
+            description=full_description,
+            url=apply_url or direct_url or url,
+            job_type=item.get("job_type"),
+        )
+
+        if full_description:
+            write_full_description(job_id, full_description)
+
+        work_mode = detect_work_mode(
+            title=title, location=location, description=full_description
+        )
+        wm_fb = detect_work_mode_fallback(
+            title=title, location=location, description=full_description
+        )
+        sal = extract_salary(title=title, description=full_description)
+        sal_fb = extract_salary_fallback(
+            title=title, description=full_description
+        )
+        inr = extract_inr_salary(title=title, description=full_description)
+        tags = stamp_clearance_us_person_tags(
+            title=title,
+            company=company,
+            location=location,
+            description=full_description,
+            url=apply_url or direct_url or url,
+        )
+        now = now_iso()
+        # Do not invent date_posted from discovery time — undated stays null;
+        # UI shows "—" (never treat created_at as a posted date).
+
+        entry = {
+            "id": job_id,
+            "company": company,
+            "title": title,
+            "location": location,
+            "source": item.get("site"),
+            "date_posted": date_posted,
+            "date_posted_fallback": date_posted_fallback,
+            "job_url": url or apply_url,
+            "apply_url": apply_url,
+            "posting_key": posting_key(item),
+            "job_description": trim_description(full_description),
+            "multi_opening": detect_multi_opening(
+                title=title, description=full_description
+            ),
+            "min_yoe": extract_min_required_yoe(
+                title=title, description=full_description
+            ),
+            "min_yoe_fallback": extract_min_required_yoe_fallback(
+                title=title, description=full_description
+            ),
+            "work_mode": work_mode,
+            "work_mode_fallback": wm_fb if work_mode == "unknown" and wm_fb != "unknown" else None,
+            "region": region_for_location(location),
+            "salary_min": (sal or {}).get("min"),
+            "salary_max": (sal or {}).get("max"),
+            "salary_min_fallback": (sal_fb or {}).get("min"),
+            "salary_max_fallback": (sal_fb or {}).get("max"),
+            "salary_inr_display": (inr or {}).get("display"),
+            "salary_inr_min_lpa": (inr or {}).get("min_lpa"),
+            "salary_inr_max_lpa": (inr or {}).get("max_lpa"),
+            "clearance": tags["clearance"],
+            "us_person": tags["us_person"],
+            "status": "discovered",
+            "status_detail": f"New listing from {item.get('site')}, posted {date_posted or 'unknown date'}.",
+            "question": None,
+            "pending_command": None,
+            "session_key": f"agent:job-hunter:job-{job_id}",
+            "resume_path": None,
+            "created_at": now,
+            "updated_at": now,
+            "qa_log": [],
+        }
+        stamp_company_key(entry)
+        if enriched.get("source_url"):
+            entry["source_url"] = enriched["source_url"]
+        if enriched.get("alternate_urls"):
+            entry["alternate_urls"] = enriched["alternate_urls"]
+        source_names = item.get("source_names")
+        if isinstance(source_names, list) and source_names:
+            entry["source_names"] = [str(s) for s in source_names if s]
+        elif item.get("site"):
+            entry["source_names"] = [str(item.get("site"))]
+        if isinstance(item.get("sources"), list) and item.get("sources"):
+            entry["sources"] = item["sources"]
+        if entry.get("source_names") and len(entry["source_names"]) > 1:
+            entry["status_detail"] = (
+                f"New listing from {', '.join(entry['source_names'])}, "
+                f"posted {date_posted or 'unknown date'}."
+            )
+        if prune_reason:
+            entry["status"] = "deleted"
+            entry["deleted_reason"] = prune_reason
+            entry["deleted_at"] = now
+            entry["status_detail"] = f"Pruned at discovery ({prune_reason})."
+            skipped_filtered[prune_reason] = skipped_filtered.get(prune_reason, 0) + 1
+            to_block.append({
+                "id": job_id,
+                "company": company,
+                "title": title,
+                "apply_url": apply_url,
+                "job_url": url or apply_url,
+                "alternate_urls": list(entry.get("alternate_urls") or []),
+            })
+        if upgrading_recovered and existing_match is not None:
+            preserved = {
+                "created_at": existing_match.get("created_at"),
+                "resume_path": existing_match.get("resume_path"),
+                "qa_log": existing_match.get("qa_log"),
+            }
+            existing_match.update(entry)
+            for field, value in preserved.items():
+                if value not in (None, [], ""):
+                    existing_match[field] = value
+            existing_match["needs_url"] = False
+            upgraded += 1
+        else:
+            data["jobs"].append(entry)
+            added += 1
+    soft_link_exact_title_peers(data["jobs"])
+    return {
+        "added": added,
+        "upgraded": upgraded,
+        "skipped_tracked": skipped_tracked,
+        "skipped_existing": skipped_existing,
+        "skipped_blocked": skipped_blocked,
+        "skipped_filtered": skipped_filtered,
+    }
 
 
 def main() -> None:
@@ -196,198 +560,40 @@ def main() -> None:
         raw = json.loads(Path(args.skip_companies).read_text())
         skip_companies = {normalize_company(c) for c in raw}
 
-    added, upgraded, skipped_tracked, skipped_existing, skipped_blocked = 0, 0, 0, 0, 0
-    skipped_filtered: dict[str, int] = {}
     blocked_urls = load_blocked_url_set()
     blocked_ids = load_blocked_id_set()
+    to_block: list[dict] = []
     with locked_jobs_for_write() as data:
-        existing_ids = {
-            j["id"] for j in data["jobs"] if isinstance(j, dict) and j.get("id")
-        }
+        stats = ingest_qualified_listings(
+            listings,
+            data,
+            skip_companies=skip_companies,
+            blocked_urls=blocked_urls,
+            blocked_ids=blocked_ids,
+            to_block=to_block,
+        )
+    for snap in to_block:
+        try:
+            block_deleted_job(snap, keep_tombstone=True)
+        except TypeError:
+            try:
+                block_deleted_job(snap)
+            except Exception as e:
+                log(f"warn: block on prune tombstone {snap.get('id')}: {e}")
+        except Exception as e:
+            log(f"warn: block on prune tombstone {snap.get('id')}: {e}")
 
-        for item in listings:
-            company = item.get("company") or ""
-            norm = normalize_company(company)
-            # Prefer ATS/company apply over LinkedIn/Indeed. Live search for
-            # offsite ATS links is scripts/resolve_apply_urls.py (not here —
-            # discovery must stay offline-fast and rate-limit friendly).
-            enriched = enrich_listing_urls(item)
-            url = enriched.get("job_url") or item.get("job_url") or ""
-            direct_url = item.get("job_url_direct") or ""
-            apply_url = enriched.get("apply_url") or ""
-
-            if norm in skip_companies:
-                skipped_tracked += 1
-                continue
-            base_id = f"{slugify(company)}-{slugify(item.get('title'))}"
-            if base_id in blocked_ids:
-                skipped_blocked += 1
-                continue
-            blocked_keys = set()
-            for u in collect_all_urls(item):
-                if u:
-                    blocked_keys.update(block_keys_for_url(u))
-            if blocked_keys & blocked_urls:
-                skipped_blocked += 1
-                continue
-            existing_match = find_existing_match(item, data["jobs"])
-            upgrading_recovered = bool(
-                existing_match and is_recovered_stub(existing_match)
-            )
-            if existing_match and not upgrading_recovered:
-                fold_discovered_urls(existing_match, item)
-                stamp_company_key(existing_match)
-                skipped_existing += 1
-                continue
-
-            if upgrading_recovered:
-                job_id = str(existing_match["id"])
-            else:
-                job_id = generated_job_id(
-                    item, existing_ids=existing_ids, blocked_ids=blocked_ids
-                )
-                if not job_id:
-                    skipped_blocked += 1
-                    continue
-            existing_ids.add(job_id)
-
-            # Prefer company/ATS apply; keep aggregator as job_url / source_url.
-            # Never leave apply_url empty when the listing had any URL.
-            if not apply_url:
-                apply_url = url or direct_url
-            date_posted = item.get("date_posted")
-            if date_posted in ("nan", "None", ""):
-                date_posted = None
-            # Approximate posted date derived from a relative "Posted N Days
-            # Ago" string; only meaningful when there's no exact date.
-            date_posted_fallback = item.get("date_posted_fallback")
-            if date_posted or date_posted_fallback in ("nan", "None", ""):
-                date_posted_fallback = None
-
-            full_description = item.get("description") or ""
-            title = item.get("title") or ""
-            location = item.get("location") or ""
-            # dedup_listings.py already applies these rules at qualify time,
-            # but this script is also fed by hand-built listing files and by
-            # per-ATS runs that skip that step, so re-check here rather than
-            # trusting the caller.
-            prune_reason = auto_delete_reason(
-                title=title,
-                location=location,
-                company=company,
-                description=full_description,
-                url=apply_url or direct_url or url,
-            )
-            if prune_reason:
-                skipped_filtered[prune_reason] = skipped_filtered.get(prune_reason, 0) + 1
-                continue
-
-            if full_description:
-                write_full_description(job_id, full_description)
-
-            work_mode = detect_work_mode(
-                title=title, location=location, description=full_description
-            )
-            wm_fb = detect_work_mode_fallback(
-                title=title, location=location, description=full_description
-            )
-            sal = extract_salary(title=title, description=full_description)
-            sal_fb = extract_salary_fallback(
-                title=title, description=full_description
-            )
-            # India LPA/lakh pay is display-only (never pruned); stamp when found.
-            inr = extract_inr_salary(title=title, description=full_description)
-            now = now_iso()
-            if not date_posted and not date_posted_fallback:
-                date_posted = now
-
-            entry = {
-                "id": job_id,
-                "company": company,
-                "title": title,
-                "location": location,
-                "source": item.get("site"),
-                "date_posted": date_posted,
-                "date_posted_fallback": date_posted_fallback,
-                "job_url": url or apply_url,
-                "apply_url": apply_url,
-                "posting_key": posting_key(item),
-                "job_description": trim_description(full_description),
-                "multi_opening": detect_multi_opening(
-                    title=title, description=full_description
-                ),
-                "min_yoe": extract_min_required_yoe(
-                    title=title, description=full_description
-                ),
-                "min_yoe_fallback": extract_min_required_yoe_fallback(
-                    title=title, description=full_description
-                ),
-                "work_mode": work_mode,
-                "work_mode_fallback": wm_fb if work_mode == "unknown" and wm_fb != "unknown" else None,
-                "region": region_for_location(location),
-                "salary_min": (sal or {}).get("min"),
-                "salary_max": (sal or {}).get("max"),
-                "salary_min_fallback": (sal_fb or {}).get("min"),
-                "salary_max_fallback": (sal_fb or {}).get("max"),
-                "salary_inr_display": (inr or {}).get("display"),
-                "salary_inr_min_lpa": (inr or {}).get("min_lpa"),
-                "salary_inr_max_lpa": (inr or {}).get("max_lpa"),
-                "status": "discovered",
-                "status_detail": f"New listing from {item.get('site')}, posted {date_posted or 'unknown date'}.",
-                "question": None,
-                "pending_command": None,
-                "session_key": f"agent:job-hunter:job-{job_id}",
-                "resume_path": None,
-                "created_at": now,
-                "updated_at": now,
-                "qa_log": [],
-            }
-            stamp_company_key(entry)
-            if enriched.get("source_url"):
-                entry["source_url"] = enriched["source_url"]
-            if enriched.get("alternate_urls"):
-                entry["alternate_urls"] = enriched["alternate_urls"]
-            source_names = item.get("source_names")
-            if isinstance(source_names, list) and source_names:
-                entry["source_names"] = [str(s) for s in source_names if s]
-            elif item.get("site"):
-                entry["source_names"] = [str(item.get("site"))]
-            if isinstance(item.get("sources"), list) and item.get("sources"):
-                entry["sources"] = item["sources"]
-            if entry.get("source_names") and len(entry["source_names"]) > 1:
-                entry["status_detail"] = (
-                    f"New listing from {', '.join(entry['source_names'])}, "
-                    f"posted {date_posted or 'unknown date'}."
-                )
-            if upgrading_recovered and existing_match is not None:
-                preserved = {
-                    "created_at": existing_match.get("created_at"),
-                    "resume_path": existing_match.get("resume_path"),
-                    "qa_log": existing_match.get("qa_log"),
-                }
-                existing_match.update(entry)
-                for field, value in preserved.items():
-                    if value not in (None, [], ""):
-                        existing_match[field] = value
-                # Stub no longer needs a URL once discovery folded real links in.
-                existing_match["needs_url"] = False
-                upgraded += 1
-            else:
-                data["jobs"].append(entry)
-                added += 1
-        soft_link_exact_title_peers(data["jobs"])
-
-    log(f"added: {added}")
-    if upgraded:
-        log(f"upgraded recovered stubs: {upgraded}")
-    if skipped_tracked:
-        log(f"skipped (already tracked): {skipped_tracked}")
-    if skipped_existing:
-        log(f"skipped (already in jobs.json): {skipped_existing}")
-    if skipped_blocked:
-        log(f"skipped (user-deleted / blocked URL): {skipped_blocked}")
-    for reason in sorted(skipped_filtered):
-        log(f"skipped ({reason}): {skipped_filtered[reason]}")
+    log(f"added: {stats['added']}")
+    if stats["upgraded"]:
+        log(f"upgraded recovered stubs: {stats['upgraded']}")
+    if stats["skipped_tracked"]:
+        log(f"skipped (already tracked): {stats['skipped_tracked']}")
+    if stats["skipped_existing"]:
+        log(f"skipped (already in jobs.json): {stats['skipped_existing']}")
+    if stats["skipped_blocked"]:
+        log(f"skipped (user-deleted / blocked URL): {stats['skipped_blocked']}")
+    for reason in sorted(stats["skipped_filtered"]):
+        log(f"tombstoned ({reason}): {stats['skipped_filtered'][reason]}")
     log(f"done (total {time.monotonic() - run_start:.2f}s)")
 
 

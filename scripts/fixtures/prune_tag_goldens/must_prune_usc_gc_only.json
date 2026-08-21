@@ -1,0 +1,13 @@
+{
+  "id": "must_prune_usc_gc_only",
+  "title": "Data Engineer",
+  "company": "Fixture Gov",
+  "location": "Remote, US",
+  "description": "Must be a U.S. Citizen or Green Card holder. No exceptions. We do not sponsor.",
+  "expect": {
+    "keep": false,
+    "reason": "citizenship_or_greencard",
+    "tags": { "clearance": false, "us_person": false },
+    "work_mode": "remote"
+  }
+}

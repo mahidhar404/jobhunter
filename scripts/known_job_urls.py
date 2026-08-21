@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Known job URL keys for discovery scrapers — skip re-fetch / re-write.
 
-Collects normalized URL keys from jobs.json (all statuses), blocked_urls
-tombstones, and optional listing JSON files already on disk. Scrapers use
-these to avoid detail-page fetches and duplicate listing rows for postings
-we already have.
+Collects normalized URL keys (and ``posting:<key>`` tokens) from jobs.json
+(all statuses), blocked_urls tombstones, and optional listing JSON files
+already on disk. Scrapers use these to avoid detail-page fetches and
+duplicate listing rows for postings we already have.
 """
 from __future__ import annotations
 
@@ -32,6 +32,16 @@ def add_url_keys(keys: set[str], url: str | None) -> None:
         keys.add(n)
 
 
+def _add_posting_key_token(keys: set[str], posting: str | None) -> None:
+    pk = str(posting or "").strip().lower()
+    if not pk:
+        return
+    if pk.startswith("posting:"):
+        keys.add(pk)
+    else:
+        keys.add(f"posting:{pk}")
+
+
 def load_jobs_url_keys(jobs_path: Path | None = None) -> set[str]:
     path = jobs_path or JOBS_FILE
     keys: set[str] = set()
@@ -48,6 +58,7 @@ def load_jobs_url_keys(jobs_path: Path | None = None) -> set[str]:
             add_url_keys(keys, job.get(f))
         for u in job.get("alternate_urls") or []:
             add_url_keys(keys, u)
+        _add_posting_key_token(keys, job.get("posting_key"))
     return keys
 
 
@@ -94,6 +105,38 @@ def url_is_known(url: str | None, known: set[str]) -> bool:
             return True
     n = normalize_url(url) or str(url).strip()
     return bool(n and n in known)
+
+
+def listing_is_known(item: dict | None, known: set[str]) -> bool:
+    """True when any URL / posting_key on the listing is already known."""
+    if not item or not known or not isinstance(item, dict):
+        return False
+    for f in ("job_url", "job_url_direct", "apply_url", "source_url"):
+        if url_is_known(item.get(f), known):
+            return True
+    for u in item.get("alternate_urls") or []:
+        if url_is_known(u, known):
+            return True
+    pk = str(item.get("posting_key") or "").strip().lower()
+    if pk and (pk in known or f"posting:{pk}" in known):
+        return True
+    return False
+
+
+def filter_out_known_listings(
+    listings: list[dict], known: set[str],
+) -> tuple[list[dict], int]:
+    """Drop rows already in the known set. Returns (kept, skipped_count)."""
+    if not known:
+        return list(listings or []), 0
+    kept: list[dict] = []
+    skipped = 0
+    for item in listings or []:
+        if listing_is_known(item, known):
+            skipped += 1
+            continue
+        kept.append(item)
+    return kept, skipped
 
 
 def write_skip_urls_file(path: Path, keys: set[str] | list[str]) -> Path:

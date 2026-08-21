@@ -50,7 +50,7 @@ import json
 import re
 import sys
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -118,8 +118,8 @@ DEFAULT_MAX_PAGES_PER_TERM = 15
 # URLs (zero listings, or only URLs already seen this run).
 # Built In "New Jobs" UI options only (postedDateFilterOptions filterValue):
 # Past 24 hours=1, Past 3 days=3, Past week=7, Past month=30. No 14-day option.
-SUPPORTED_DAYS_SINCE_UPDATED = (1, 3, 7, 30)
-DEFAULT_DAYS_SINCE_UPDATED = 1
+SUPPORTED_DAYS_SINCE_UPDATED = tuple(range(1, 11))
+DEFAULT_DAYS_SINCE_UPDATED = 7
 DAYS_SINCE_UPDATED = DEFAULT_DAYS_SINCE_UPDATED  # CLI/dashboard can override
 # National board (builtin.com/jobs) is US-scoped; criteria.country=USA is the
 # verified United States filter. allLocations=true clears country and pulls
@@ -315,48 +315,9 @@ def unwrap_tracking_redirect(url: str) -> str:
 _JOB_INIT_RE = re.compile(r"Builtin\.jobPostInit\(")
 _META_DESC_RE = re.compile(r'<meta name="description" content="([^"]+)"')
 _LOCATION_RE = re.compile(r"^.+? is hiring for an? .+? in (.+?)\.\s*Find more details")
-# The posted date IS on every job page - in the embedded schema.org JobPosting
-# ld+json as "datePosted":"YYYY-MM-DD" (verified live: present on 18/18 sampled
-# postings). It's absent from the jobPostInit JSON, which earlier led to the
-# wrong assumption that no date was available; the ld+json block has it.
-_DATE_POSTED_RE = re.compile(r'"datePosted"\s*:\s*"([^"]+)"')
-_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
-# Card/header chrome carries only a relative string ("Posted 2 Days Ago",
-# "Posted Yesterday", "Reposted 3 Hours Ago"). Day-granular at best, and it
-# drifts as the page ages, so it never overwrites a real "datePosted" - it
-# lands in date_posted_fallback and renders with the "~" approximate marker.
-_RELATIVE_POSTED_RE = re.compile(
-    r"(?:Re)?[Pp]osted\s+(?:(\d+)\+?\s*(minute|hour|day|week|month)s?\s*ago"
-    r"|(today|yesterday))",
-    re.IGNORECASE,
-)
-_RELATIVE_UNIT_DAYS = {"minute": 0, "hour": 0, "day": 1, "week": 7, "month": 30}
-
-
-def extract_date_posted(html: str) -> tuple[str | None, str | None]:
-    """(exact, approximate) posted dates as YYYY-MM-DD, either may be None.
-
-    ``exact`` comes from the embedded schema.org JobPosting "datePosted".
-    ``approximate`` is derived from a relative "Posted N Days Ago" string and
-    is only meaningful when ``exact`` is None.
-    """
-    exact = None
-    md = _DATE_POSTED_RE.search(html)
-    if md:
-        raw = md.group(1).strip()
-        # Normalize an ISO datetime ("2026-08-04T..." / "2026-08-04") to a
-        # plain YYYY-MM-DD; leave any other format untouched for the write step.
-        exact = raw[:10] if _ISO_DATE_RE.match(raw) else raw
-
-    approx = None
-    mr = _RELATIVE_POSTED_RE.search(html)
-    if mr:
-        if mr.group(3):
-            days = 0 if mr.group(3).lower() == "today" else 1
-        else:
-            days = int(mr.group(1)) * _RELATIVE_UNIT_DAYS[mr.group(2).lower()]
-        approx = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
-    return exact, approx
+# Posted dates live in shared posted_date.py (ld+json datePosted + relative
+# Posted/Reposted). Re-exported here so existing callers/tests keep working.
+from posted_date import extract_date_posted  # noqa: E402
 
 
 def _extract_job_init_json(html: str) -> dict | None:
@@ -505,7 +466,7 @@ def main() -> None:
         type=int,
         default=DEFAULT_DAYS_SINCE_UPDATED,
         choices=list(SUPPORTED_DAYS_SINCE_UPDATED),
-        help="Built In New Jobs filter: 1 / 3 / 7 / 30 (default: 1 = past 24 hours)",
+        help="Built In daysSinceUpdated lookback: 1–10 days (default: 7)",
     )
     parser.add_argument(
         "--skip-urls", default=None,

@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from known_job_urls import (  # noqa: E402
+    filter_out_known_listings,
     load_known_url_keys,
     load_skip_urls_file,
     url_is_known,
@@ -37,6 +38,7 @@ class KnownJobUrlsTests(unittest.TestCase):
                     "job_url": "https://jobs.lever.co/acme/abc",
                     "apply_url": "https://jobs.lever.co/acme/abc/apply",
                     "alternate_urls": ["https://www.indeed.com/viewjob?jk=1"],
+                    "posting_key": "lever.co:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
                 }]
             }))
             listing = td_path / "listing.json"
@@ -51,10 +53,24 @@ class KnownJobUrlsTests(unittest.TestCase):
             )
             self.assertTrue(url_is_known("https://jobs.lever.co/acme/abc", keys))
             self.assertTrue(url_is_known("https://builtin.com/job/foo/123", keys))
+            self.assertIn(
+                "posting:lever.co:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", keys
+            )
             out = td_path / "skip.json"
             write_skip_urls_file(out, keys)
             loaded = load_skip_urls_file(out)
             self.assertEqual(keys, loaded)
+
+    def test_filter_out_known_listings(self) -> None:
+        known = {"https://remoteok.com/remote-jobs/1"}
+        rows = [
+            {"job_url": "https://remoteok.com/remote-jobs/1", "title": "Old"},
+            {"job_url": "https://remoteok.com/remote-jobs/2", "title": "New"},
+        ]
+        kept, skipped = filter_out_known_listings(rows, known)
+        self.assertEqual(skipped, 1)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]["title"], "New")
 
 
 if __name__ == "__main__":

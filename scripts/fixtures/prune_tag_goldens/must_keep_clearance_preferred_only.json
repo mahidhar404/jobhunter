@@ -1,0 +1,13 @@
+{
+  "id": "must_keep_clearance_preferred_only",
+  "title": "Analytics Engineer",
+  "company": "Fixture Soft",
+  "location": "Boston, MA",
+  "description": "Security clearance preferred but not required. Build dbt models. On-site 3 days/week hybrid.",
+  "expect": {
+    "keep": true,
+    "reason": null,
+    "tags": { "clearance": false, "us_person": false },
+    "work_mode": "hybrid"
+  }
+}

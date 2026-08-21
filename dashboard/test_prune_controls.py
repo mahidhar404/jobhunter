@@ -60,6 +60,69 @@ def test_prune_subset_moves_only_selected_reason() -> None:
     assert by_id["started"]["status"] == "tailoring"
 
 
+def test_anduril_us_person_ts_sweep_prunes_and_tags() -> None:
+    """Full JD (not truncated preview) drives US Person + obtain-TS prune and chips."""
+    jd = (
+        "U.S. Person status is required as this position needs to access "
+        "export controlled data. Eligibility to obtain/maintain a US Top Secret "
+        "clearance is also desirable."
+    )
+    jobs = {
+        "jobs": [
+            {
+                "id": "anduril-ml-infra",
+                "title": "Software Engineer - ML Infrastructure",
+                "company": "Anduril",
+                "location": "Costa Mesa, CA, US",
+                "status": "discovered",
+                "job_description": (
+                    "Anduril intro … [full text in resumes/<id>/jd_full.txt]"
+                ),
+                "apply_url": "https://example.com/anduril-ml",
+            },
+            {
+                "id": "keep-sponsor",
+                "title": "ML Engineer",
+                "company": "Acme",
+                "location": "Remote, US",
+                "status": "discovered",
+                "job_description": "We are unable to sponsor visas for this role.",
+                "apply_url": "https://example.com/keep-sponsor",
+            },
+        ]
+    }
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        jobs_file = root / "jobs.json"
+        jobs_file.write_text(json.dumps(jobs))
+        jd_dir = root / "anduril-ml-infra"
+        jd_dir.mkdir()
+        (jd_dir / "jd_full.txt").write_text(jd, encoding="utf-8")
+        with (
+            mock.patch.object(srv, "JOBS_FILE", jobs_file),
+            mock.patch.object(srv, "JOBS_LOCK_FILE", jobs_file.with_suffix(".json.lock")),
+            mock.patch.object(srv, "RESUMES_DIR", root),
+            mock.patch.object(srv, "block_deleted_job", return_value=[]),
+        ):
+            moved = srv._auto_delete_sweep_once(
+                {"clearance_or_intel", "citizenship_or_greencard"}
+            )
+            saved = json.loads(jobs_file.read_text())["jobs"]
+
+    by_id = {job["id"]: job for job in saved}
+    assert moved == 1
+    assert by_id["anduril-ml-infra"]["status"] == "deleted"
+    assert by_id["anduril-ml-infra"]["deleted_reason"] in (
+        "clearance_or_intel",
+        "citizenship_or_greencard",
+    )
+    assert by_id["anduril-ml-infra"]["clearance"] is True
+    assert by_id["anduril-ml-infra"]["us_person"] is True
+    assert by_id["keep-sponsor"]["status"] == "discovered"
+    assert by_id["keep-sponsor"]["clearance"] is False
+    assert by_id["keep-sponsor"]["us_person"] is False
+
+
 def test_prune_settings_round_trip_and_defaults() -> None:
     with tempfile.TemporaryDirectory() as td:
         settings_file = Path(td) / "prune_settings.json"
@@ -188,6 +251,37 @@ def test_stale_listing_prune_is_optional_and_defaults_on() -> None:
     assert saved["old-role"]["status"] == "deleted"
     assert saved["old-role"]["deleted_reason"] == "stale_listing"
     assert saved["fresh-role"]["status"] == "discovered"
+
+
+def test_stale_does_not_use_created_at() -> None:
+    """Discovery time must not count as a posted date for stale prune."""
+    old_created = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
+    jobs = {
+        "jobs": [
+            {
+                "id": "undated-old-discovery",
+                "title": "ML Engineer",
+                "location": "Austin, TX",
+                "status": "discovered",
+                "apply_url": "https://example.com/undated",
+                "date_posted": None,
+                "created_at": old_created,
+                "job_description": "3+ years of experience building models.",
+            },
+        ]
+    }
+    with tempfile.TemporaryDirectory() as td:
+        jobs_file = Path(td) / "jobs.json"
+        jobs_file.write_text(json.dumps(jobs))
+        with (
+            mock.patch.object(srv, "JOBS_FILE", jobs_file),
+            mock.patch.object(srv, "JOBS_LOCK_FILE", jobs_file.with_suffix(".json.lock")),
+            mock.patch.object(srv, "block_deleted_job", return_value=[]),
+        ):
+            moved = srv._auto_delete_sweep_once({"stale_listing"})
+            saved = {j["id"]: j for j in json.loads(jobs_file.read_text())["jobs"]}
+    assert moved == 0
+    assert saved["undated-old-discovery"]["status"] == "discovered"
 
 
 def test_stale_uses_exact_date_posted_only() -> None:
@@ -342,6 +436,30 @@ def test_app_js_stale_and_yoe_hide_ignore_approx() -> None:
     assert "date_posted_fallback" not in stale_fn
     assert "STALE_LISTING_MAX_AGE_DAYS = 10" in js
     assert "Listing posted more than 10 days ago" in js
+
+
+def test_unresolved_apply_url_in_prune_defaults_and_alias() -> None:
+    assert "unresolved_apply_url" in srv.PRUNE_REASON_CODES
+    with tempfile.TemporaryDirectory() as td:
+        settings_file = Path(td) / "prune_settings.json"
+        with mock.patch.object(srv, "PRUNE_SETTINGS_FILE", settings_file):
+            defaults = srv.load_prune_settings()
+            assert "unresolved_apply_url" in defaults["reasons"]
+            # Legacy alias accepted when saving
+            saved = srv.save_prune_settings({
+                "interval_s": 300,
+                "reasons": ["apply_resolve_failed", "stale_listing"],
+            })
+            assert saved["reasons"] == ["stale_listing", "unresolved_apply_url"]
+
+
+def test_unresolved_apply_url_chip_in_ui() -> None:
+    js = (ROOT / "dashboard" / "static" / "app.js").read_text()
+    html = (ROOT / "dashboard" / "static" / "index.html").read_text()
+    assert "Unresolved URL" in js
+    assert "unresolved_apply_url" in js
+    assert 'data-prune-reason="unresolved_apply_url"' in html
+    assert ".tag.unresolved-url" in html
 
 
 if __name__ == "__main__":

@@ -1,0 +1,13 @@
+{
+  "id": "must_prune_and_tag_us_person",
+  "title": "Applied Scientist",
+  "company": "Fixture Export",
+  "location": "Seattle, WA",
+  "description": "U.S. Person status is required as this position needs to access export controlled data. Remote-friendly.",
+  "expect": {
+    "keep": false,
+    "reason": "citizenship_or_greencard",
+    "tags": { "clearance": false, "us_person": true },
+    "work_mode": "remote"
+  }
+}

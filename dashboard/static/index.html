@@ -183,6 +183,7 @@
     min-height: 36px;
   }
   .brand {
+    position: relative;
     display: flex;
     flex-direction: row;
     align-items: center;
@@ -190,6 +191,8 @@
     padding: 4px 12px;
     gap: 7px;
     white-space: nowrap;
+    cursor: default;
+    outline: none;
   }
   .brand .mark {
     flex: 0 0 auto;
@@ -203,6 +206,81 @@
     white-space: nowrap;
     text-transform: none;
     font-variant-ligatures: none;
+  }
+  .brand:focus-visible .mark {
+    text-shadow: 0 0 16px var(--blue-mid), 0 0 0 1px var(--cyan);
+  }
+  .brand-popover {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 8px;
+    z-index: 50;
+    min-width: 168px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-elev);
+    box-shadow: 0 12px 32px #000a;
+    font-size: 11px;
+    color: var(--text);
+    border-radius: var(--radius-md);
+  }
+  .brand::after {
+    content: "";
+    display: none;
+    position: absolute;
+    left: 0; right: 0;
+    top: 100%;
+    height: 6px;
+    z-index: 49;
+  }
+  .brand:hover::after,
+  .brand:focus-within::after,
+  .brand.open::after { display: block; }
+  .brand:hover .brand-popover,
+  .brand:focus-within .brand-popover,
+  .brand.open .brand-popover { display: flex; flex-direction: column; gap: 2px; }
+  .brand-menu-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    margin: 0;
+    padding: 7px 9px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-dim);
+    font: 11px/1.2 var(--sans);
+    letter-spacing: 0.02em;
+    text-align: left;
+    cursor: pointer;
+    box-sizing: border-box;
+  }
+  .brand-menu-btn svg {
+    width: 14px; height: 14px; flex: none; display: block;
+  }
+  .brand-menu-btn .icon-glyph {
+    width: 14px; flex: none;
+    font-size: 16px; line-height: 1;
+    text-align: center;
+  }
+  .brand-menu-btn:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+    border-color: var(--border-hi);
+  }
+  .brand-menu-btn:focus-visible {
+    outline: none;
+    border-color: var(--cyan);
+    box-shadow: 0 0 0 1px var(--cyan);
+    color: var(--text);
+  }
+  .brand-menu-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  #quit-btn.brand-menu-btn:hover:not(:disabled) {
+    border-color: var(--red);
+    color: var(--red);
+    background: var(--red-dim);
   }
   .sync-dot {
     flex: none;
@@ -257,8 +335,6 @@
   .mstat.open .n { color: var(--blue); }
   .mstat.skipped .n { color: var(--text-mute); }
   .mstat[data-queue="applied"] .n { color: var(--green); }
-  .mstat.fill-metrics .l[data-ok="1"] { color: #2f9e44; }
-  .mstat.fill-metrics .l[data-ok="0"] { color: #c92a2a; font-weight: 600; }
   .ops-body {
     flex: 1;
     display: grid;
@@ -311,10 +387,18 @@
   }
   .icon-btn:hover { color: var(--text); border-color: var(--border-hi); }
 
-  .list-filters {
-    position: relative;
+  .list-filters-toolbar {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
     padding: 8px 10px 6px;
     flex-shrink: 0;
+  }
+  .list-filters {
+    position: relative;
+    padding: 0;
+    flex: 1 1 50%;
+    min-width: 0;
     z-index: 40;
     overflow: visible;
   }
@@ -323,14 +407,13 @@
     content: "";
     display: none;
     position: absolute;
-    left: 10px;
-    right: 10px;
+    left: 0;
+    right: 0;
     top: 100%;
     height: 8px;
     z-index: 49;
   }
-  .list-filters:hover::after,
-  .list-filters:focus-within::after,
+  /* Open only via .open (click or delayed hover) — not instant :hover */
   .list-filters.open::after { display: block; }
   .filters-toggle {
     position: relative;
@@ -357,8 +440,6 @@
     background: var(--cyan-mid);
   }
   .filters-toggle.has-active,
-  .list-filters:hover .filters-toggle,
-  .list-filters:focus-within .filters-toggle,
   .list-filters.open .filters-toggle {
     color: var(--cyan);
     border-color: var(--cyan);
@@ -370,8 +451,8 @@
     display: none;
     position: absolute;
     top: calc(100% + 4px);
-    left: 10px;
-    right: 10px;
+    left: 0;
+    right: 0;
     z-index: 50;
     padding: 10px;
     border: 1px solid var(--blue-edge);
@@ -383,8 +464,6 @@
     flex-direction: column;
     gap: 8px;
   }
-  .list-filters:hover .filters-popover,
-  .list-filters:focus-within .filters-popover,
   .list-filters.open .filters-popover { display: flex; }
   .filters-popover input[type="search"],
   .filters-popover select {
@@ -392,7 +471,8 @@
     box-sizing: border-box;
     background: var(--bg);
     border: 1px solid var(--border);
-    padding: 5px 8px;
+    /* Extra right pad so the native chevron does not clip Mode labels. */
+    padding: 5px 22px 5px 8px;
     font-family: var(--mono);
     font-size: 11px;
     color: var(--text);
@@ -539,20 +619,28 @@
   .list-filter-empty button:hover { background: var(--cyan-dim); }
   .empty-deleted-btn {
     display: none;
-    width: 100%;
+    flex: 1 1 50%;
+    min-width: 0;
+    box-sizing: border-box;
+    align-items: center;
+    justify-content: center;
     background: var(--red-dim);
     border: 1px solid var(--red-edge);
     color: var(--red);
-    padding: 5px 8px;
-    font-size: 10px;
-    letter-spacing: 0.06em;
+    padding: 6px 10px;
+    font-size: 11px;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
     cursor: pointer;
     font-family: var(--mono);
     border-radius: var(--radius-sm);
   }
-  .empty-deleted-btn.visible { display: block; }
+  .empty-deleted-btn.visible { display: flex; }
   .empty-deleted-btn:hover { background: #5a202030; }
+  #queue-pane.deleted-theme .list-filters,
+  #queue-pane.deleted-theme .empty-deleted-btn.visible {
+    flex: 1 1 50%;
+  }
 
   #queue-pane.deleted-theme {
     background: var(--trash-bg);
@@ -589,7 +677,7 @@
     position: relative;
   }
   .trash-btn.active {
-    border-color: var(--red-edge);
+    border-color: transparent;
     color: var(--red);
     background: var(--red-dim);
   }
@@ -608,14 +696,32 @@
   }
   .trash-badge:empty, .trash-badge[data-n="0"] { display: none; }
 
-  /* Mode = green; YOE = orange; salary = blood-orange; applied-count = blood-orange; sources = blue. */
+  /* Mode = green; YOE = orange; salary = blood-orange; applied-count = blood-orange; sources = blue.
+     Sentence-case labels (Remote / Hybrid / In-person) — do not force ALL CAPS. */
   .tag.work-mode,
   .tag.mode-tag {
     color: var(--green);
     border-color: var(--green-edge);
     background: var(--green-dim);
+    text-transform: none;
+    letter-spacing: 0.02em;
   }
   .tag.yoe { color: var(--orange); border-color: var(--orange-edge); background: var(--orange-dim); }
+  .tag.clearance,
+  .tag.us-person {
+    color: var(--red);
+    border-color: var(--red-edge);
+    background: var(--red-dim);
+    text-transform: none;
+    letter-spacing: 0.02em;
+  }
+  .tag.unresolved-url {
+    color: var(--orange);
+    border-color: var(--orange-edge);
+    background: var(--orange-dim);
+    text-transform: none;
+    letter-spacing: 0.02em;
+  }
   .tag.salary,
   .tag.applied-count {
     color: var(--blood-orange);
@@ -947,6 +1053,67 @@
     letter-spacing: 0;
   }
   .id-meta .resolve-apply-btn:hover { color: #5aadff; }
+  .id-meta .apply-resolve-note {
+    font-size: 11px;
+    color: var(--text-mute);
+    white-space: nowrap;
+  }
+  .id-meta .apply-resolve-note.failed {
+    color: var(--orange);
+  }
+  .id-meta .apply-url-host {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    vertical-align: middle;
+  }
+  .id-meta .apply-url-edit-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    margin: 0;
+    background: none;
+    border: 0;
+    color: var(--blue);
+    cursor: pointer;
+    flex-shrink: 0;
+    line-height: 0;
+  }
+  .id-meta .apply-url-edit-btn svg {
+    width: 12px;
+    height: 12px;
+    display: block;
+  }
+  .id-meta .apply-url-edit-btn:hover { color: #5aadff; }
+  .id-meta .apply-url-placeholder {
+    font-size: 11px;
+    color: var(--text-mute);
+  }
+  .id-meta .apply-url-editor {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+  }
+  .id-meta .apply-url-input {
+    box-sizing: border-box;
+    min-width: 180px;
+    max-width: min(420px, 100%);
+    padding: 3px 6px;
+    border: 1px solid var(--border-hi);
+    background: var(--bg);
+    color: var(--text);
+    font: 11px var(--mono);
+  }
+  .id-meta .apply-url-input:focus {
+    outline: none;
+    border-color: var(--cyan);
+  }
+  .id-meta .linkish.muted { color: var(--text-mute); }
 
   .source-chips {
     display: flex;
@@ -1087,6 +1254,19 @@
   .evidence mark.amber {
     background: var(--amber-dim);
     color: var(--amber);
+  }
+  /* Active search needles (green) — distinct from cyan evidence marks / orange prune */
+  mark.search-hit,
+  .job-row mark.search-hit,
+  .jd-body mark.search-hit,
+  .evidence mark.search-hit {
+    color: var(--green);
+    background: #3dbf8a33;
+    border-radius: 2px;
+    padding: 0 0.12em;
+    font-weight: 650;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
   }
 
   .actions-row {
@@ -1918,11 +2098,17 @@
     display: inline-flex; align-items: center; justify-content: center;
     width: 30px; height: 30px; min-width: 30px; min-height: 30px;
     padding: 0 !important;
+    border: none;
     border-radius: var(--radius-md);
+  }
+  .header-actions .header-icon-btn:hover {
+    border-color: transparent;
+  }
+  .header-actions .header-icon-btn:focus-visible {
+    border-color: transparent;
   }
   .header-icon-btn svg { width: 17px; height: 17px; display: block; }
   .header-icon-btn .icon-glyph { font-size: 20px; line-height: 1; }
-  #quit-btn:hover { border-color: var(--red); color: var(--red); background: var(--red-dim); }
 
   .test-mode-wrap, .discover-wrap, .add-job-wrap, .prune-wrap {
     position: relative; display: flex; align-items: center; gap: 3px;
@@ -1931,7 +2117,7 @@
     display: inline-flex; align-items: center; justify-content: center;
     width: 30px; height: 30px; min-width: 30px; min-height: 30px;
     padding: 0 !important;
-    border: 1px solid transparent;
+    border: none;
     background: transparent; cursor: pointer; user-select: none;
     border-radius: var(--radius-md);
     box-sizing: border-box;
@@ -1986,6 +2172,7 @@
   .discover-popover,
   .add-job-popover,
   .prune-popover,
+  .brand-popover,
   .toast,
   .jh-modal {
     border-radius: var(--radius-md);
@@ -2004,7 +2191,10 @@
   .test-mode-wrap:hover .test-mode-popover,
   .test-mode-wrap:focus-within .test-mode-popover { display: block; width: 260px; }
   .discover-wrap:hover .discover-popover, .discover-wrap:focus-within .discover-popover,
-  .discover-wrap.open .discover-popover { display: block; width: 340px; max-height: 480px; overflow: auto; }
+  .discover-wrap.open .discover-popover {
+    display: block; width: 400px; max-width: min(420px, calc(100vw - 16px));
+    max-height: 520px; overflow: auto;
+  }
   .add-job-wrap:hover .add-job-popover,
   .add-job-wrap:focus-within .add-job-popover,
   .add-job-wrap.open .add-job-popover { display: block; width: 320px; }
@@ -2054,23 +2244,46 @@
     width: 100%; justify-content: flex-start; margin-bottom: 8px;
   }
   .discover-src-opt {
-    display: grid; grid-template-columns: 1fr auto auto auto; gap: 2px 8px; align-items: center;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 6.6em 2.8em auto auto;
+    gap: 1px 12px; align-items: center;
     padding: 5px 0; border-top: 1px solid #ffffff08; font-size: 11px;
     user-select: none;
   }
-  .discover-src-opt input { accent-color: var(--green); cursor: pointer; margin: 0; }
+  .discover-src-opt > .src-check { grid-column: 1; accent-color: var(--green); cursor: pointer; margin: 0; }
+  .discover-src-opt > .src-main {
+    grid-column: 2; min-width: 0; display: flex; flex-direction: column; justify-content: center;
+    gap: 1px; cursor: pointer;
+  }
   .discover-src-opt .src-label { font-weight: 500; }
   .discover-src-opt .src-label.src-on { color: var(--green); }
   .discover-src-opt .src-label.src-off { color: var(--red); }
-  .discover-src-opt .src-count { color: var(--text-dim); font-variant-numeric: tabular-nums; }
-  .discover-src-opt .src-detail { grid-column: 1 / -1; color: var(--text-dim); font-size: 10px; }
+  .discover-src-opt > .src-count {
+    grid-column: 4; color: var(--text-dim); font-variant-numeric: tabular-nums;
+    white-space: nowrap; justify-self: end; text-align: right;
+  }
+  .discover-src-opt > .src-days {
+    grid-column: 3; justify-self: stretch; box-sizing: border-box; width: 100%; max-width: none;
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--mono); font-size: 10px; padding: 1px 4px; border-radius: var(--radius-sm);
+  }
+  .discover-src-opt > .src-days:disabled { opacity: 0.5; }
+  .discover-src-opt > .src-days-na {
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--text-dim); font-size: 9px; letter-spacing: 0.02em; white-space: nowrap;
+  }
+  .discover-src-opt .src-detail { color: var(--text-dim); font-size: 10px; line-height: 1.25; }
   .discover-src-opt.collecting .src-status { color: var(--orange); }
   .discover-src-opt.completed .src-status { color: var(--green); }
   .discover-src-opt.failed .src-status { color: var(--red); }
   .discover-src-opt.stopped .src-status { color: var(--orange); }
   .discover-src-opt.skipped .src-status, .discover-src-opt.idle .src-status { color: var(--text-dim); }
-  .discover-src-opt .src-status { text-transform: uppercase; letter-spacing: 0.04em; font-size: 9px; font-weight: 600; }
-  .discover-src-opt .src-abort {
+  .discover-src-opt > .src-status {
+    grid-column: 5; text-transform: uppercase; letter-spacing: 0.04em;
+    font-size: 9px; font-weight: 600; white-space: nowrap; justify-self: end;
+  }
+  .discover-src-opt > .src-abort {
+    grid-column: 6;
     background: transparent; border: 1px solid var(--red-edge); color: var(--red);
     padding: 2px 8px; font-size: 9px; letter-spacing: 0.06em;
     text-transform: uppercase; cursor: pointer; font-family: var(--mono);
@@ -2099,25 +2312,38 @@
     border-color: var(--blue-edge); color: var(--blue); background: var(--blue-dim);
   }
   #discover-btn {
-    color: var(--blue); border-color: var(--blue-edge); background: var(--blue-dim);
+    color: var(--blue); border: none; background: var(--blue-dim);
   }
   #discover-btn:hover {
-    color: var(--blue); border-color: var(--blue); background: var(--blue-mid);
+    color: var(--blue); border-color: transparent; background: var(--blue-mid);
   }
   #discover-btn.running {
-    color: var(--orange); border-color: var(--orange-edge); background: var(--orange-dim); cursor: pointer;
+    color: var(--orange); border-color: transparent; background: var(--orange-dim); cursor: pointer;
   }
   #discover-btn.running:hover {
-    color: var(--orange); border-color: var(--orange); background: var(--orange-dim);
+    color: var(--orange); border-color: transparent; background: var(--orange-dim);
   }
-  #discover-btn .btn-spinner {
-    display: inline-block; width: 9px; height: 9px; margin-left: 4px;
-    border: 1.5px solid currentColor; border-top-color: transparent;
-    border-radius: 50%; vertical-align: -1px; animation: spin 0.7s linear infinite;
+  #discover-btn { overflow: visible; }
+  #discover-btn .radar-idle,
+  #discover-btn .radar-sweeping {
+    width: 17px;
+    height: 17px;
+    display: block;
+    overflow: visible;
+  }
+  #discover-btn .radar-sweeping .radar-sweep-arm {
+    transform-box: view-box;
+    transform-origin: center;
+    animation: radar-sweep 1.4s linear infinite;
+  }
+  @keyframes radar-sweep {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .discover-popover .pop-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-  .discover-popover .pop-phase { color: var(--text-dim); font-size: 10px; text-align: right; }
+  .discover-popover .pop-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .discover-popover .pop-phase { color: var(--text-dim); font-size: 10px; text-align: right; flex: 1 1 12em; }
+  .discover-popover .pop-hint, .discover-popover .discover-last-run { overflow-wrap: anywhere; }
   .discover-region-block .region-toggle { font-size: 12px; color: var(--text); cursor: pointer; user-select: none; }
   .discover-src-opt.src-forced-off { opacity: 0.45; }
   .discover-src-opt .src-tag {
@@ -2231,7 +2457,13 @@
   .evidence.jd-body {
     white-space: normal;
   }
-  .jd-copy-btn {
+  .jd-toolbar {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .jd-copy-btn,
+  .jd-edit-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -2239,15 +2471,61 @@
     height: 22px;
     padding: 0;
     background: transparent;
-    border: 1px solid var(--border);
+    border: 1px solid var(--blue-edge);
     border-radius: var(--radius-sm);
-    color: var(--text-dim);
+    color: var(--blue);
     cursor: pointer;
     line-height: 0;
+    flex-shrink: 0;
   }
-  .jd-copy-btn:hover { color: var(--text); border-color: var(--border-hi); }
-  .jd-copy-btn svg { width: 12px; height: 12px; display: block; }
+  .jd-copy-btn:hover,
+  .jd-edit-btn:hover { color: #5aadff; border-color: var(--blue); }
+  .jd-copy-btn svg,
+  .jd-edit-btn svg { width: 12px; height: 12px; display: block; }
   .jd-copy-btn.copied { color: var(--green); border-color: var(--green-edge); }
+  .jd-edit-btn.open { color: #5aadff; border-color: var(--blue); background: var(--blue-dim); }
+  .jd-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .jd-edit-textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 280px;
+    max-height: min(70vh, 640px);
+    resize: vertical;
+    padding: 10px 12px;
+    border: 1px solid var(--border-hi);
+    border-radius: var(--radius-md);
+    background: var(--bg);
+    color: var(--text);
+    font: 12px/1.5 var(--mono);
+  }
+  .jd-edit-textarea:focus {
+    outline: none;
+    border-color: var(--cyan);
+  }
+  .jd-editor-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    align-items: center;
+  }
+  .jd-editor-actions .linkish {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    font-size: 11px;
+    color: var(--cyan);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .jd-editor-actions .linkish:hover { color: #5aadff; }
+  .jd-editor-actions .linkish.muted { color: var(--text-mute); }
+  .jd-editor-actions .linkish:disabled { opacity: 0.4; cursor: not-allowed; }
   .jd-body .jd-ident {
     margin: 0 0 10px;
     padding-bottom: 8px;
@@ -2310,6 +2588,19 @@
   .jd-body .jd-em {
     font-style: italic;
   }
+  .jd-body .jd-prune-hit {
+    color: var(--orange);
+    background: var(--orange-dim);
+    border-radius: 2px;
+    padding: 0 0.12em;
+    font-weight: 650;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+  .jd-body .jd-prune-hit mark.search-hit {
+    color: var(--green);
+    background: #3dbf8a44;
+  }
   .jd-loading, .jd-empty, .jd-error { color: var(--text-mute); font-size: 11px; }
   .jd-error { color: var(--red); }
 
@@ -2345,7 +2636,7 @@
   }
 
   #console-pane {
-    position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 100vw);
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw);
     background: var(--panel); border-left: 1px solid var(--border);
     display: flex; flex-direction: column; z-index: 80;
     border-radius: var(--radius-md) 0 0 var(--radius-md);
@@ -2468,21 +2759,34 @@
 <div class="ops-shell" id="ops-shell" style="position:fixed;inset:0;min-height:480px;display:flex;flex-direction:column">
 
 <header class="ops-header">
-  <div class="brand">
+  <div class="brand" id="brand-wrap" tabindex="0"
+    aria-label="OmniDex dashboard menu" aria-haspopup="true"
+    aria-expanded="false" aria-controls="brand-popover"
+    title="Hover for Refresh / Quit">
     <span class="sync-dot" id="sync-dot" title="Sync live"></span>
     <div class="mark">OmniDex</div>
+    <div class="brand-popover" id="brand-popover" role="menu" aria-label="Dashboard controls">
+      <button id="refresh-btn" class="brand-menu-btn" type="button" role="menuitem"
+        onclick="restartDashboard()">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M13.65 2.35A7.96 7.96 0 0 0 8 0C3.58 0 0 3.58 0 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 8 14A6 6 0 1 1 8 2c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z"/>
+        </svg>
+        <span>Refresh dashboard</span>
+      </button>
+      <button id="quit-btn" class="brand-menu-btn" type="button" role="menuitem"
+        onclick="quitDashboard()">
+        <span class="icon-glyph" aria-hidden="true">×</span>
+        <span>Quit dashboard</span>
+      </button>
+    </div>
   </div>
   <div class="mission-center">
     <div class="mission-stats" id="mission-stats">
+      <div class="mstat open" data-queue="open" title="Open / discovered"><span class="n" id="stat-open">—</span><span class="l">Open</span></div>
+      <div class="mstat progress" data-queue="progress" title="In progress"><span class="n" id="stat-progress">—</span><span class="l">In progress</span></div>
       <div class="mstat stuck" data-queue="stuck" title="Stuck / CAPTCHA"><span class="n" id="stat-stuck">—</span><span class="l">Stuck</span></div>
       <div class="mstat ready" data-queue="ready" title="Ready for review"><span class="n" id="stat-ready">—</span><span class="l">Ready</span></div>
-      <div class="mstat progress" data-queue="progress" title="In progress"><span class="n" id="stat-progress">—</span><span class="l">In progress</span></div>
-      <div class="mstat open" data-queue="open" title="Open / discovered"><span class="n" id="stat-open">—</span><span class="l">Open</span></div>
       <div class="mstat" data-queue="applied" title="Applied tracking"><span class="n" id="stat-applied">—</span><span class="l">Applied</span></div>
-      <div class="mstat fill-metrics" id="fill-metrics" title="Eval pass-rate ratchet (dummy fills)" data-queue="">
-        <span class="n" id="fill-metrics-rate">—</span>
-        <span class="l" id="fill-metrics-ratchet" data-ok="">Fill</span>
-      </div>
     </div>
   </div>
   <div class="header-actions" id="header-actions">
@@ -2529,8 +2833,12 @@
     <div class="discover-wrap" id="discover-wrap">
       <button id="discover-btn" class="header-icon-btn" type="button" onclick="toggleDiscoveryRun()"
         data-tooltip="Start discovery" aria-label="Start discovery">
-        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-          <path fill="currentColor" d="M8 1a.75.75 0 0 1 .75.75V9.4l2.1-2.1a.75.75 0 1 1 1.06 1.06l-3.4 3.4a.75.75 0 0 1-1.06 0l-3.4-3.4A.75.75 0 0 1 5.1 7.3l2.15 2.15V1.75A.75.75 0 0 1 8 1zM2.5 12.25a.75.75 0 0 1 .75-.75h9.5a.75.75 0 0 1 0 1.5H3.25a.75.75 0 0 1-.75-.75z"/>
+        <svg class="radar-idle" viewBox="0 0 24 24" aria-hidden="true" focusable="false"
+          fill="none" stroke="currentColor" stroke-width="1.85"
+          stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="9"/>
+          <circle cx="12" cy="12" r="5.5"/>
+          <circle cx="12" cy="12" r="1.35" fill="currentColor" stroke="none"/>
         </svg>
       </button>
       <div class="discover-popover" id="discover-popover" role="dialog" aria-label="Discovery sources">
@@ -2554,7 +2862,9 @@
           <label class="prune-opt"><input type="checkbox" data-prune-reason="clearance_or_intel" checked onchange="savePruneSettings()"><span>Requires clearance</span></label>
           <label class="prune-opt"><input type="checkbox" data-prune-reason="excessive_yoe" checked onchange="savePruneSettings()"><span>Excessive YOE</span></label>
           <label class="prune-opt"><input type="checkbox" data-prune-reason="citizenship_or_greencard" checked onchange="savePruneSettings()"><span>Citizenship / green card</span></label>
+          <label class="prune-opt"><input type="checkbox" data-prune-reason="staffing" checked onchange="savePruneSettings()"><span>Staffing agency</span></label>
           <label class="prune-opt"><input type="checkbox" data-prune-reason="stale_listing" checked onchange="savePruneSettings()"><span>Posted over 10 days ago (prevents hidden listings accumulating forever)</span></label>
+          <label class="prune-opt"><input type="checkbox" data-prune-reason="unresolved_apply_url" checked onchange="savePruneSettings()"><span>Unresolved apply URL (LinkedIn / aggregator after resolve)</span></label>
         </div>
         <label class="prune-schedule">
           <span>Automatic sweep</span>
@@ -2575,16 +2885,6 @@
         <path fill="currentColor" d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 1.5c-2.67 0-8 1.34-8 4V15h16v-1.5c0-2.66-5.33-4-8-4z"/>
       </svg>
     </button>
-    <button id="refresh-btn" class="header-icon-btn" type="button" onclick="restartDashboard()"
-      data-tooltip="Refresh dashboard" aria-label="Refresh dashboard">
-      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-        <path fill="currentColor" d="M13.65 2.35A7.96 7.96 0 0 0 8 0C3.58 0 0 3.58 0 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 8 14A6 6 0 1 1 8 2c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z"/>
-      </svg>
-    </button>
-    <button id="quit-btn" class="header-icon-btn" type="button" onclick="quitDashboard()"
-      data-tooltip="Quit dashboard" aria-label="Quit dashboard">
-      <span class="icon-glyph" aria-hidden="true">×</span>
-    </button>
   </div>
 </header>
 
@@ -2599,7 +2899,8 @@
 
 <div class="ops-body tl-collapsed" id="ops-body">
   <aside class="pane" id="queue-pane">
-    <div class="list-filters" id="list-filters">
+    <div class="list-filters-toolbar">
+      <div class="list-filters" id="list-filters">
       <button type="button" class="filters-toggle" id="filters-toggle"
         aria-expanded="false" aria-controls="filters-popover" tabindex="1">
         <span class="filters-toggle-label" id="filters-toggle-label">Filters</span>
@@ -2640,7 +2941,7 @@
                 <option value="">All</option>
                 <option value="remote">Remote</option>
                 <option value="hybrid">Hybrid</option>
-                <option value="onsite">On-site</option>
+                <option value="onsite">In-person</option>
                 <option value="unknown">Unknown</option>
               </select>
             </div>
@@ -2685,30 +2986,19 @@
           </div>
           <div class="list-filter-controls">
             <div class="list-filter-group">
-              <label for="status-filter">Pipeline</label>
-              <select id="status-filter" aria-label="Filter by pipeline status" tabindex="10">
-                <option value="">All</option>
-                <option value="tailoring">Tailoring</option>
-                <option value="navigating">Navigating</option>
-                <option value="filling">Filling</option>
-                <option value="blocked_captcha">CAPTCHA</option>
-              </select>
-            </div>
-            <div class="list-filter-group">
               <label for="extras-filter">Extras</label>
-              <select id="extras-filter" aria-label="Filter by apply URL or flags" tabindex="11">
+              <select id="extras-filter" aria-label="Filter by apply URL or flags" tabindex="10">
                 <option value="">All</option>
                 <option value="has_url">Has apply URL</option>
                 <option value="missing_url">No apply URL</option>
                 <option value="multi_opening" title="Informational flag only — does not change fill">Multi-opening</option>
                 <option value="multi_source">Multi-source</option>
+                <option value="no_jd" title="Empty or truncated JD (from jd_full.txt, not the list preview)">No / incomplete JD</option>
               </select>
             </div>
-          </div>
-          <div class="list-filter-controls">
             <div class="list-filter-group">
               <label for="region-filter">Region</label>
-              <select id="region-filter" aria-label="Filter by region" tabindex="12">
+              <select id="region-filter" aria-label="Filter by region" tabindex="11">
                 <option value="">All</option>
                 <option value="us">US</option>
                 <option value="india">India</option>
@@ -2716,13 +3006,14 @@
             </div>
           </div>
           <button type="button" class="filters-popover-clear" id="filters-popover-clear">Clear filters</button>
-          <button type="button" class="empty-deleted-btn" id="empty-deleted-btn" onclick="emptyDeleted()">Empty Deleted</button>
         </div>
       </div>
     </div>
+      <button type="button" class="empty-deleted-btn" id="empty-deleted-btn" onclick="emptyDeleted()">Empty deleted</button>
+    </div>
     <div class="list-search">
-      <input id="search" type="search" placeholder="Filter company / title / id…" autocomplete="off" tabindex="2"
-        aria-label="Search jobs">
+      <input id="search" type="search" placeholder="Search… or company: x jd: y" autocomplete="off" tabindex="2"
+        aria-label="Search jobs (bare text, or company: a, b jd: x)">
       <span class="list-search-icon" aria-hidden="true">
         <svg viewBox="0 0 16 16" focusable="false">
           <path fill="currentColor" d="M11.5 10.4a5.5 5.5 0 1 0-1.1 1.1l3.05 3.05a.75.75 0 1 0 1.06-1.06L11.5 10.4zM6.75 11a4.25 4.25 0 1 1 0-8.5 4.25 4.25 0 0 1 0 8.5z"/>

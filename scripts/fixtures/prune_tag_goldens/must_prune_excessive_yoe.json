@@ -1,0 +1,14 @@
+{
+  "id": "must_prune_excessive_yoe",
+  "title": "Senior Software Engineer",
+  "company": "Fixture Corp",
+  "location": "Austin, TX",
+  "description": "Requires 12+ years of professional software engineering experience. Hybrid office.",
+  "expect": {
+    "keep": false,
+    "reason": "excessive_yoe",
+    "tags": { "clearance": false, "us_person": false },
+    "work_mode": "hybrid",
+    "min_yoe": 12
+  }
+}

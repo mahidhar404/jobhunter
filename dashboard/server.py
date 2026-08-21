@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -57,7 +58,30 @@ import run_guard  # noqa: E402
 import scheduler as scheduler_mod  # noqa: E402
 from stats_aggregate import aggregate_stats  # noqa: E402
 from copy_kit import build_copy_kit  # noqa: E402
-from apply_urls import normalize_url  # noqa: E402
+from discovery_sources import (  # noqa: E402
+    ADZUNA_MISSING_KEYS_DETAIL,
+    ATS_SOURCE_IDS,
+    DISCOVERY_SOURCE_DEFS,
+    DISCOVERY_SOURCE_IDS,
+    INDIA_ONLY_SOURCE_IDS,
+    INDIA_SOURCE_SCRIPTS,
+    PRE_ATS_SOURCE_IDS,
+    RECENCY_SOURCE_IDS,
+    SCOUT_SOURCE_IDS,
+    US_FEED_LOG_LABEL_TO_ID,
+    US_FEED_SOURCE_IDS,
+    US_FEED_SOURCE_SCRIPTS,
+    adzuna_api_keys_present,
+    adzuna_source_health,
+)
+from jobs_list import (  # noqa: E402
+    cached_jobs_list_response as _cached_jobs_list_response_impl,
+    invalidate_jobs_list_cache as _invalidate_jobs_list_cache_impl,
+    jobs_list_response as _jobs_list_response_impl,
+    slim_job_for_list as _slim_job_for_list_impl,
+)
+from jd_search import search_jobs_jd_tokens as _search_jobs_jd_tokens_impl  # noqa: E402
+from apply_urls import is_aggregator_url, normalize_url  # noqa: E402
 from blocked_urls import (  # noqa: E402
     block_deleted_job,
     block_deleted_jobs_batch,
@@ -77,6 +101,15 @@ from jobs_lock import (  # noqa: E402
 )
 import jobs_lock as _jobs_lock_mod  # noqa: E402
 from text_normalize import stamp_company_key, backfill_company_keys  # noqa: E402
+from adaptive_recency import (  # noqa: E402
+    ADAPTIVE_DAYS_CAP,
+    ADAPTIVE_DAYS_FLOOR,
+    adaptive_recency_days,
+    newest_job_age_days_from_file,
+    parse_iso_datetime,
+    snap_builtin_days,
+)
+from jd_quality import looks_truncated_jd  # noqa: E402
 
 JOBS_FILE = ROOT / "jobs.json"
 # Same lock file scripts/jobs_lock.py uses - update_job.py and
@@ -91,6 +124,57 @@ _jobs_lock_mod.JOBS_FILE = JOBS_FILE
 _jobs_lock_mod.LOCK_FILE = JOBS_LOCK_FILE
 PROFILE_FILE = ROOT / "profile.json"
 STATIC_DIR = Path(__file__).parent / "static"
+DASHBOARD_PORT_FILE = ROOT / "logs" / "dashboard_port"
+DASHBOARD_STARTED_AT = datetime.now(timezone.utc).isoformat()
+_dashboard_bound_port: int = 8787
+
+
+def _compute_dashboard_build_id() -> str:
+    """Short stamp for cache-bust + /api/build (git hash or startup epoch)."""
+    env = (os.environ.get("JOBHUNTER_BUILD_ID") or "").strip()
+    if env:
+        return env
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        ).strip()
+        if out:
+            return out
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        pass
+    return f"t{int(time.time())}"
+
+
+DASHBOARD_BUILD_ID = _compute_dashboard_build_id()
+
+
+class DashboardHTTPServer(ThreadingHTTPServer):
+    """Bind with SO_REUSEADDR *before* listen so Refresh can reclaim :8787."""
+
+    allow_reuse_address = True
+
+
+def _remember_bound_port(port: int) -> None:
+    global _dashboard_bound_port
+    _dashboard_bound_port = int(port)
+    try:
+        DASHBOARD_PORT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        DASHBOARD_PORT_FILE.write_text(str(int(port)), encoding="utf-8")
+    except OSError as e:
+        print(f"warn: could not write dashboard_port: {e}")
+
+
+def dashboard_build_info(*, port: int | None = None) -> dict:
+    return {
+        "build_id": DASHBOARD_BUILD_ID,
+        "started_at": DASHBOARD_STARTED_AT,
+        "port": port
+        or int((os.environ.get("JOBHUNTER_DASHBOARD_PORT") or "8787").strip() or "8787"),
+        "sticky_port": 8787,
+    }
 
 
 def _resolve_bin(env_var: str, name: str, default: str) -> str:
@@ -120,8 +204,11 @@ CRON_JOB_NAME = "job-hunter-daily"
 DISCOVERY_SESSION_KEY = "agent:job-hunter:discovery"
 DISCOVERY_LAST_RUN_FILE = Path(__file__).parent / "discovery_last_run.json"
 DISCOVERY_SETTINGS_FILE = ROOT / "logs" / "discovery_settings.json"
-BUILTIN_SUPPORTED_DAYS = (1, 3, 7, 30)
-BUILTIN_DEFAULT_DAYS = 1
+SOURCE_DAYS_MIN = 1
+SOURCE_DAYS_MAX = 10
+SOURCE_DAYS_DEFAULT = 7
+BUILTIN_SUPPORTED_DAYS = tuple(range(SOURCE_DAYS_MIN, SOURCE_DAYS_MAX + 1))
+BUILTIN_DEFAULT_DAYS = SOURCE_DAYS_DEFAULT
 PRUNE_SETTINGS_FILE = ROOT / "logs" / "prune_settings.json"
 PRUNE_REASON_CODES = (
     "management_track",
@@ -129,13 +216,23 @@ PRUNE_REASON_CODES = (
     "clearance_or_intel",
     "excessive_yoe",
     "citizenship_or_greencard",
+    "staffing",
     "stale_listing",
+    "unresolved_apply_url",
 )
+_PRUNE_REASON_ALIASES = {
+    "apply_resolve_failed": "unresolved_apply_url",
+}
 STALE_LISTING_MAX_AGE_DAYS = 10
 PRUNE_INTERVALS_S = (0, 300, 900, 3600, 86400)
 # Per-source progress for crash/quit resume (under logs/ — gitignored).
 DISCOVERY_CHECKPOINT_FILE = ROOT / "logs" / "discovery_checkpoint.json"
 SCOUT_TIMEOUT_S = 1500  # raised alongside SEARCH_TERMS growing from 6 to 14 terms
+# Per-platform ATS board fetch. 300s was starving Greenhouse/Ashby while
+# slug-guessing ran first. Known slugs fetch first; guesses use leftover budget.
+ATS_SOURCE_TIMEOUT_S = 1800
+ATS_GUESS_BUDGET_S = 180
+ATS_MAX_GUESSES = 80
 TAILOR_SCRIPT = ROOT / "scripts" / "tailor_resume.py"
 RESUMES_DIR = ROOT / "resumes"
 TAILOR_TIMEOUT_S = 700
@@ -167,7 +264,6 @@ Python, SQL, machine learning, data pipelines, cloud platforms
 """
 INBOUND_MEDIA_DIR = Path.home() / ".openclaw" / "media" / "inbound"
 INBOUND_RESUME_MAX_AGE_S = 7 * 24 * 3600
-ATS_NOTES_DIR = ROOT / "ats_notes"
 PLAYBOOK_FILE = ROOT / "PLAYBOOK.md"
 # Dummy/test fill timeouts — Playwright path must cover fill + headed hold
 # + Flash refill. Hold itself is indefinite (--hold-open); once hold starts
@@ -361,16 +457,6 @@ def playbook_preamble() -> str:
         "session, so this saves you the read() call you'd otherwise make "
         f"as your first action:\n\n{text}\n\n---\n\n"
     )
-ATS_URL_PATTERNS = {
-    "workday": re.compile(r"myworkdayjobs\.com|myworkdaysite\.com"),
-    "greenhouse": re.compile(r"(?:boards|job-boards)\.greenhouse\.io"),
-    "lever": re.compile(r"jobs\.lever\.co"),
-    "ashby": re.compile(r"jobs\.ashbyhq\.com"),
-    "icims": re.compile(r"icims\.com"),
-    "recruitee": re.compile(r"\.recruitee\.com"),
-    "personio": re.compile(r"\.jobs\.personio\.(?:com|de)"),
-    "linkedin": re.compile(r"linkedin\.com/jobs"),
-}
 
 _lock = threading.Lock()
 _running_procs: dict[str, subprocess.Popen] = {}
@@ -379,12 +465,18 @@ _running_procs: dict[str, subprocess.Popen] = {}
 _runtime_job_snapshots: dict[str, dict] = {}
 # Serialized /api/jobs response. mtime catches writes from sibling processes;
 # write_jobs invalidates eagerly for writes made by this server.
+# Dedicated lock — never share `_lock` with JD backfills (that hung first paint
+# for minutes while salary/YOE threads held `_lock` and scanned jd_full).
+_jobs_list_cache_lock = threading.Lock()
 _jobs_list_cache = {
     "mtime": None,
     "body_bytes": None,
     "etag": None,
     "fill_hold": None,
 }
+# Set after first list prewarm (or failure) so heavy backfills do not race
+# cold-open /api/jobs for the GIL / disk.
+_jobs_list_boot_ready = threading.Event()
 _prune_settings_lock = threading.Lock()
 _discovery_settings_lock = threading.Lock()
 _prune_schedule_wakeup = threading.Event()
@@ -433,49 +525,10 @@ _discovery_lock = threading.Lock()
 # Exit code returned by _run_subprocess_step when cooperatively aborted.
 DISCOVERY_ABORT_EXIT = -2
 FILL_ABORT_EXIT = -3
-# Listing sources discovery actually scrapes (JobSpy sites + ATS boards + Built In).
-# Each enabled catalog source runs as its own subprocess (scout --sites / scrape_ats
-# --platforms / scrape_builtin) with a per-source listing file and abort track key.
-DISCOVERY_SOURCE_DEFS: list[tuple[str, str]] = [
-    ("indeed", "Indeed"),
-    ("linkedin", "LinkedIn"),
-    ("greenhouse", "Greenhouse"),
-    ("lever", "Lever"),
-    ("ashby", "Ashby"),
-    ("recruitee", "Recruitee"),
-    ("personio", "Personio"),
-    ("smartrecruiters", "SmartRecruiters"),
-    ("workable", "Workable"),
-    ("rippling", "Rippling"),
-    ("breezy", "Breezy"),
-    ("bamboohr", "BambooHR"),
-    ("builtin", "Built In"),
-    # India-only sources (see INDIA_ONLY_SOURCE_IDS) — only run when the India
-    # region is enabled; force-disabled / greyed in the UI otherwise.
-    ("internshala", "Internshala"),
-    ("hirist", "Hirist"),
-    ("cutshort", "Cutshort"),
-    ("adzuna", "Adzuna (IN)"),
-]
-SCOUT_SOURCE_IDS = ("indeed", "linkedin")
-ATS_SOURCE_IDS = (
-    "greenhouse", "lever", "ashby", "recruitee", "personio",
-    "smartrecruiters", "workable", "rippling", "breezy", "bamboohr",
-)
-# India-only discovery sources: only meaningful when the India region is on.
-# They are force-disabled (and hidden/greyed in the UI) when India is off,
-# and auto-enabled by the Discover popover when India is first turned on.
-INDIA_ONLY_SOURCE_IDS = ("internshala", "hirist", "cutshort", "adzuna")
-# Standalone scraper script per India-only source (each reads public pages /
-# an official API at low volume; Adzuna self-skips without keys).
-INDIA_SOURCE_SCRIPTS = {
-    "internshala": ROOT / "scripts" / "scrape_internshala.py",
-    "hirist": ROOT / "scripts" / "scrape_hirist.py",
-    "cutshort": ROOT / "scripts" / "scrape_cutshort.py",
-    "adzuna": ROOT / "scripts" / "scrape_adzuna.py",
-}
+# Catalog / script maps live in discovery_sources.py (imported above).
 # Polite per-source delays mean these run a few minutes at most.
 INDIA_SOURCE_TIMEOUT_S = 600
+US_FEED_SOURCE_TIMEOUT_S = 600
 _SCOUT_GOT_RE = re.compile(r"got (\d+) new results from (indeed|linkedin)/")
 _ATS_GOT_RE = re.compile(
     r"got (\d+) relevant results from ("
@@ -488,11 +541,17 @@ _INDIA_GOT_RE = re.compile(
     + "|".join(INDIA_ONLY_SOURCE_IDS)
     + r")/"
 )
+_US_FEED_GOT_RE = re.compile(
+    r"got (\d+) (?:relevant )?results from ("
+    + "|".join(re.escape(label) for label in US_FEED_LOG_LABEL_TO_ID)
+    + r")/"
+)
 _BUILTIN_PROC_RE = re.compile(r"processed (\d+)/(\d+) \((\d+) usable so far\)")
 _WROTE_LISTINGS_RE = re.compile(r"wrote (\d+) listings")
-
-
-DISCOVERY_SOURCE_IDS = tuple(sid for sid, _ in DISCOVERY_SOURCE_DEFS)
+_ADZUNA_SKIP_KEYS_RE = re.compile(
+    r"disabled/skipped \((adzuna(?:-us)?)\): no Adzuna API keys",
+    re.IGNORECASE,
+)
 
 
 def _empty_discovery_sources(enabled: set[str] | None = None) -> list[dict]:
@@ -557,6 +616,8 @@ _discovery_state: dict = {
     "resumed": False,
     "resume_available": False,
     "run_id": None,
+    "resolve_done": None,
+    "resolve_total": None,
 }
 # Merge bookkeeping for the active run (also persisted in the checkpoint).
 _discovery_checkpoint_meta: dict = {
@@ -635,39 +696,15 @@ DISCOVERY_PHASE_LABELS = {
     "dedup": "Deduplicating listings…",
     "tracker": "Checking tracked companies…",
     "write": "Writing jobs…",
+    "tagging": "Tagging & pruning jobs…",
     "dedup_jobs": "Merging duplicate jobs…",
+    "resolving": "Resolving apply links…",
     "agent_recovery": "Agent recovering from error…",
     "aborting": "Aborting discovery…",
 }
 
 # Statuses that mean the run still has leftover work.
 _DISCOVERY_SOURCE_INCOMPLETE = frozenset({"pending", "collecting", "stopped"})
-
-
-def ats_notes_for_url(url: str) -> tuple[Path, str] | None:
-    """Same known-quirks-per-platform reasoning already applied to date
-    spinbuttons/comboboxes in PLAYBOOK.md, extended into a real per-platform
-    reference: every company on Workday/Greenhouse/Lever/Ashby/iCIMS runs
-    the same underlying form software, so a field-selector lesson learned
-    on one company's form applies directly to the next company on the same
-    platform. Returns (notes_file_path, content), or None if the URL
-    doesn't match a known platform."""
-    for platform, pattern in ATS_URL_PATTERNS.items():
-        if pattern.search(url or ""):
-            notes_file = ATS_NOTES_DIR / f"{platform}.md"
-            if notes_file.exists():
-                return notes_file, notes_file.read_text()
-    return None
-
-RISKY_VERBS = [
-    "reset", "delete", "rm", "remove", "restart", "daemon", "logout",
-    "unset", "cancel", "stop", "clean",
-]
-
-
-def is_risky(args_str: str) -> bool:
-    tokens = args_str.lower().split()
-    return any(v in tokens for v in RISKY_VERBS)
 
 
 def gateway_running_session_keys() -> set[str]:
@@ -741,31 +778,26 @@ def _running_session_keys() -> set[str]:
     return local_keys | gateway_keys
 
 
-def active_job() -> dict | None:
-    """Return the currently-running job, if any - used only for display
-    (e.g. showing what's in progress), not to block starting anything
-    else. See is_session_running() for the actual per-session check."""
-    running_keys = _running_session_keys()
-    if not running_keys:
-        with _discovery_lock:
-            if _discovery_state["running"]:
-                return {"id": None, "company": "(discovery run)", "title": ""}
-        return None
-    data = read_jobs()
-    for job in data["jobs"]:
-        if job.get("session_key") in running_keys:
-            return job
-    if DISCOVERY_SESSION_KEY in running_keys:
-        return {"id": None, "company": "(discovery run)", "title": ""}
-    return None
-
-
-def _set_discovery_phase(phase: str, error: str | None = None) -> None:
+def _set_discovery_phase(phase: str, error: str | None = None, *, label: str | None = None) -> None:
     with _discovery_lock:
         _discovery_state["phase"] = phase
-        _discovery_state["phase_label"] = DISCOVERY_PHASE_LABELS.get(phase, phase)
+        _discovery_state["phase_label"] = label or DISCOVERY_PHASE_LABELS.get(phase, phase)
         if error is not None:
             _discovery_state["error"] = error
+
+
+def _set_discovery_resolve_progress(done: int, total: int) -> None:
+    """Status-bar label during post-discover apply-URL HTTP resolve."""
+    total = max(0, int(total))
+    done = max(0, min(int(done), total)) if total else max(0, int(done))
+    if total:
+        label = f"Resolving apply links… {done}/{total}"
+    else:
+        label = DISCOVERY_PHASE_LABELS["resolving"]
+    _set_discovery_phase("resolving", label=label)
+    with _discovery_lock:
+        _discovery_state["resolve_done"] = done
+        _discovery_state["resolve_total"] = total
 
 
 def _discovery_abort_requested() -> bool:
@@ -904,6 +936,8 @@ def _persist_discovery_last_run(
             "summary": summary,
             "jobs_added": jobs_added,
         }
+        if outcome == "success":
+            payload["last_successful_discover_at"] = finished_at
         DISCOVERY_LAST_RUN_FILE.write_text(json.dumps(payload, indent=2) + "\n")
     except Exception as e:
         print(f"warn: persist discovery_last_run failed: {e}")
@@ -1290,6 +1324,8 @@ def _begin_discovery(enabled: set[str] | None = None, *, fresh: bool = False) ->
             "resumed": resuming,
             "resume_available": False,
             "run_id": run_id,
+            "resolve_done": None,
+            "resolve_total": None,
         })
         _discovery_procs_by_key.clear()
         _discovery_source_aborts.clear()
@@ -1344,6 +1380,8 @@ def _finish_discovery(ok: bool, error: str | None = None) -> None:
     _persist_discovery_last_run(
         finished, ok, outcome=outcome, summary=summary, jobs_added=jobs_added,
     )
+    if outcome == "success":
+        _record_successful_discover(finished)
     if fully_done:
         _clear_discovery_checkpoint()
         _reset_checkpoint_meta()
@@ -1354,21 +1392,78 @@ def _finish_discovery(ok: bool, error: str | None = None) -> None:
                 _discovery_state["error"] = "Incomplete — click Discover to continue"
 
 
-def normalize_builtin_days_since_updated(value) -> int:
-    """Validate Built In's UI-supported New Jobs filter values."""
+def normalize_source_days(value, *, default: int = SOURCE_DAYS_DEFAULT) -> int:
+    """Validate a per-source lookback: integer 1–10 inclusive."""
     if value is None:
-        return BUILTIN_DEFAULT_DAYS
+        return int(default)
     try:
         days = int(value)
     except (TypeError, ValueError):
         raise ValueError(
-            f"builtin_days_since_updated must be one of {BUILTIN_SUPPORTED_DAYS}"
+            f"source days must be an integer from {SOURCE_DAYS_MIN} to {SOURCE_DAYS_MAX}"
         ) from None
-    if days not in BUILTIN_SUPPORTED_DAYS:
+    if days < SOURCE_DAYS_MIN or days > SOURCE_DAYS_MAX:
         raise ValueError(
-            f"builtin_days_since_updated must be one of {BUILTIN_SUPPORTED_DAYS}"
+            f"source days must be an integer from {SOURCE_DAYS_MIN} to {SOURCE_DAYS_MAX}"
         )
     return days
+
+
+def _clamp_source_days(value, *, default: int = SOURCE_DAYS_DEFAULT) -> int:
+    """Load-time clamp for corrupt / legacy values (e.g. Built In's old 30)."""
+    if value is None:
+        return int(default)
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return max(SOURCE_DAYS_MIN, min(SOURCE_DAYS_MAX, days))
+
+
+def normalize_source_days_map(raw, *, current: dict | None = None) -> dict:
+    """Merge recency-capable pins. Unknown / full-board ids are ignored."""
+    out = dict(current or {})
+    if raw is None:
+        return {sid: out[sid] for sid in RECENCY_SOURCE_IDS if sid in out}
+    if not isinstance(raw, dict):
+        raise ValueError("source_days must be an object")
+    for sid, val in raw.items():
+        if sid not in RECENCY_SOURCE_IDS:
+            continue
+        out[sid] = normalize_source_days(val)
+    return {sid: out[sid] for sid in RECENCY_SOURCE_IDS if sid in out}
+
+
+def normalize_builtin_days_since_updated(value) -> int:
+    """Validate Built In lookback (1–10). Alias of per-source days."""
+    try:
+        return normalize_source_days(value, default=BUILTIN_DEFAULT_DAYS)
+    except ValueError:
+        raise ValueError(
+            f"builtin_days_since_updated must be an integer from "
+            f"{SOURCE_DAYS_MIN} to {SOURCE_DAYS_MAX}"
+        ) from None
+
+
+def _load_source_days_from_raw(raw: dict) -> dict:
+    source_days: dict[str, int] = {}
+    raw_map = raw.get("source_days")
+    has_map = isinstance(raw_map, dict)
+    if has_map:
+        for sid in RECENCY_SOURCE_IDS:
+            if sid in raw_map:
+                source_days[sid] = _clamp_source_days(raw_map[sid])
+    # Legacy files (no source_days object) treated Built In's global
+    # days field as an explicit pin.
+    if (
+        "builtin" not in source_days
+        and not has_map
+        and "builtin_days_since_updated" in raw
+    ):
+        source_days["builtin"] = _clamp_source_days(
+            raw.get("builtin_days_since_updated")
+        )
+    return source_days
 
 
 def _coerce_bool(value, default: bool) -> bool:
@@ -1390,6 +1485,8 @@ def load_discovery_settings() -> dict:
         "builtin_days_since_updated": BUILTIN_DEFAULT_DAYS,
         "discover_us": True,
         "discover_india": False,
+        "last_successful_discover_at": None,
+        "source_days": {},
     }
     with _discovery_settings_lock:
         try:
@@ -1398,16 +1495,17 @@ def load_discovery_settings() -> dict:
             return dict(defaults)
     if not isinstance(raw, dict):
         return dict(defaults)
-    try:
-        days = normalize_builtin_days_since_updated(
-            raw.get("builtin_days_since_updated")
-        )
-    except (AttributeError, TypeError, ValueError):
-        days = BUILTIN_DEFAULT_DAYS
+    source_days = _load_source_days_from_raw(raw)
+    days = source_days.get("builtin", BUILTIN_DEFAULT_DAYS)
+    last_ok = raw.get("last_successful_discover_at")
+    if not isinstance(last_ok, str) or not last_ok.strip():
+        last_ok = None
     return {
         "builtin_days_since_updated": days,
         "discover_us": _coerce_bool(raw.get("discover_us"), True),
         "discover_india": _coerce_bool(raw.get("discover_india"), False),
+        "last_successful_discover_at": last_ok,
+        "source_days": source_days,
     }
 
 
@@ -1415,10 +1513,16 @@ def save_discovery_settings(payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("expected a JSON object")
     current = load_discovery_settings()
-    days = normalize_builtin_days_since_updated(
-        payload.get("builtin_days_since_updated")
-        if "builtin_days_since_updated" in payload
-        else current["builtin_days_since_updated"]
+    source_days = normalize_source_days_map(
+        payload.get("source_days") if "source_days" in payload else None,
+        current=current.get("source_days") or {},
+    )
+    if "builtin_days_since_updated" in payload:
+        source_days["builtin"] = normalize_builtin_days_since_updated(
+            payload.get("builtin_days_since_updated")
+        )
+    days = source_days.get(
+        "builtin", current.get("builtin_days_since_updated", BUILTIN_DEFAULT_DAYS)
     )
     discover_us = _coerce_bool(
         payload.get("discover_us"), current["discover_us"]
@@ -1429,10 +1533,16 @@ def save_discovery_settings(payload: dict) -> dict:
     # Guard: never persist "no regions" — that would drop every listing.
     if not discover_us and not discover_india:
         discover_us = True
+    last_ok = current.get("last_successful_discover_at")
+    if "last_successful_discover_at" in payload:
+        raw_ok = payload.get("last_successful_discover_at")
+        last_ok = raw_ok.strip() if isinstance(raw_ok, str) and raw_ok.strip() else None
     settings = {
         "builtin_days_since_updated": days,
         "discover_us": discover_us,
         "discover_india": discover_india,
+        "last_successful_discover_at": last_ok,
+        "source_days": source_days,
     }
     with _discovery_settings_lock:
         DISCOVERY_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1442,6 +1552,72 @@ def save_discovery_settings(payload: dict) -> dict:
         tmp.write_text(json.dumps(settings, indent=2) + "\n")
         tmp.replace(DISCOVERY_SETTINGS_FILE)
     return settings
+
+
+def _last_successful_discover_at() -> str | None:
+    """ISO timestamp of the last fully successful Discover, if known."""
+    stored = load_discovery_settings().get("last_successful_discover_at")
+    if isinstance(stored, str) and stored.strip():
+        return stored.strip()
+    try:
+        if DISCOVERY_LAST_RUN_FILE.exists():
+            data = json.loads(DISCOVERY_LAST_RUN_FILE.read_text())
+            if isinstance(data, dict):
+                tagged = data.get("last_successful_discover_at")
+                if isinstance(tagged, str) and tagged.strip():
+                    return tagged.strip()
+                if data.get("outcome") == "success" or data.get("ok") is True:
+                    finished = data.get("finished_at") or data.get("last_finished_at")
+                    if isinstance(finished, str) and finished.strip():
+                        return finished.strip()
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    with _discovery_lock:
+        if _discovery_state.get("last_outcome") == "success":
+            finished = (
+                _discovery_state.get("last_finished_at")
+                or _discovery_state.get("finished_at")
+            )
+            if isinstance(finished, str) and finished.strip():
+                return finished.strip()
+    return None
+
+
+def resolve_discovery_recency(*, now: datetime | None = None) -> dict:
+    """Adaptive lookback for this Discover pass (floor 7, cap 10, N+1)."""
+    last_s = _last_successful_discover_at()
+    last_dt = parse_iso_datetime(last_s)
+    jobs_gap = None
+    if last_dt is None and JOBS_FILE.exists():
+        jobs_gap = newest_job_age_days_from_file(JOBS_FILE, now=now)
+    days = adaptive_recency_days(last_dt, now=now, jobs_gap_days=jobs_gap)
+    days = max(SOURCE_DAYS_MIN, min(SOURCE_DAYS_MAX, int(days)))
+    pinned = load_discovery_settings().get("source_days") or {}
+    source_days: dict[str, int] = {}
+    source_hours: dict[str, int] = {}
+    for sid in RECENCY_SOURCE_IDS:
+        chosen = int(pinned[sid]) if sid in pinned else int(days)
+        source_days[sid] = chosen
+        source_hours[sid] = chosen * 24
+    builtin = snap_builtin_days(source_days["builtin"])
+    return {
+        "days": int(days),
+        "builtin_days": int(builtin),
+        "hours_old": int(days) * 24,
+        "source_days": source_days,
+        "source_hours": source_hours,
+        "last_successful_discover_at": last_s,
+        "jobs_gap_days": jobs_gap,
+        "floor": ADAPTIVE_DAYS_FLOOR,
+        "cap": ADAPTIVE_DAYS_CAP,
+    }
+
+
+def _record_successful_discover(finished_at: str) -> None:
+    try:
+        save_discovery_settings({"last_successful_discover_at": finished_at})
+    except Exception as e:
+        print(f"warn: persist last_successful_discover_at failed: {e}")
 
 
 def enabled_discovery_regions() -> list[str]:
@@ -1464,6 +1640,7 @@ def _discovery_status_in_memory() -> dict:
                 "id": sid,
                 "label": label,
                 "india_only": sid in INDIA_ONLY_SOURCE_IDS,
+                "recency": sid in RECENCY_SOURCE_IDS,
             }
             for sid, label in DISCOVERY_SOURCE_DEFS
         ]
@@ -1481,6 +1658,19 @@ def _discovery_status_in_memory() -> dict:
 def discovery_status() -> dict:
     state = _discovery_status_in_memory()
     state.update(load_discovery_settings())
+    last_ok = _last_successful_discover_at()
+    state["last_successful_discover_at"] = last_ok
+    state["adaptive_recency_days"] = adaptive_recency_days(
+        parse_iso_datetime(last_ok)
+    )
+    # Loud Adzuna key health (boolean only — never leak secret values).
+    state["source_health"] = adzuna_source_health()
+    if not adzuna_api_keys_present():
+        state["adzuna_keys_configured"] = False
+        state["adzuna_keys_detail"] = ADZUNA_MISSING_KEYS_DETAIL
+    else:
+        state["adzuna_keys_configured"] = True
+        state["adzuna_keys_detail"] = None
     return state
 
 
@@ -1617,13 +1807,23 @@ def _fill_cft_exclude_markers() -> tuple[str, ...]:
 
     Dashboard UI and OpenClaw PartyRock share the Chrome-for-Testing binary;
     counting/killing them as fill Chrome orphans login tabs or false-caps.
+    LinkedIn resolve profile is also excluded (dedicated login; not fill).
     """
+    try:
+        from linkedin_resolve_profile import linkedin_resolve_profile_dir
+
+        li_profile = str(linkedin_resolve_profile_dir())
+    except Exception:
+        li_profile = str(ROOT / "linkedin_resolve_profile")
     return (
         f"--user-data-dir={DASHBOARD_UI_PROFILE}",
         "--app=http://127.0.0.1:8787",
         f"--user-data-dir={OPENCLAW_BROWSER_USER_DATA}",
         f"--remote-debugging-port={OPENCLAW_BROWSER_CDP_PORT}",
         "openclaw/user-data",
+        f"--user-data-dir={li_profile}",
+        "linkedin_resolve_profile",
+        "--remote-debugging-port=18801",
     )
 
 
@@ -2178,6 +2378,18 @@ def request_discovery_abort(source_id: str | None = None) -> tuple[dict, int]:
 
 def _parse_discovery_log_line(line: str, mode: str | None) -> None:
     """Update live per-source counts from scout/ats/builtin stdout lines."""
+    skip = _ADZUNA_SKIP_KEYS_RE.search(line or "")
+    if skip:
+        label = skip.group(1).lower()
+        sid = US_FEED_LOG_LABEL_TO_ID.get(label, label.replace("-", "_"))
+        if sid in ("adzuna", "adzuna_us"):
+            _set_source_fields(
+                sid,
+                status="failed",
+                count=0,
+                detail=ADZUNA_MISSING_KEYS_DETAIL,
+            )
+        return
     if not mode:
         return
     if mode == "scout":
@@ -2213,6 +2425,19 @@ def _parse_discovery_log_line(line: str, mode: str | None) -> None:
         m = _INDIA_GOT_RE.search(line)
         if m:
             n, sid = int(m.group(1)), m.group(2)
+            with _discovery_lock:
+                for src in _discovery_state.get("sources") or []:
+                    if src.get("id") == sid:
+                        src["status"] = "collecting"
+                        src["count"] = int(src.get("count") or 0) + n
+                        src["detail"] = f"{src['count']} listings"
+                        break
+        return
+    if mode == "us_feed":
+        m = _US_FEED_GOT_RE.search(line)
+        if m:
+            n, label = int(m.group(1)), m.group(2)
+            sid = US_FEED_LOG_LABEL_TO_ID.get(label, label)
             with _discovery_lock:
                 for src in _discovery_state.get("sources") or []:
                     if src.get("id") == sid:
@@ -2375,6 +2600,16 @@ def _source_listing_path(today: str, source_id: str) -> Path:
     # the others use their bare source id.
     if source_id == "adzuna":
         return LISTINGS_DIR / f"{today}-adzuna-in.json"
+    if source_id == "adzuna_us":
+        return LISTINGS_DIR / f"{today}-adzuna-us.json"
+    if source_id == "remoteok":
+        return LISTINGS_DIR / f"{today}-remoteok.json"
+    if source_id == "remotive":
+        return LISTINGS_DIR / f"{today}-remotive.json"
+    if source_id == "jobicy":
+        return LISTINGS_DIR / f"{today}-jobicy.json"
+    if source_id == "rss_feeds":
+        return LISTINGS_DIR / f"{today}-rss_feeds.json"
     if source_id in INDIA_ONLY_SOURCE_IDS:
         return LISTINGS_DIR / f"{today}-{source_id}.json"
     raise ValueError(f"unknown discovery source: {source_id}")
@@ -2386,13 +2621,36 @@ def _source_qualified_tag(source_id: str) -> str:
     return source_id
 
 
+def _scout_scrape_cmd(
+    listing: Path, source_id: str, *, hours_old: int | None,
+    skip_urls_file: Path | None = None,
+) -> list[str]:
+    cmd = [PYTHON_BIN, "-u", str(SCOUT_SCRIPT),
+           "--sites", source_id, "--out", str(listing)]
+    if hours_old:
+        cmd.extend(["--hours-old", str(int(hours_old))])
+    if skip_urls_file is not None:
+        cmd.extend(["--skip-urls", str(skip_urls_file)])
+    return cmd
+
+
+def _ats_scrape_cmd(listing: Path, source_id: str, *, skip_urls_file: Path | None) -> list[str]:
+    cmd = [PYTHON_BIN, "-u", str(ROOT / "scripts" / "scrape_ats.py"),
+           "--platforms", source_id, "--out", str(listing),
+           "--max-guesses", str(ATS_MAX_GUESSES),
+           "--guess-budget-s", str(ATS_GUESS_BUDGET_S)]
+    if skip_urls_file is not None:
+        cmd.extend(["--skip-urls", str(skip_urls_file)])
+    return cmd
+
+
 def _builtin_scrape_cmd(
     listing: Path,
     *,
     skip_urls_file: Path | None,
     days_since_updated: int,
 ) -> list[str]:
-    days = normalize_builtin_days_since_updated(days_since_updated)
+    days = normalize_source_days(days_since_updated)
     cmd = [
         PYTHON_BIN,
         "-u",
@@ -2402,6 +2660,36 @@ def _builtin_scrape_cmd(
         "--days-since-updated",
         str(days),
     ]
+    if skip_urls_file is not None:
+        cmd.extend(["--skip-urls", str(skip_urls_file)])
+    return cmd
+
+
+def _adzuna_scrape_cmd(
+    listing: Path, *, country: str, max_days: int,
+    skip_urls_file: Path | None = None,
+) -> list[str]:
+    country = "us" if str(country).lower() == "us" else "in"
+    script = (
+        US_FEED_SOURCE_SCRIPTS["adzuna_us"]
+        if country == "us"
+        else INDIA_SOURCE_SCRIPTS["adzuna"]
+    )
+    cmd = [
+        PYTHON_BIN, "-u", str(script),
+        "--country", country,
+        "--out", str(listing),
+        "--max-days", str(int(max_days)),
+    ]
+    if skip_urls_file is not None:
+        cmd.extend(["--skip-urls", str(skip_urls_file)])
+    return cmd
+
+
+def _feed_scrape_cmd(
+    listing: Path, script: Path, *, skip_urls_file: Path | None = None,
+) -> list[str]:
+    cmd = [PYTHON_BIN, "-u", str(script), "--out", str(listing)]
     if skip_urls_file is not None:
         cmd.extend(["--skip-urls", str(skip_urls_file)])
     return cmd
@@ -2428,12 +2716,13 @@ def _incremental_merge_listing(listing_path: Path, today: str, skip_file: Path,
         return False
     if not _listing_file_nonempty(qualified_file):
         return False
-    _set_discovery_phase("write")
+    # write_discovered stamps tags + discovery prune tombstones.
+    _set_discovery_phase("tagging")
     write_exit, write_log = _run_subprocess_step(
         [PYTHON_BIN, "-u", str(ROOT / "scripts" / "write_discovered_jobs.py"),
          str(qualified_file), "--skip-companies", str(skip_file)],
         f"write_discovered_jobs_{source_tag}.log",
-        60,
+        180,
         track_key=f"{DISCOVERY_SESSION_KEY}:write:{source_tag}",
         allow_abort=True,
         protect_from_abort=True,
@@ -2463,12 +2752,56 @@ def _finalize_discovery_source(
                 (source_id,), status="stopped", detail="Stopped",
                 only_if_status=("pending", "collecting", "stopped"))
         return
+    # Adzuna without keys exits 0 with an empty file — fail loud in UI status.
+    if source_id in ("adzuna", "adzuna_us") and not adzuna_api_keys_present():
+        _set_source_fields(
+            source_id,
+            status="failed",
+            count=0,
+            detail=ADZUNA_MISSING_KEYS_DETAIL,
+        )
+        return
     if listing_path.exists():
         _apply_site_counts(_count_listings_by_site(listing_path), (source_id,))
     elif exit_code != 0:
         _update_discovery_sources((source_id,), status="failed", detail="Failed")
     else:
         _apply_site_counts({}, (source_id,))
+
+
+def _run_discovery_apply_resolve() -> dict | None:
+    """After listings are merged: HTTP-resolve LinkedIn/aggregator apply URLs.
+
+    Does not block scrape/merge. HTTP-only LinkedIn (no CDP unless
+    LINKEDIN_ALLOW_CDP=1 is set for a later manual Resolve ATS). Failures
+    are logged; discovery still finishes ok.
+    """
+    with _discovery_lock:
+        since = _discovery_state.get("started_at")
+    _set_discovery_resolve_progress(0, 0)
+    try:
+        import resolve_apply_urls as rau
+    except ImportError as e:
+        print(f"warn: discovery apply resolve unavailable: {e}")
+        return None
+    try:
+        summary = rau.resolve_discovery_apply_urls(
+            since_iso=str(since) if since else None,
+            write=True,
+            concurrency=20,
+            progress_cb=_set_discovery_resolve_progress,
+            abort_cb=_discovery_abort_requested,
+        )
+        print(
+            f"discovery apply resolve: considered={summary.get('considered')} "
+            f"linkedin={summary.get('linkedin')} other={summary.get('other')} "
+            f"high={summary.get('high')} upgraded={len(summary.get('upgraded') or [])} "
+            f"aborted={summary.get('aborted')}"
+        )
+        return summary
+    except Exception as e:
+        print(f"warn: discovery apply resolve failed: {e}")
+        return None
 
 
 def run_scout_scrape_then_dedup() -> None:
@@ -2540,52 +2873,91 @@ def run_scout_scrape_then_dedup() -> None:
             print(f"warn: building discovery skip-urls failed: {e}")
             skip_urls_file = None
 
-        # Build one scrape job per enabled catalog source that still needs work.
-        # Built In has no public API / JobSpy support — direct HTML scrape
-        # (see scrape_builtin.py). Timeout 5400s: filtered search + sequential
-        # page fetch can run ~45 minutes in the wild.
-        source_jobs: list[tuple[str, Path, list[str], int, str, str]] = []
+        recency = resolve_discovery_recency()
+        print(
+            f"discovery recency: adaptive={recency['days']}d "
+            f"(builtin={recency['source_days']['builtin']}, "
+            f"indeed={recency['source_days']['indeed']}, "
+            f"linkedin={recency['source_days']['linkedin']}, "
+            f"adzuna_us={recency['source_days']['adzuna_us']}, "
+            f"adzuna={recency['source_days']['adzuna']}, "
+            f"last_success={recency['last_successful_discover_at'] or 'never'}, "
+            f"jobs_gap={recency['jobs_gap_days']})"
+        )
+
+        # Build scrape jobs in two phases: scout / builtin / feed sources first so
+        # scrape_ats slug extraction sees today's listing URLs before ATS boards
+        # fetch (same-run slug discovery, not next-run).
+        pre_ats_jobs: list[tuple[str, Path, list[str], int, str, str]] = []
+        ats_jobs: list[tuple[str, Path, list[str], int, str, str]] = []
         for sid in SCOUT_SOURCE_IDS:
             if sid not in enabled or sid in skip_ids:
                 continue
             listing = _source_listing_path(today, sid)
-            cmd = [PYTHON_BIN, "-u", str(SCOUT_SCRIPT),
-                   "--sites", sid, "--out", str(listing)]
-            source_jobs.append(
+            cmd = _scout_scrape_cmd(
+                listing, sid, hours_old=recency["source_hours"][sid],
+                skip_urls_file=skip_urls_file,
+            )
+            pre_ats_jobs.append(
                 (sid, listing, cmd, SCOUT_TIMEOUT_S, f"scout_{sid}.log", "scout"))
-        for sid in ATS_SOURCE_IDS:
-            if sid not in enabled or sid in skip_ids:
-                continue
-            listing = _source_listing_path(today, sid)
-            cmd = [PYTHON_BIN, "-u", str(ROOT / "scripts" / "scrape_ats.py"),
-                   "--platforms", sid, "--out", str(listing)]
-            if skip_urls_file is not None:
-                cmd.extend(["--skip-urls", str(skip_urls_file)])
-            source_jobs.append(
-                (sid, listing, cmd, 300, f"scrape_ats_{sid}.log", "ats"))
         if "builtin" in enabled and "builtin" not in skip_ids:
             listing = _source_listing_path(today, "builtin")
-            days = load_discovery_settings()["builtin_days_since_updated"]
             cmd = _builtin_scrape_cmd(
                 listing,
                 skip_urls_file=skip_urls_file,
-                days_since_updated=days,
+                days_since_updated=recency["source_days"]["builtin"],
             )
-            source_jobs.append(
+            pre_ats_jobs.append(
                 ("builtin", listing, cmd, 5400, "scrape_builtin.log", "builtin"))
+        for sid in US_FEED_SOURCE_IDS:
+            if sid not in enabled or sid in skip_ids:
+                continue
+            listing = _source_listing_path(today, sid)
+            if sid == "adzuna_us":
+                cmd = _adzuna_scrape_cmd(
+                    listing, country="us",
+                    max_days=recency["source_days"]["adzuna_us"],
+                    skip_urls_file=skip_urls_file,
+                )
+            else:
+                cmd = _feed_scrape_cmd(
+                    listing, US_FEED_SOURCE_SCRIPTS[sid],
+                    skip_urls_file=skip_urls_file,
+                )
+            pre_ats_jobs.append(
+                (sid, listing, cmd, US_FEED_SOURCE_TIMEOUT_S,
+                 f"scrape_{sid}.log", "us_feed"))
         # India-only sources: only meaningful when the India region is on.
-        # (_handle_discover already strips them from `enabled` when India is
-        # off; this guard is belt-and-suspenders for direct/API callers.)
         if "india" in regions:
             for sid in INDIA_ONLY_SOURCE_IDS:
                 if sid not in enabled or sid in skip_ids:
                     continue
                 listing = _source_listing_path(today, sid)
-                cmd = [PYTHON_BIN, "-u", str(INDIA_SOURCE_SCRIPTS[sid]),
-                       "--out", str(listing)]
-                source_jobs.append(
+                if sid == "adzuna":
+                    cmd = _adzuna_scrape_cmd(
+                        listing, country="in",
+                        max_days=recency["source_days"]["adzuna"],
+                        skip_urls_file=skip_urls_file,
+                    )
+                else:
+                    cmd = _feed_scrape_cmd(
+                        listing, INDIA_SOURCE_SCRIPTS[sid],
+                        skip_urls_file=skip_urls_file,
+                    )
+                pre_ats_jobs.append(
                     (sid, listing, cmd, INDIA_SOURCE_TIMEOUT_S,
                      f"scrape_{sid}.log", "india"))
+        for sid in ATS_SOURCE_IDS:
+            if sid not in enabled or sid in skip_ids:
+                continue
+            listing = _source_listing_path(today, sid)
+            cmd = _ats_scrape_cmd(
+                listing, sid, skip_urls_file=skip_urls_file,
+            )
+            ats_jobs.append(
+                (sid, listing, cmd, ATS_SOURCE_TIMEOUT_S,
+                 f"scrape_ats_{sid}.log", "ats"))
+        source_jobs = pre_ats_jobs + ats_jobs
 
         if skip_ids:
             # Keep completed rows visible; clarify they were resumed/skipped.
@@ -2693,12 +3065,22 @@ def run_scout_scrape_then_dedup() -> None:
                 allow_abort=True, log_parse_mode=mode)
             return sid, code, log, listing
 
-        workers = max(1, len(source_jobs)) if source_jobs else 1
-        if source_jobs:
+        def _run_source_batch(
+            batch: list[tuple[str, Path, list[str], int, str, str]],
+            *,
+            phase_label: str | None = None,
+        ) -> None:
+            if not batch:
+                return
+            if phase_label:
+                _set_discovery_phase("ats" if phase_label == "ats" else "scraping")
+            workers = max(1, len(batch))
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = [
-                    pool.submit(_run_one_source, sid, listing, cmd, timeout_s, log_name, mode)
-                    for sid, listing, cmd, timeout_s, log_name, mode in source_jobs
+                    pool.submit(
+                        _run_one_source, sid, listing, cmd, timeout_s, log_name, mode,
+                    )
+                    for sid, listing, cmd, timeout_s, log_name, mode in batch
                 ]
                 for fut in concurrent.futures.as_completed(futures):
                     sid, code, log, listing = fut.result()
@@ -2709,9 +3091,13 @@ def run_scout_scrape_then_dedup() -> None:
                         or code == DISCOVERY_ABORT_EXIT
                     )
                     _finalize_discovery_source(sid, code, listing, aborted=aborted)
-                    # Merge on success or abort-with-partial listing file.
                     _try_merge(sid, listing)
                     _flush_discovery_checkpoint("running")
+
+        if pre_ats_jobs:
+            _run_source_batch(pre_ats_jobs)
+        if ats_jobs and not _discovery_abort_requested():
+            _run_source_batch(ats_jobs, phase_label="ats")
 
         # After all sources settle: still merge any leftover partial files
         # (global abort must not skip flushing completed/partial listings).
@@ -2735,6 +3121,11 @@ def run_scout_scrape_then_dedup() -> None:
                 allow_abort=True,
                 protect_from_abort=True,
             )
+
+        # Post-merge: HTTP-resolve LinkedIn/aggregator apply URLs for jobs
+        # touched this run. After listings are in jobs.json so scrape stays fast.
+        if not aborted:
+            _run_discovery_apply_resolve()
 
         if aborted:
             if merges_ok > 0:
@@ -3008,43 +3399,248 @@ def load_raw_job_description(job: dict) -> tuple[str, str]:
     return "", "none"
 
 
-def slim_job_for_list(job: dict) -> dict:
-    """List payloads omit full/preview JD bodies — fetch on demand instead."""
-    # timeline can be long; dossier loads it via /api/jobs/<id>/activity.
-    out = {
-        k: v
-        for k, v in job.items()
-        if k not in ("job_description", "timeline")
-    }
-    # Hint only (no per-poll filesystem scan). Description endpoint still
-    # prefers resumes/<id>/jd_full.txt when the user expands a job.
-    out["has_description"] = bool((job.get("job_description") or "").strip())
-    # Re-resolve when flag claims on-disk resume so a missing file cannot
-    # leave a stale True. Explicit False is trusted on the list hot path;
-    # Start / fill paths call sync_job_resume_on_disk to clear false flags.
-    if job.get("resume_on_disk"):
-        disk = resolve_job_resume_file(job)
-        resume_on_disk = disk is not None
-    elif "resume_on_disk" not in job:
-        disk = resolve_job_resume_file(job)
-        resume_on_disk = disk is not None
-    else:
-        disk = None
-        resume_on_disk = False
-    out["resume_on_disk"] = resume_on_disk
-    out["resume_display_name"] = (
-        conventional_resume_filename(job) if resume_on_disk else None
-    )
-    if not resume_on_disk:
-        out["resume_path"] = None
-    elif disk is not None:
+def fetch_job_description_for_api(job_id: str) -> tuple[str | None, str]:
+    """Cheap JD payload for GET /api/jobs/<id>/description.
+
+    Prefer ``resumes/<id>/jd_full.txt`` with no jobs.json parse and no ``_lock``.
+    Only fall back to reading jobs.json (under ``_lock``) when the file is
+    missing — that path is rare and was previously paid on every click
+    (~45ms JSON parse of a multi-MB jobs.json).
+
+    Returns ``(text, source)``. ``text is None`` means unknown job id (404).
+    Empty string means the job exists but has no JD body.
+    """
+    if not job_id:
+        return None, "none"
+    full_path = RESUMES_DIR / job_id / "jd_full.txt"
+    if full_path.is_file():
         try:
-            out["resume_path"] = str(disk.relative_to(ROOT))
-        except ValueError:
-            out["resume_path"] = str(disk)
-    elif job.get("resume_path"):
-        out["resume_path"] = job.get("resume_path")
-    return out
+            return (
+                full_path.read_text(encoding="utf-8", errors="replace"),
+                "jd_full.txt",
+            )
+        except OSError:
+            pass
+    with _lock:
+        data = read_jobs()
+    job = next((j for j in data.get("jobs", []) if j.get("id") == job_id), None)
+    if not job:
+        return None, "none"
+    preview = job.get("job_description") or ""
+    if isinstance(preview, str) and preview.strip():
+        return preview, "jobs.json"
+    return "", "none"
+
+
+_JD_PREVIEW_CHARS = 500
+_JD_MAX_CHARS = 200_000
+
+
+def search_jobs_jd_tokens(
+    tokens: list[str],
+    *,
+    jobs: list[dict] | None = None,
+    timeout_s: float = 2.5,
+    limit: int = 8000,
+) -> dict[str, list[str]]:
+    """Grep jd_full (preview fallback) for tokens — one pass, timed.
+
+    Returns ``{token: [job_id, ...]}``. Used by GET /api/jobs/search only —
+    never called from the slim /api/jobs list path.
+    """
+    return _search_jobs_jd_tokens_impl(
+        tokens,
+        jobs=jobs,
+        load_jobs=read_jobs,
+        load_raw_description=load_raw_job_description,
+        timeout_s=timeout_s,
+        limit=limit,
+    )
+
+
+def _trim_job_description_preview(full_text: str) -> str:
+    """Short jobs.json preview; full text lives in resumes/<id>/jd_full.txt."""
+    if len(full_text) <= _JD_PREVIEW_CHARS:
+        return full_text
+    cut = full_text.rfind(" ", 0, _JD_PREVIEW_CHARS)
+    if cut == -1:
+        cut = _JD_PREVIEW_CHARS
+    return full_text[:cut] + " … [full text in resumes/<id>/jd_full.txt]"
+
+
+def _validated_job_description(payload: dict) -> str:
+    """Accept job_description (preferred) or description from a JD save payload."""
+    if not isinstance(payload, dict):
+        raise ValueError("job_description is required")
+    if "job_description" in payload:
+        text = payload.get("job_description")
+    elif "description" in payload:
+        text = payload.get("description")
+    else:
+        raise ValueError("job_description is required")
+    if not isinstance(text, str):
+        raise ValueError("job_description must be a string")
+    if len(text) > _JD_MAX_CHARS:
+        raise ValueError("job_description is too long")
+    return text
+
+
+def _resolve_work_mode_for_list(
+    *,
+    title: str,
+    location: str,
+    description: str,
+    fallback: bool = False,
+) -> str:
+    """Pick remote|hybrid|onsite|unknown for list chips.
+
+    Combined title+location+JD first. If unknown, prefer JD body over a
+    conflicting aggregator location (location \"Remote\" vs onsite JD, or
+    city location vs ``Location: Remote`` in the body).
+    """
+    try:
+        from discovery_filters import detect_work_mode, detect_work_mode_fallback
+    except Exception:
+        return "unknown"
+    detect = detect_work_mode_fallback if fallback else detect_work_mode
+    ok = ("remote", "hybrid", "onsite")
+    combined = detect(title=title, location=location, description=description)
+    if combined in ok:
+        return combined
+    if (description or "").strip():
+        body = detect(title=title, location="", description=description)
+        if body in ok:
+            return body
+    if (location or "").strip():
+        loc_only = detect(title=title, location=location, description="")
+        if loc_only in ok:
+            return loc_only
+    return "unknown"
+
+
+def apply_list_tag_stamps_from_jd(out: dict, description: str) -> None:
+    """Fill missing list-chip stamps from canonical JD (jd_full preferred).
+
+    Mutates the slim payload only — never the jobs.json record. Display
+    chips otherwise come from truncated preview stamps or stay empty until
+    the client caches jd_full.txt.
+    """
+    if not (description or "").strip():
+        return
+    # jd_full often contains markdown escapes (e.g., "5\\+ years"). Reuse the
+    # same cleanup as dossier view so list extraction sees canonical text.
+    normalized_description = sanitize_job_description_for_display(description)
+    if not normalized_description:
+        return
+    try:
+        from discovery_filters import (
+            extract_min_required_yoe,
+            extract_min_required_yoe_fallback,
+            extract_salary,
+            extract_salary_fallback,
+            stamp_clearance_us_person_tags,
+        )
+    except Exception:
+        return
+    title = out.get("title") or ""
+    location = out.get("location") or ""
+    company = out.get("company") or ""
+    url = out.get("apply_url") or out.get("job_url") or ""
+    if out.get("salary_min") is None:
+        sal = extract_salary(title=title, description=normalized_description)
+        if sal:
+            out["salary_min"] = sal.get("min")
+            if out.get("salary_max") is None:
+                out["salary_max"] = sal.get("max")
+        elif out.get("salary_min_fallback") is None:
+            sal_fb = extract_salary_fallback(
+                title=title, description=normalized_description
+            )
+            if sal_fb:
+                out["salary_min_fallback"] = sal_fb.get("min")
+                if out.get("salary_max_fallback") is None:
+                    out["salary_max_fallback"] = sal_fb.get("max")
+    if out.get("min_yoe") is None:
+        yoe = extract_min_required_yoe(title=title, description=normalized_description)
+        if yoe is not None:
+            out["min_yoe"] = yoe
+        elif out.get("min_yoe_fallback") is None:
+            yoe_fb = extract_min_required_yoe_fallback(
+                title=title, description=normalized_description
+            )
+            if yoe_fb is not None:
+                out["min_yoe_fallback"] = yoe_fb
+    mode = out.get("work_mode")
+    if mode not in ("remote", "hybrid", "onsite"):
+        wm = _resolve_work_mode_for_list(
+            title=title, location=location, description=normalized_description
+        )
+        if wm in ("remote", "hybrid", "onsite"):
+            out["work_mode"] = wm
+        elif out.get("work_mode_fallback") not in ("remote", "hybrid", "onsite"):
+            wm_fb = _resolve_work_mode_for_list(
+                title=title,
+                location=location,
+                description=normalized_description,
+                fallback=True,
+            )
+            if wm_fb in ("remote", "hybrid", "onsite"):
+                out["work_mode_fallback"] = wm_fb
+    tags = stamp_clearance_us_person_tags(
+        title=title,
+        company=company,
+        location=location,
+        description=normalized_description,
+        url=url,
+    )
+    # Full JD is chip source of truth (preview often drops ITAR / TS).
+    out["clearance"] = bool(tags["clearance"])
+    out["us_person"] = bool(tags["us_person"])
+
+
+def persist_job_description(job: dict, description: str) -> Path:
+    """Write jd_full.txt and a jobs.json preview. Local files only — never submits."""
+    job_id = str(job.get("id") or "").strip()
+    if not job_id or job_id in (".", "..") or "/" in job_id or "\\" in job_id:
+        raise ValueError("invalid job id")
+    job_dir = RESUMES_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    full_path = job_dir / "jd_full.txt"
+    full_path.write_text(description, encoding="utf-8")
+    job["job_description"] = _trim_job_description_preview(description)
+    # Stamp list chips + incompleteness onto the jobs.json record so
+    # /api/jobs never has to re-parse jd_full.txt for every row.
+    job["jd_incomplete"] = looks_truncated_jd(description)
+    apply_list_tag_stamps_from_jd(job, description)
+    # Slim list stamps read jd_full; drop cached /api/jobs body so chips
+    # refresh without requiring a jobs.json mtime bump.
+    _invalidate_jobs_list_cache()
+    return full_path
+
+
+def _list_tags_need_jd_parse(job: dict) -> bool:
+    """Always False on the list hot path (stamp-only contract).
+
+    Legacy rows missing stamp keys are enriched by background backfill /
+    persist_job_description — never by GET /api/jobs.
+    """
+    return False
+
+
+def slim_job_for_list(job: dict) -> dict:
+    """List payloads omit JD bodies — stamp-only, no jd_full I/O.
+
+    Contract: GET /api/jobs never opens resumes/<id>/jd_full.txt and never
+    re-parses salary/YOE/work_mode/clearance from JD text. Background
+    backfill + persist_job_description stamp jobs.json; detail/search
+    paths may still read jd_full.
+    """
+    return _slim_job_for_list_impl(
+        job,
+        resolve_resume_file=resolve_job_resume_file,
+        conventional_resume_filename=conventional_resume_filename,
+        root=ROOT,
+    )
 
 
 def sync_job_resume_on_disk(job: dict) -> bool:
@@ -3077,52 +3673,35 @@ def _remember_runtime_job(job: dict) -> None:
 
 
 def jobs_list_response(data: dict, *, fill_hold: bool | None = None) -> dict:
-    jobs = data.get("jobs") or []
-    for job in jobs:
-        _remember_runtime_job(job)
-    return {
-        "jobs": [slim_job_for_list(j) for j in jobs],
-        # UI-008: multi-job busy gate needs hold signal without gateway round-trip.
-        "fill_hold_active": (
-            _fill_hold_browser_active() if fill_hold is None else fill_hold
-        ),
-    }
+    # UI-008: multi-job busy gate needs hold signal without gateway round-trip.
+    hold = _fill_hold_browser_active() if fill_hold is None else bool(fill_hold)
+    return _jobs_list_response_impl(
+        data,
+        fill_hold=hold,
+        remember_runtime=_remember_runtime_job,
+        slim=slim_job_for_list,
+    )
 
 
 def _invalidate_jobs_list_cache() -> None:
-    _jobs_list_cache.update(
-        {"mtime": None, "body_bytes": None, "etag": None, "fill_hold": None}
-    )
+    _invalidate_jobs_list_cache_impl(cache=_jobs_list_cache, lock=_jobs_list_cache_lock)
 
 
 def _cached_jobs_list_response() -> tuple[bytes, str]:
-    try:
-        mtime = JOBS_FILE.stat().st_mtime_ns
-    except OSError:
-        mtime = -1
-    fill_hold = _fill_hold_browser_active()
-    cached_body = _jobs_list_cache.get("body_bytes")
-    if (
-        cached_body is not None
-        and _jobs_list_cache.get("mtime") == mtime
-        and _jobs_list_cache.get("fill_hold") == fill_hold
-    ):
-        return cached_body, str(_jobs_list_cache["etag"])
+    """Build or reuse the slim /api/jobs body. Never takes ``_lock``.
 
-    data = read_jobs()
-    try:
-        mtime = JOBS_FILE.stat().st_mtime_ns
-    except OSError:
-        mtime = -1
-    revision = int(data.get("revision") or 0)
-    body = json.dumps(
-        jobs_list_response(data, fill_hold=fill_hold), separators=(",", ":")
-    ).encode()
-    etag = f'"{mtime:x}-{revision:x}-{1 if fill_hold else 0}"'
-    _jobs_list_cache.update(
-        {"mtime": mtime, "body_bytes": body, "etag": etag, "fill_hold": fill_hold}
+    Delegates to ``jobs_list`` helpers; holds only ``_jobs_list_cache_lock``
+    around cache get/set so JD backfill threads that hold ``_lock`` cannot
+    block first paint.
+    """
+    return _cached_jobs_list_response_impl(
+        jobs_file=JOBS_FILE,
+        read_jobs=read_jobs,
+        fill_hold_active=_fill_hold_browser_active,
+        build_response=lambda data, hold: jobs_list_response(data, fill_hold=hold),
+        cache=_jobs_list_cache,
+        lock=_jobs_list_cache_lock,
     )
-    return body, etag
 
 
 def write_jobs(data: dict, *, allow_purge: bool = False) -> None:
@@ -4876,6 +5455,27 @@ def _ensure_fill_address(job_id: str, *, job_location: str = "") -> str | None:
     return resolved
 
 
+def _validated_apply_url(value: str) -> str:
+    """Normalize and validate a user-edited apply URL."""
+    url = str(value or "").strip()
+    if not url:
+        raise ValueError("apply_url is required")
+    if len(url) > 4000:
+        raise ValueError("apply_url is too long")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("apply_url must be an http(s) URL")
+    return url
+
+
+def _apply_manual_apply_url(job: dict, apply_url: str) -> None:
+    """Persist user-edited apply_url; protect from automatic enrichment."""
+    job["apply_url"] = apply_url
+    job["apply_url_manual"] = True
+    if apply_url and not is_aggregator_url(apply_url):
+        job["job_url_direct"] = apply_url
+
+
 def _validated_applied_edit(payload: dict) -> dict:
     """Return only user-editable Applied fields, normalized for jobs.json."""
     limits = {
@@ -6297,20 +6897,6 @@ _TAIL_LINE_RE = re.compile(
 )
 
 
-def _parse_openclaw_json(out: str):
-    """Parse openclaw --json stdout; tolerate rare non-JSON prefixes on stdout."""
-    text = (out or "").strip()
-    if not text:
-        return {}
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        if start < 0:
-            raise
-        return json.loads(text[start:])
-
-
 def _find_cron_job() -> dict | None:
     """The daily discovery schedule, as a cron-job-shaped dict.
 
@@ -6959,8 +7545,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in parsed.path.split("/") if p]
         # Match GET /api/jobs so probes do not 404 while the list endpoint works.
         if parts == ["api", "jobs"]:
-            with _lock:
-                body, etag = _cached_jobs_list_response()
+            body, etag = _cached_jobs_list_response()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -7010,6 +7595,26 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
             return
         body = path.read_bytes()
+        # Cache-bust ops JS on every server start so hard-refresh isn't folklore.
+        if path.name == "index.html" and content_type == "text/html":
+            stamp = DASHBOARD_BUILD_ID.encode("ascii", "ignore")
+            body = body.replace(
+                b'src="/job_sort.js"',
+                b'src="/job_sort.js?v=' + stamp + b'"',
+            )
+            body = body.replace(
+                b'src="/app.js"',
+                b'src="/app.js?v=' + stamp + b'"',
+            )
+            meta = (
+                b'<meta name="jh-build" content="'
+                + stamp
+                + b'">\n<meta name="jh-port" content="'
+                + str(_dashboard_bound_port).encode("ascii", "ignore")
+                + b'">\n'
+            )
+            if b'name="jh-build"' not in body:
+                body = body.replace(b"</head>", meta + b"</head>", 1)
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -7020,6 +7625,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
+            self.send_header("X-JH-Build", DASHBOARD_BUILD_ID)
         if inline_filename:
             # Without this, some browsers default to downloading a PDF
             # rather than opening it in the tab - explicit "inline" (not
@@ -7059,6 +7665,8 @@ class Handler(BaseHTTPRequestHandler):
         "skip": ("_handle_skip", True),
         "restore": ("_handle_restore", False),
         "edit": ("_handle_edit_applied", True),
+        "apply-url": ("_handle_apply_url_edit", True),
+        "jd": ("_handle_jd_edit", True),
         "submitted": ("_handle_mark_submitted", False),
         "claim-ready-announcement": ("_handle_claim_ready_announcement", False),
         "resume-latex": ("_handle_resume_latex_save", True),
@@ -7112,8 +7720,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(disk, "application/pdf", inline_filename=filename)
             return
         if parts == ["api", "jobs"]:
-            with _lock:
-                body, etag = _cached_jobs_list_response()
+            # Do not take `_lock` — backfills hold it for minutes while
+            # scanning jd_full; list must stay instant from stamps/cache.
+            body, etag = _cached_jobs_list_response()
             # Omit JD bodies from the list poll — full cleaned text is
             # GET /api/jobs/<id>/description on expand.
             headers = {"ETag": etag}
@@ -7122,8 +7731,41 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send_json(headers=headers, body_bytes=body)
             return
+        if parts == ["api", "jobs", "search"]:
+            # Lightweight JD grep — separate from cold /api/jobs list.
+            qs = parse_qs(parsed.query)
+            raw_q = (qs.get("q") or [""])[0]
+            tokens = re.split(r"[\s,]+", raw_q.strip()) if raw_q else []
+            try:
+                timeout_s = float((qs.get("timeout") or ["2.5"])[0])
+            except (TypeError, ValueError):
+                timeout_s = 2.5
+            try:
+                limit = int((qs.get("limit") or ["8000"])[0])
+            except (TypeError, ValueError):
+                limit = 8000
+            # Prefer in-memory jobs when cache is warm; else a plain read.
+            # Never builds the slim list response or re-stamps chips.
+            try:
+                data = read_jobs()
+                job_list = data.get("jobs", [])
+            except Exception:
+                job_list = []
+            t0 = time.monotonic()
+            hits = search_jobs_jd_tokens(
+                tokens, jobs=job_list, timeout_s=timeout_s, limit=limit
+            )
+            self._send_json({
+                "q": raw_q,
+                "hits": hits,
+                "ms": int((time.monotonic() - t0) * 1000),
+            })
+            return
         if parts == ["api", "status"]:
             self._send_json(runtime_status())
+            return
+        if parts == ["api", "build"]:
+            self._send_json(dashboard_build_info())
             return
         if parts == ["api", "discover"]:
             self._send_json(discovery_status())
@@ -7135,16 +7777,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(load_prune_settings())
             return
         if len(parts) == 4 and parts[0:2] == ["api", "jobs"] and parts[3] == "description":
-            with _lock:
-                data = read_jobs()
-            job = self._job(data, parts[2])
-            if not job:
+            # File-first: do not parse jobs.json on the hot click path.
+            raw, source = fetch_job_description_for_api(parts[2])
+            if raw is None:
                 self._send_json({"error": "not found"}, 404)
                 return
-            raw, source = load_raw_job_description(job)
             cleaned = sanitize_job_description_for_display(raw)
             self._send_json({
-                "id": job["id"],
+                "id": parts[2],
                 "job_description": cleaned,
                 "source": source,
                 "chars": len(cleaned),
@@ -7758,12 +8398,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"ok": True, "status": "applied"})
 
     def _handle_resolve_apply(self, job_id, payload=None):
-        """Search for a company ATS apply URL when the job is still on LinkedIn.
+        """Resolve company ATS apply URL (LinkedIn session redirect and/or public search).
 
         High confidence upgrades apply_url (LinkedIn kept on job_url/alts).
         Medium records a candidate without overwriting. Easy Apply / no ATS
-        host / Workday-iCIMS stay as-is. Default write=True (user clicked);
-        pass ``{"write": false}`` for dry-run.
+        host / Workday-iCIMS / CAPTCHA stay as-is. Default write=True (user
+        clicked); pass ``{"write": false}`` for dry-run.
         """
         payload = payload or {}
         write = True if "write" not in payload else bool(payload.get("write"))
@@ -7787,6 +8427,68 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json(out)
 
+    def _handle_apply_url_edit(self, job_id, payload):
+        try:
+            apply_url = _validated_apply_url((payload or {}).get("apply_url"))
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+        with self._locked_job(job_id) as (data, job):
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            _apply_manual_apply_url(job, apply_url)
+            job["updated_at"] = now_iso()
+            _append_timeline_locked(
+                job,
+                _timeline_entry(
+                    event="apply_url_edit",
+                    detail=f"Apply URL set manually: {apply_url[:160]}",
+                    at=job["updated_at"],
+                ),
+            )
+            response_job = slim_job_for_list(job)
+        self._send_json({"ok": True, "job": response_job})
+
+    def _handle_jd_edit(self, job_id, payload):
+        """Save a user-edited JD to jd_full.txt + jobs.json preview (local only)."""
+        try:
+            description = _validated_job_description(payload or {})
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+        with self._locked_job(job_id) as (data, job):
+            if job is None:
+                self._send_json({"error": "not found"}, 404)
+                return
+            try:
+                persist_job_description(job, description)
+            except ValueError as e:
+                self._send_json({"error": str(e)}, 400)
+                return
+            except OSError as e:
+                self._send_json({"error": str(e)[:300]}, 500)
+                return
+            job["updated_at"] = now_iso()
+            n = len(description)
+            _append_timeline_locked(
+                job,
+                _timeline_entry(
+                    event="jd_edit",
+                    detail=f"Job description edited locally ({n} chars)",
+                    at=job["updated_at"],
+                ),
+            )
+            cleaned = sanitize_job_description_for_display(description)
+            response_job = slim_job_for_list(job)
+        self._send_json({
+            "ok": True,
+            "job": response_job,
+            "job_description": cleaned,
+            "source": "jd_full.txt",
+            "chars": len(cleaned),
+        })
+
     def _handle_edit_applied(self, job_id, payload):
         try:
             fields = _validated_applied_edit(payload or {})
@@ -7803,6 +8505,9 @@ class Handler(BaseHTTPRequestHandler):
             if job.get("status") != "applied":
                 self._send_json({"error": "only applied jobs can be edited here"}, 409)
                 return
+            if "apply_url" in fields:
+                _apply_manual_apply_url(job, fields["apply_url"])
+                fields = {k: v for k, v in fields.items() if k != "apply_url"}
             job.update(fields)
             job["updated_at"] = now_iso()
             _append_timeline_locked(
@@ -8128,7 +8833,8 @@ class Handler(BaseHTTPRequestHandler):
         # discovery kicked off from the popover uses the just-picked regions.
         settings_patch = {
             k: payload[k]
-            for k in ("builtin_days_since_updated", "discover_us", "discover_india")
+            for k in ("builtin_days_since_updated", "discover_us", "discover_india",
+                      "source_days")
             if k in payload
         }
         if settings_patch:
@@ -8487,6 +9193,7 @@ def _backfill_company_key_loop() -> None:
     Does not rewrite the raw company string. Uses a single jobs.json write
     lock (no nested locked_jobs_for_write).
     """
+    _wait_jobs_list_boot()
     try:
         changed = 0
         with _lock:
@@ -8498,30 +9205,40 @@ def _backfill_company_key_loop() -> None:
         print(f"warn: company_key backfill failed: {e}")
 
 
-def _backfill_missing_jds_loop() -> None:
-    """One-shot: fetch missing JDs for SmartRecruiters/Breezy/Rippling/Lever.
+# Continuous low-priority HTTP apply-resolve for unresolved aggregators
+# left over from before Discover's since_iso window. Small batches only.
+APPLY_RESOLVE_BACKLOG_INTERVAL_S = 180
+APPLY_RESOLVE_BACKLOG_LIMIT = 8
+APPLY_RESOLVE_BACKLOG_CONCURRENCY = 3
+# Ongoing missing-JD fetch after the one-shot v1 marker (small batches).
+MISSING_JD_BACKFILL_INTERVAL_S = 300
+MISSING_JD_BACKFILL_LIMIT = 5
 
-    Skips when logs/missing_jd_backfill_v1.done exists. Runs in a daemon
-    thread so startup is not blocked; network work can take several minutes.
+
+def _backfill_missing_jds_loop() -> None:
+    """Fetch missing/truncated JDs, re-stamp tags, prune if newly disqualifying.
+
+    First run (no marker): full pass via ``backfill_missing_jds.py``.
+    After marker: continuous low-priority ``--force --limit N`` batches so
+    new incomplete JDs still get filled without hanging the machine.
     """
-    marker = ROOT / "logs" / "missing_jd_backfill_v1.done"
-    if marker.exists():
-        return
+    _wait_jobs_list_boot()
     script = ROOT / "scripts" / "backfill_missing_jds.py"
     if not script.is_file():
         return
-    try:
+    marker = ROOT / "logs" / "missing_jd_backfill_v1.done"
+    py = ROOT / ".venv" / "bin" / "python"
+    python = str(py if py.is_file() else sys.executable)
+
+    def _run(cmd: list[str], *, timeout_s: int) -> None:
         import subprocess
 
-        py = ROOT / ".venv" / "bin" / "python"
-        cmd = [str(py if py.is_file() else sys.executable), str(script)]
-        print("missing JD backfill: starting background run…")
         proc = subprocess.run(
             cmd,
             cwd=str(ROOT),
             capture_output=True,
             text=True,
-            timeout=60 * 45,
+            timeout=timeout_s,
         )
         if proc.stdout:
             print(proc.stdout[-2000:])
@@ -8530,10 +9247,65 @@ def _backfill_missing_jds_loop() -> None:
                 f"warn: missing JD backfill exited {proc.returncode}: "
                 f"{(proc.stderr or '')[-500:]}"
             )
-        else:
+
+    # One-shot full pass when never completed.
+    if not marker.exists():
+        try:
+            print("missing JD backfill: starting background run…")
+            _run([python, str(script)], timeout_s=60 * 45)
             print("missing JD backfill: finished")
-    except Exception as e:
-        print(f"warn: missing JD backfill failed: {e}")
+            # Wake prune so newly filled disqualifiers don't wait a full interval.
+            try:
+                _run_scheduled_prune_once(load_prune_settings())
+            except Exception as e:
+                print(f"warn: prune after JD backfill failed: {e}")
+        except Exception as e:
+            print(f"warn: missing JD backfill failed: {e}")
+
+    # Continuous small batches for jobs that arrive after the marker.
+    while True:
+        time.sleep(MISSING_JD_BACKFILL_INTERVAL_S)
+        if is_session_running(DISCOVERY_SESSION_KEY):
+            continue
+        try:
+            _run(
+                [python, str(script), "--force", "--limit", str(MISSING_JD_BACKFILL_LIMIT)],
+                timeout_s=60 * 10,
+            )
+        except Exception as e:
+            print(f"warn: missing JD backfill batch failed: {e}")
+
+
+def _apply_resolve_backlog_loop() -> None:
+    """Rate-limited HTTP resolve for unresolved LinkedIn/aggregator backlog.
+
+    Discover only resolves jobs touched since the run started. This loop
+    drains older unresolved rows in small batches (HTTP-only, no CDP).
+    Skips while Discover is running so it never contends for machine load.
+    """
+    _wait_jobs_list_boot()
+    while True:
+        time.sleep(APPLY_RESOLVE_BACKLOG_INTERVAL_S)
+        if is_session_running(DISCOVERY_SESSION_KEY):
+            continue
+        try:
+            import resolve_apply_urls as rau
+
+            summary = rau.resolve_discovery_apply_urls(
+                since_iso=None,
+                limit=APPLY_RESOLVE_BACKLOG_LIMIT,
+                write=True,
+                concurrency=APPLY_RESOLVE_BACKLOG_CONCURRENCY,
+            )
+            considered = int(summary.get("considered") or 0)
+            if considered:
+                print(
+                    f"apply-resolve backlog: considered={considered} "
+                    f"upgraded={len(summary.get('upgraded') or [])} "
+                    f"high={summary.get('high')}"
+                )
+        except Exception as e:
+            print(f"warn: apply-resolve backlog failed: {e}")
 
 
 def _backfill_multi_opening_loop() -> None:
@@ -8542,6 +9314,7 @@ def _backfill_multi_opening_loop() -> None:
     Runs in a daemon thread so list sort works for existing jobs without
     blocking dashboard startup. Skips jobs that already have a boolean flag.
     """
+    _wait_jobs_list_boot()
     try:
         from multi_opening import backfill_multi_opening_flags
     except Exception as e:
@@ -8595,18 +9368,78 @@ def _has_jd_full_for_backfill(job: dict) -> bool:
     )
 
 
-# Bump when detection / full-JD backfill logic changes so undetermined
-# stamps get one more pass. Marker lives under logs/.
-_YOE_WM_BACKFILL_MARKER = ROOT / "logs" / "yoe_wm_full_jd_backfill_v2.done"
+# Bump when detection / full-JD backfill logic changes so stamps get
+# another pass (including previously wrong tags, not only undetermined).
+_YOE_WM_BACKFILL_MARKER = ROOT / "logs" / "yoe_wm_full_jd_backfill_v4.done"
 # Tier-2 display fallbacks (min_yoe_fallback / work_mode_fallback) — separate
-# marker so the strict v2 pass is not re-run.
-_YOE_WM_FALLBACK_MARKER = ROOT / "logs" / "yoe_wm_fallback_v3.done"
+# marker so an older strict pass is not the only refresh.
+_YOE_WM_FALLBACK_MARKER = ROOT / "logs" / "yoe_wm_fallback_v4.done"
 # Salary stamps (display only). Marker under logs/.
-_SALARY_BACKFILL_MARKER = ROOT / "logs" / "salary_full_jd_backfill_v1.done"
+_SALARY_BACKFILL_MARKER = ROOT / "logs" / "salary_full_jd_backfill_v2.done"
+# Clearance / U.S. Person chips (and prune signals that live only in jd_full).
+_CLEARANCE_US_PERSON_BACKFILL_MARKER = ROOT / "logs" / "clearance_us_person_backfill_v1.done"
+
+
+def _backfill_clearance_us_person_loop() -> None:
+    """Stamp clearance / us_person from full JD (preview often truncates ITAR/TS)."""
+    _wait_jobs_list_boot()
+    try:
+        from discovery_filters import stamp_clearance_us_person_tags
+    except Exception as e:
+        print(f"warn: discovery_filters import failed (clearance/us_person): {e}")
+        return
+    try:
+        force = not _CLEARANCE_US_PERSON_BACKFILL_MARKER.exists()
+        changed = 0
+        with _lock:
+            with locked_jobs_for_write() as data:
+                jobs = data.get("jobs") or []
+                needs = force or any(
+                    "clearance" not in j or "us_person" not in j for j in jobs
+                )
+                if not needs:
+                    return
+                for job in jobs:
+                    missing = "clearance" not in job or "us_person" not in job
+                    refresh = force and (
+                        missing
+                        or job.get("clearance") is None
+                        or job.get("us_person") is None
+                        or _has_jd_full_for_backfill(job)
+                    )
+                    if not missing and not refresh:
+                        continue
+                    tags = stamp_clearance_us_person_tags(
+                        title=job.get("title"),
+                        company=job.get("company"),
+                        location=job.get("location"),
+                        description=_job_desc_for_backfill(job),
+                        url=job.get("apply_url") or job.get("job_url"),
+                    )
+                    prev = (job.get("clearance"), job.get("us_person"))
+                    job["clearance"] = tags["clearance"]
+                    job["us_person"] = tags["us_person"]
+                    if missing or prev != (tags["clearance"], tags["us_person"]):
+                        changed += 1
+        if force:
+            try:
+                _CLEARANCE_US_PERSON_BACKFILL_MARKER.parent.mkdir(
+                    parents=True, exist_ok=True
+                )
+                _CLEARANCE_US_PERSON_BACKFILL_MARKER.write_text(
+                    f"fields_touched={changed}\n", encoding="utf-8"
+                )
+            except OSError as e:
+                print(f"warn: could not write clearance/us_person backfill marker: {e}")
+        if changed:
+            print(f"clearance/us_person backfill: fields_set={changed}")
+    except Exception as e:
+        print(f"warn: clearance/us_person backfill failed: {e}")
 
 
 def _backfill_salary_loop() -> None:
     """Stamp salary_min/max (+ fallbacks) from full JD. Display only — never prune."""
+    _wait_jobs_list_boot()
     try:
         from discovery_filters import extract_salary, extract_salary_fallback
     except Exception as e:
@@ -8637,7 +9470,7 @@ def _backfill_salary_loop() -> None:
                         or "salary_max_fallback" not in job
                     )
                     undetermined = job.get("salary_min") is None
-                    refresh = force and undetermined and _has_jd_full_for_backfill(job)
+                    refresh = force and _has_jd_full_for_backfill(job)
                     if not missing and not refresh:
                         continue
                     title = job.get("title") or ""
@@ -8697,6 +9530,7 @@ def _backfill_yoe_work_mode_loop() -> None:
     Fallback marker stamps min_yoe_fallback / work_mode_fallback for UI ``~``
     labels without changing prune/excessive strict YOE.
     """
+    _wait_jobs_list_boot()
     try:
         from discovery_filters import (
             detect_work_mode,
@@ -8725,10 +9559,6 @@ def _backfill_yoe_work_mode_loop() -> None:
                     or (
                         force_undetermined
                         and _has_jd_full_for_backfill(j)
-                        and (
-                            j.get("work_mode") in (None, "unknown")
-                            or j.get("min_yoe") is None
-                        )
                     )
                     for j in jobs
                 )
@@ -8743,14 +9573,8 @@ def _backfill_yoe_work_mode_loop() -> None:
                     location = job.get("location") or ""
                     missing_yoe = "min_yoe" not in job
                     missing_mode = "work_mode" not in job
-                    undetermined_mode = job.get("work_mode") in (None, "unknown")
-                    undetermined_yoe = job.get("min_yoe") is None
                     refresh = force_undetermined and _has_jd_full_for_backfill(job)
-                    want_strict = (
-                        missing_yoe
-                        or missing_mode
-                        or (refresh and (undetermined_mode or undetermined_yoe))
-                    )
+                    want_strict = missing_yoe or missing_mode or refresh
                     missing_yoe_fb = "min_yoe_fallback" not in job
                     missing_mode_fb = "work_mode_fallback" not in job
                     want_fallback = force_fallback or missing_yoe_fb or missing_mode_fb
@@ -8758,23 +9582,23 @@ def _backfill_yoe_work_mode_loop() -> None:
                         continue
                     desc = _job_desc_for_backfill(job)
                     if want_strict:
-                        if missing_mode or (refresh and undetermined_mode):
+                        if missing_mode or refresh:
                             mode = detect_work_mode(
                                 title=title, location=location, description=desc
                             )
                             prev = job.get("work_mode")
-                            if missing_mode or mode != "unknown" or prev != mode:
+                            if mode != prev or missing_mode:
                                 if mode != prev:
                                     if mode != "unknown":
                                         mode_fixed += 1
                                     changed += 1
                                 job["work_mode"] = mode
-                        if missing_yoe or (refresh and undetermined_yoe):
+                        if missing_yoe or refresh:
                             yoe = extract_min_required_yoe(
                                 title=title, description=desc
                             )
                             prev_y = job.get("min_yoe")
-                            if missing_yoe or yoe is not None:
+                            if yoe != prev_y or missing_yoe:
                                 if yoe != prev_y:
                                     if yoe is not None:
                                         yoe_fixed += 1
@@ -8850,7 +9674,11 @@ def _normalize_prune_reasons(raw) -> list[str]:
         return list(PRUNE_REASON_CODES)
     if not isinstance(raw, (list, tuple, set)):
         raise ValueError("reasons must be a list")
-    requested = {str(reason).strip() for reason in raw}
+    requested = set()
+    for reason in raw:
+        key = str(reason).strip()
+        key = _PRUNE_REASON_ALIASES.get(key, key)
+        requested.add(key)
     unknown = requested.difference(PRUNE_REASON_CODES)
     if unknown:
         raise ValueError(f"unknown prune reason: {sorted(unknown)[0]}")
@@ -8903,10 +9731,23 @@ def _auto_delete_sweep_once(reasons: set[str] | None = None) -> int:
     if not enabled_reasons:
         return 0
     try:
-        from discovery_filters import auto_delete_reason
+        from discovery_filters import auto_delete_reason, stamp_clearance_us_person_tags
     except Exception as e:
         print(f"warn: auto_delete_reason import failed: {e}")
         return 0
+    should_prune_unresolved = None
+    tombstone_unresolved = None
+    if "unresolved_apply_url" in enabled_reasons:
+        try:
+            from resolve_apply_urls import (
+                should_prune_unresolved_apply_url,
+                tombstone_unresolved_apply_url,
+            )
+
+            should_prune_unresolved = should_prune_unresolved_apply_url
+            tombstone_unresolved = tombstone_unresolved_apply_url
+        except Exception as e:
+            print(f"warn: unresolved_apply_url prune import failed: {e}")
     try:
         moved = 0
         to_block: list[dict] = []
@@ -8918,22 +9759,30 @@ def _auto_delete_sweep_once(reasons: set[str] | None = None) -> int:
                 for job in data.get("jobs") or []:
                     if job.get("status") != "discovered":
                         continue
+                    desc = _job_desc_for_backfill(job)
+                    tags = stamp_clearance_us_person_tags(
+                        title=job.get("title"),
+                        company=job.get("company"),
+                        location=job.get("location"),
+                        description=desc,
+                        url=job.get("apply_url") or job.get("job_url"),
+                    )
+                    job["clearance"] = tags["clearance"]
+                    job["us_person"] = tags["us_person"]
                     reason = auto_delete_reason(
                         title=job.get("title"),
                         location=job.get("location"),
                         company=job.get("company"),
-                        description=_job_desc_for_backfill(job),
+                        description=desc,
                         url=job.get("apply_url") or job.get("job_url"),
                         regions=regions,
                     )
                     if reason not in enabled_reasons:
                         reason = None
                     if not reason and "stale_listing" in enabled_reasons:
-                        # Exact date_posted, or created_at when undated.
-                        # date_posted_fallback (~) must never trigger prune.
+                        # Exact date_posted only (same as isStaleListing).
+                        # Never created_at; date_posted_fallback (~) never prunes.
                         posted = job.get("date_posted")
-                        if not posted:
-                            posted = job.get("created_at")
                         try:
                             posted_dt = datetime.fromisoformat(
                                 str(posted or "").replace("Z", "+00:00")
@@ -8946,12 +9795,22 @@ def _auto_delete_sweep_once(reasons: set[str] | None = None) -> int:
                                 reason = "stale_listing"
                         except (TypeError, ValueError):
                             pass
+                    if (
+                        not reason
+                        and tombstone_unresolved is not None
+                        and should_prune_unresolved is not None
+                        and should_prune_unresolved(job)
+                    ):
+                        # Sets deleted_reason / chip / status_detail (sanitized).
+                        tombstone_unresolved(job)
+                        reason = "unresolved_apply_url"
                     if not reason:
                         continue
-                    job["status"] = "deleted"
-                    job["deleted_at"] = now
-                    job["deleted_reason"] = reason
-                    job["updated_at"] = now
+                    if reason != "unresolved_apply_url":
+                        job["status"] = "deleted"
+                        job["deleted_at"] = now
+                        job["deleted_reason"] = reason
+                        job["updated_at"] = now
                     moved += 1
                     # Snapshot for tombstones AFTER releasing _lock + jobs EX
                     # flock — block_deleted_job takes its own blocked_urls flock
@@ -9033,14 +9892,51 @@ def _install_lifecycle_signal_handlers() -> None:
             print(f"warn: could not install handler for {sig}: {e}")
 
 
-def main():
-    global _http_server
-    # Do NOT start OpenClaw/PartyRock CDP or Chrome-for-Testing here —
-    # only dashboard UI Chrome is opened by launch_dashboard.sh. PartyRock
-    # CDP starts on demand via _ensure_openclaw_managed_browser() when a
-    # Start/tailor path needs it; CfT is launched by Playwright fill.
-    _install_lifecycle_signal_handlers()
-    # DASH2-002: crash/restart leaves no _running_procs — force orphan stuck now.
+def _stamp_jd_incomplete_into_jobs() -> int:
+    """Persist jd_incomplete onto jobs.json so list skips per-row jd_full I/O.
+
+    JD reads happen *outside* the jobs exclusive lock so cold /api/jobs
+    (shared flock) is not blocked for the whole scan.
+    """
+    with _lock:
+        data = read_jobs()
+        need = [
+            dict(job)
+            for job in (data.get("jobs") or [])
+            if job.get("id") and not isinstance(job.get("jd_incomplete"), bool)
+        ]
+    if not need:
+        return 0
+
+    stamps: dict[str, bool] = {}
+    for job in need:
+        jid = str(job.get("id") or "").strip()
+        if not jid:
+            continue
+        raw, _src = load_raw_job_description(job)
+        stamps[jid] = looks_truncated_jd(raw)
+
+    if not stamps:
+        return 0
+
+    changed = 0
+    with _lock:
+        with locked_jobs_for_write() as data:
+            for job in data.get("jobs") or []:
+                jid = str(job.get("id") or "").strip()
+                if jid not in stamps:
+                    continue
+                if isinstance(job.get("jd_incomplete"), bool):
+                    continue
+                job["jd_incomplete"] = stamps[jid]
+                changed += 1
+    if changed:
+        _invalidate_jobs_list_cache()
+    return changed
+
+
+def _startup_reconcile_async() -> None:
+    """Orphan + triage migrate after listen — never block first HTML/API."""
     try:
         orphaned = _force_stuck_orphaned_in_progress(ignore_age=True)
         if orphaned:
@@ -9061,6 +9957,60 @@ def main():
             )
     except Exception as e:
         print(f"warn: triage holding-pen migration failed: {e}")
+    try:
+        from resolve_apply_urls import sweep_unresolved_apply_urls
+
+        swept = sweep_unresolved_apply_urls(write=True)
+        moved = int(swept.get("moved") or 0)
+        if moved:
+            print(f"unresolved_apply_url sweep: moved={moved}")
+            _invalidate_jobs_list_cache()
+    except Exception as e:
+        print(f"warn: unresolved_apply_url sweep failed: {e}")
+
+
+def _wait_jobs_list_boot(timeout: float = 120.0) -> None:
+    """Heavy JD backfills wait so cold /api/jobs wins the disk/GIL first."""
+    if not _jobs_list_boot_ready.wait(timeout=timeout):
+        print("warn: jobs list boot ready timed out; continuing backfill")
+
+
+def _prewarm_jobs_list_cache() -> None:
+    """Stamp incompleteness then build /api/jobs so first paint stays fast."""
+    try:
+        try:
+            n = _stamp_jd_incomplete_into_jobs()
+            if n:
+                print(f"jd_incomplete stamp: changed={n}")
+        except Exception as e:
+            print(f"warn: jd_incomplete stamp failed: {e}")
+        try:
+            t0 = time.perf_counter()
+            body, _etag = _cached_jobs_list_response()
+            print(
+                f"jobs list prewarm: {len(body)} bytes in "
+                f"{time.perf_counter() - t0:.2f}s"
+            )
+        except Exception as e:
+            print(f"warn: jobs list prewarm failed: {e}")
+    finally:
+        _jobs_list_boot_ready.set()
+
+
+def main():
+    global _http_server
+    # Do NOT start OpenClaw/PartyRock CDP or Chrome-for-Testing here —
+    # only dashboard UI Chrome is opened by launch_dashboard.sh. PartyRock
+    # CDP starts on demand via _ensure_openclaw_managed_browser() when a
+    # Start/tailor path needs it; CfT is launched by Playwright fill.
+    _install_lifecycle_signal_handlers()
+    # Listen ASAP. Orphan reconcile / triage / list prewarm run as daemons
+    # so Refresh and cold open are not blocked on jobs.json sweeps.
+    threading.Thread(
+        target=_startup_reconcile_async,
+        daemon=True,
+        name="startup-reconcile",
+    ).start()
     threading.Thread(target=reconcile_loop, daemon=True).start()
     threading.Thread(target=notify_stuck_jobs_loop, daemon=True).start()
     # OpenClaw-free daily discovery scheduler (replaces `openclaw cron`). POSTs
@@ -9102,9 +10052,19 @@ def main():
         name="salary-backfill",
     ).start()
     threading.Thread(
+        target=_backfill_clearance_us_person_loop,
+        daemon=True,
+        name="clearance-us-person-backfill",
+    ).start()
+    threading.Thread(
         target=_backfill_auto_delete_loop,
         daemon=True,
         name="auto-delete-backfill",
+    ).start()
+    threading.Thread(
+        target=_apply_resolve_backlog_loop,
+        daemon=True,
+        name="apply-resolve-backlog",
     ).start()
     # PID file for launch_dashboard.sh wait/cleanup (best-effort).
     # Companion files (also under logs/): dashboard_launcher.pid,
@@ -9117,14 +10077,20 @@ def main():
         print(f"warn: could not write dashboard pid file: {e}")
     # Host/port default to loopback:8787 (unchanged macOS behavior). Containers
     # set JOBHUNTER_DASHBOARD_HOST=0.0.0.0 so the port is reachable from the host.
+    # Sticky port: never hop to :8788+ from this process — launcher must pass
+    # JOBHUNTER_DASHBOARD_PORT=8787 (or explicit override).
     _bind_host = (os.environ.get("JOBHUNTER_DASHBOARD_HOST") or "127.0.0.1").strip()
     try:
         _bind_port = int((os.environ.get("JOBHUNTER_DASHBOARD_PORT") or "8787").strip())
     except ValueError:
         _bind_port = 8787
-    server = ThreadingHTTPServer((_bind_host, _bind_port), Handler)
+    server = DashboardHTTPServer((_bind_host, _bind_port), Handler)
     _http_server = server
-    print(f"job-hunter dashboard: http://{_bind_host}:{_bind_port}")
+    _remember_bound_port(_bind_port)
+    print(
+        f"job-hunter dashboard: http://{_bind_host}:{_bind_port} "
+        f"(build={DASHBOARD_BUILD_ID})"
+    )
     if ui_lifecycle_enabled():
         print(
             "UI lifecycle on: heartbeats track connected tabs; quit only via "
@@ -9132,6 +10098,11 @@ def main():
             "Cmd+Q) or POST /api/restart (Refresh). Idle heartbeat stall "
             "does not shut down the stack."
         )
+    threading.Thread(
+        target=_prewarm_jobs_list_cache,
+        daemon=True,
+        name="jobs-list-prewarm",
+    ).start()
     try:
         server.serve_forever()
     finally:

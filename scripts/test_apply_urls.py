@@ -81,7 +81,15 @@ class TestUrlClassify(unittest.TestCase):
         self.assertTrue(is_aggregator_url("https://www.linkedin.com/jobs/view/123"))
         self.assertTrue(is_aggregator_url("https://www.indeed.com/viewjob?jk=abc"))
         self.assertTrue(is_aggregator_url("https://www.glassdoor.com/job-listing/x"))
+        self.assertTrue(is_aggregator_url("https://remoteok.com/remote-jobs/ml-1"))
+        self.assertTrue(is_aggregator_url("https://remotive.com/remote-jobs/ml-1"))
+        self.assertTrue(is_aggregator_url("https://jobicy.com/jobs/1-data-engineer"))
+        self.assertTrue(is_aggregator_url("https://www.adzuna.com/details/456"))
+        self.assertTrue(is_aggregator_url("https://weworkremotely.com/remote-jobs/stripe-ml"))
         self.assertFalse(is_aggregator_url("https://boards.greenhouse.io/acme/jobs/1"))
+        self.assertFalse(is_aggregator_url("https://spokeo.na.teamtailor.com/jobs/1"))
+        self.assertFalse(is_aggregator_url("https://acme.applytojob.com/apply/abc"))
+        self.assertFalse(is_aggregator_url("https://cardfactory.pinpointhq.com/en/postings/abc"))
 
     def test_ats_or_company(self):
         self.assertTrue(is_known_ats_url("https://boards.greenhouse.io/acme/jobs/1"))
@@ -184,6 +192,27 @@ class TestMergeFixture(unittest.TestCase):
             "https://boards.greenhouse.io/other/jobs/2",
         )
         self.assertIn("greenhouse", a)
+
+
+class TestManualApplyUrl(unittest.TestCase):
+    def test_fold_preserves_manual_apply_url(self):
+        winner = {
+            "title": "ML Engineer",
+            "company": "Acme",
+            "apply_url": "https://boards.greenhouse.io/acme/jobs/1",
+            "apply_url_manual": True,
+            "job_url": "https://boards.greenhouse.io/acme/jobs/1",
+        }
+        loser = {
+            "title": "ML Engineer",
+            "company": "Acme",
+            "apply_url": "https://jobs.lever.co/acme/other",
+            "job_url": "https://jobs.lever.co/acme/other",
+            "site": "lever",
+        }
+        fold_urls_into_winner(winner, loser)
+        self.assertEqual(winner["apply_url"], "https://boards.greenhouse.io/acme/jobs/1")
+        self.assertTrue(winner["apply_url_manual"])
 
 
 def _dry_run_print() -> None:

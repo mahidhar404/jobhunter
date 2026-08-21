@@ -17,9 +17,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import contextlib
+
 import resolve_apply_urls as rau  # noqa: E402
 from apply_urls import is_aggregator_url, is_known_ats_url  # noqa: E402
 from jd_fingerprint import jd_fingerprint, normalize_jd_text  # noqa: E402
+
+# Public-search unit tests stay offline — never launch LinkedIn CfT profile.
+rau.try_linkedin_session_resolve = lambda *a, **k: None  # type: ignore[assignment]
 
 
 LINKEDIN_URL = "https://www.linkedin.com/jobs/view/4452248501"
@@ -425,6 +430,319 @@ class TestOptionalJazzhrSeed(unittest.TestCase):
     def test_extracts_applytojob_slug(self):
         self.assertEqual(rau.jazzhr_slug_from_url(JAZZHR_URL), "emedlabsllc")
         self.assertIsNone(rau.jazzhr_slug_from_url(LINKEDIN_URL))
+
+
+class TestApplyResolvePersistence(unittest.TestCase):
+    def test_classify_status_for_common_reasons(self):
+        self.assertEqual(
+            rau.classify_apply_resolve_status(
+                {"confidence": "high", "url": JAZZHR_URL, "reason": "linkedin_apply_href"}
+            ),
+            "ok",
+        )
+        self.assertEqual(
+            rau.classify_apply_resolve_status({"confidence": "low", "reason": "easy_apply"}),
+            "easy_apply",
+        )
+        self.assertEqual(
+            rau.classify_apply_resolve_status(
+                {"confidence": "low", "reason": "no_external_apply"}
+            ),
+            "no_external",
+        )
+        self.assertEqual(
+            rau.classify_apply_resolve_status(
+                {"confidence": "low", "reason": "not_logged_in"}
+            ),
+            "failed",
+        )
+        self.assertEqual(
+            rau.classify_apply_resolve_status(
+                {"confidence": "medium", "url": JAZZHR_URL, "reason": "medium_no_overwrite"}
+            ),
+            "skipped",
+        )
+
+    def test_set_apply_resolve_fields_success_clears_message(self):
+        job = _emed_job(
+            apply_resolve_status="failed",
+            apply_resolve_reason="no_ats_host",
+            apply_resolve_message="Search did not find a known ATS apply URL.",
+        )
+        changed = rau.set_apply_resolve_fields(
+            job,
+            {
+                "confidence": "high",
+                "url": JAZZHR_URL,
+                "reason": "linkedin_apply_href",
+                "method": "linkedin_http",
+            },
+        )
+        self.assertTrue(changed)
+        self.assertEqual(job["apply_resolve_status"], "ok")
+        self.assertEqual(job["apply_resolve_reason"], "linkedin_apply_href")
+        self.assertTrue(job.get("apply_resolve_at"))
+        self.assertNotIn("apply_resolve_message", job)
+
+    def test_set_apply_resolve_fields_idempotent(self):
+        job = _emed_job()
+        rau.set_apply_resolve_fields(
+            job, {"confidence": "low", "reason": "no_external_apply"}
+        )
+        at = job["apply_resolve_at"]
+        changed = rau.set_apply_resolve_fields(
+            job, {"confidence": "low", "reason": "no_external_apply"}
+        )
+        self.assertFalse(changed)
+        self.assertEqual(job["apply_resolve_at"], at)
+
+    def test_sanitize_strips_cookie_like_messages(self):
+        msg = rau.sanitize_apply_resolve_message("li_at=SECRETCOOKIE; path=/")
+        self.assertIn("open_linkedin_resolve.sh", msg)
+        self.assertNotIn("SECRETCOOKIE", msg)
+
+    def test_resolve_job_write_stamps_failure_fields(self):
+        job = _emed_job()
+        with patch.object(rau, "try_linkedin_session_resolve", return_value=None):
+            result = rau.resolve_job(
+                job,
+                search_fn=lambda q: [],
+                fetch_fn=lambda u: None,
+                write=True,
+                linkedin_session=True,
+            )
+        self.assertEqual(result.get("reason"), "no_ats_host")
+        self.assertEqual(job["apply_resolve_status"], "failed")
+        self.assertEqual(job["apply_resolve_reason"], "no_ats_host")
+        self.assertTrue(job.get("apply_resolve_at"))
+
+    def test_should_auto_resolve_skips_ats_and_terminal(self):
+        ats = {
+            "id": "a1",
+            "status": "discovered",
+            "apply_url": JAZZHR_URL,
+        }
+        self.assertFalse(rau.should_auto_resolve_job(ats))
+        terminal = {
+            "id": "a2",
+            "status": "discovered",
+            "apply_url": "https://www.indeed.com/viewjob?jk=1",
+            "apply_resolve_status": "no_external",
+        }
+        self.assertFalse(rau.should_auto_resolve_job(terminal))
+        ok_upgraded = {
+            "id": "a3",
+            "status": "discovered",
+            "apply_url": JAZZHR_URL,
+            "apply_resolve_status": "ok",
+        }
+        self.assertFalse(rau.should_auto_resolve_job(ok_upgraded))
+
+    def test_should_auto_resolve_linkedin_unresolved(self):
+        job = {
+            "id": "li-new",
+            "status": "discovered",
+            "apply_url": LINKEDIN_URL,
+            "job_url": LINKEDIN_URL,
+        }
+        self.assertTrue(rau.should_auto_resolve_job(job))
+        # Terminal easy_apply still on LinkedIn → skip
+        job["apply_resolve_status"] = "easy_apply"
+        self.assertFalse(rau.should_auto_resolve_job(job))
+        # ok but still LinkedIn → re-resolve
+        job["apply_resolve_status"] = "ok"
+        self.assertTrue(rau.should_auto_resolve_job(job))
+
+    def test_resolve_discovery_apply_urls_http_many_mocked(self):
+        greenhouse = "https://boards.greenhouse.io/acme/jobs/1"
+        job = {
+            "id": "li-disc-1",
+            "status": "discovered",
+            "company": "Acme",
+            "title": "ML Engineer",
+            "apply_url": LINKEDIN_URL,
+            "job_url": LINKEDIN_URL,
+            "created_at": "2026-08-20T12:00:00+00:00",
+            "updated_at": "2026-08-20T12:00:00+00:00",
+        }
+        progress: list[tuple[int, int]] = []
+
+        def fake_http_many(pairs, concurrency=20, **_kw):
+            self.assertEqual(len(pairs), 1)
+            self.assertEqual(pairs[0][0], "li-disc-1")
+            self.assertGreaterEqual(concurrency, 1)
+            return [{
+                "id": "li-disc-1",
+                "confidence": "high",
+                "url": greenhouse,
+                "reason": "linkedin_apply_href",
+                "method": "linkedin_http",
+                "score": 1.0,
+            }]
+
+        with patch.object(rau, "locked_jobs_for_read") as lr, \
+             patch.object(rau, "persist_job_resolution") as persist:
+            @contextlib.contextmanager
+            def _read():
+                yield {"jobs": [job]}
+            lr.return_value = _read()
+            persist.return_value = {**job, "apply_url": greenhouse}
+            summary = rau.resolve_discovery_apply_urls(
+                since_iso="2026-08-20T11:00:00+00:00",
+                write=True,
+                concurrency=20,
+                http_many_fn=fake_http_many,
+                progress_cb=lambda d, t: progress.append((d, t)),
+            )
+        self.assertEqual(summary["considered"], 1)
+        self.assertEqual(summary["linkedin"], 1)
+        self.assertEqual(summary["high"], 1)
+        self.assertEqual(summary["upgraded"][0]["url"], greenhouse)
+        persist.assert_called_once()
+        self.assertIn((0, 1), progress)
+        self.assertIn((1, 1), progress)
+
+    def test_resolve_discovery_skips_already_resolved(self):
+        job = {
+            "id": "li-done",
+            "status": "discovered",
+            "apply_url": JAZZHR_URL,
+            "apply_resolve_status": "ok",
+            "created_at": "2026-08-20T12:00:00+00:00",
+            "updated_at": "2026-08-20T12:00:00+00:00",
+        }
+
+        def boom_http(*_a, **_k):
+            raise AssertionError("should not call http_many for ATS jobs")
+
+        with patch.object(rau, "locked_jobs_for_read") as lr:
+            @contextlib.contextmanager
+            def _read():
+                yield {"jobs": [job]}
+            lr.return_value = _read()
+            summary = rau.resolve_discovery_apply_urls(
+                since_iso="2026-08-20T11:00:00+00:00",
+                write=True,
+                http_many_fn=boom_http,
+            )
+        self.assertEqual(summary["considered"], 0)
+
+    def test_select_jobs_for_discovery_resolve_respects_limit(self):
+        older = {
+            "id": "old",
+            "status": "discovered",
+            "apply_url": LINKEDIN_URL,
+            "created_at": "2026-08-01T00:00:00+00:00",
+        }
+        newer = {
+            "id": "new",
+            "status": "discovered",
+            "apply_url": LINKEDIN_URL,
+            "created_at": "2026-08-20T00:00:00+00:00",
+        }
+        selected = rau.select_jobs_for_discovery_resolve(
+            [newer, older], since_iso=None, limit=1,
+        )
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["id"], "old")
+
+    def test_prune_unresolved_failed_and_no_external_and_easy_apply(self):
+        failed = _emed_job(
+            id="u-fail",
+            status="discovered",
+            apply_resolve_status="failed",
+            apply_resolve_reason="no_ats_host",
+            apply_resolve_message="Search did not find a known ATS apply URL.",
+        )
+        no_ext = _emed_job(
+            id="u-noext",
+            status="discovered",
+            apply_resolve_status="no_external",
+            apply_resolve_reason="no_external_apply",
+        )
+        easy = _emed_job(
+            id="u-easy",
+            status="discovered",
+            apply_resolve_status="easy_apply",
+            apply_resolve_reason="easy_apply",
+        )
+        applied = _emed_job(
+            id="u-applied",
+            status="applied",
+            apply_resolve_status="failed",
+        )
+        ok_ats = _emed_job(
+            id="u-ok",
+            status="discovered",
+            apply_url=JAZZHR_URL,
+            apply_resolve_status="failed",
+        )
+        self.assertTrue(rau.should_prune_unresolved_apply_url(failed))
+        self.assertTrue(rau.should_prune_unresolved_apply_url(no_ext))
+        self.assertTrue(rau.should_prune_unresolved_apply_url(easy))
+        self.assertFalse(rau.should_prune_unresolved_apply_url(applied))
+        self.assertFalse(rau.should_prune_unresolved_apply_url(ok_ats))
+
+        self.assertTrue(rau.tombstone_unresolved_apply_url(failed))
+        self.assertEqual(failed["status"], "deleted")
+        self.assertEqual(failed["deleted_reason"], "unresolved_apply_url")
+        self.assertTrue(failed.get("unresolved_apply_url"))
+        self.assertIn("unresolved apply url", failed.get("status_detail", "").lower())
+        self.assertNotIn("li_at=", failed.get("status_detail", ""))
+
+        # Idempotent: already deleted → no re-prune
+        self.assertFalse(rau.should_prune_unresolved_apply_url(failed))
+
+    def test_persist_prunes_unresolved_and_tags(self):
+        job = _emed_job(id="persist-unresolved", status="discovered")
+        scored = {
+            "confidence": "low",
+            "url": None,
+            "reason": "no_ats_host",
+            "message": "Search did not find a known ATS apply URL.",
+            "score": 0.0,
+        }
+
+        @contextlib.contextmanager
+        def _write():
+            yield {"jobs": [job]}
+
+        with patch.object(rau, "locked_jobs_for_write", return_value=_write()), \
+             patch.object(rau, "_tombstone_url_block") as block:
+            out = rau.persist_job_resolution("persist-unresolved", scored)
+        self.assertIsNotNone(out)
+        self.assertEqual(job["status"], "deleted")
+        self.assertEqual(job["deleted_reason"], "unresolved_apply_url")
+        self.assertTrue(job.get("unresolved_apply_url"))
+        self.assertEqual(job["apply_resolve_status"], "failed")
+        block.assert_called_once()
+
+    def test_persist_success_clears_unresolved_tag(self):
+        job = _emed_job(
+            id="persist-ok",
+            status="discovered",
+            unresolved_apply_url=True,
+            apply_resolve_status="failed",
+        )
+        scored = {
+            "confidence": "high",
+            "url": JAZZHR_URL,
+            "reason": "linkedin_apply_href",
+            "method": "linkedin_http",
+            "score": 1.0,
+        }
+
+        @contextlib.contextmanager
+        def _write():
+            yield {"jobs": [job]}
+
+        with patch.object(rau, "locked_jobs_for_write", return_value=_write()), \
+             patch.object(rau, "_tombstone_url_block") as block:
+            rau.persist_job_resolution("persist-ok", scored)
+        self.assertEqual(job["status"], "discovered")
+        self.assertNotIn("unresolved_apply_url", job)
+        self.assertEqual(job["apply_url"], JAZZHR_URL)
+        block.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ def _page_from_url(url: str) -> int:
 
 class CollectJobUrlsEarlyStopTests(unittest.TestCase):
     def test_days_since_updated_window(self):
-        self.assertEqual(sb.DEFAULT_DAYS_SINCE_UPDATED, 1)
+        self.assertEqual(sb.DEFAULT_DAYS_SINCE_UPDATED, 7)
         self.assertIn(sb.DAYS_SINCE_UPDATED, sb.SUPPORTED_DAYS_SINCE_UPDATED)
 
     def test_pagination_uses_query_param_not_path_segment(self):

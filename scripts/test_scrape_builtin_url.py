@@ -52,20 +52,20 @@ class BuildSearchUrlTests(unittest.TestCase):
 
 class DaysSinceUpdatedValidationTests(unittest.TestCase):
     def test_supported_values_are_ui_options(self):
-        self.assertEqual(set(sb.SUPPORTED_DAYS_SINCE_UPDATED), {1, 3, 7, 30})
+        self.assertEqual(set(sb.SUPPORTED_DAYS_SINCE_UPDATED), set(range(1, 11)))
 
     def test_normalize_accepts_supported(self):
-        for v in (1, 3, 7, 30, "1", "30"):
+        for v in (1, 3, 5, 7, 10, "1", "10"):
             self.assertEqual(sb.normalize_days_since_updated(v), int(v))
 
     def test_normalize_rejects_unsupported(self):
-        for v in (14, 2, 0, -1, 90, "14", "week", None, ""):
+        for v in (14, 0, -1, 11, 30, 90, "14", "week", None, ""):
             with self.assertRaises(ValueError):
                 sb.normalize_days_since_updated(v)
 
-    def test_default_is_one_day(self):
-        self.assertEqual(sb.DEFAULT_DAYS_SINCE_UPDATED, 1)
-        self.assertEqual(sb.DAYS_SINCE_UPDATED, 1)
+    def test_default_is_seven_days(self):
+        self.assertEqual(sb.DEFAULT_DAYS_SINCE_UPDATED, 7)
+        self.assertEqual(sb.DAYS_SINCE_UPDATED, 7)
 
 
 class CollectJobUrlsUsesBuilderTests(unittest.TestCase):
