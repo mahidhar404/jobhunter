@@ -9,7 +9,13 @@ link):
      Apply submit, never CAPTCHA solve). See ``linkedin_resolve_apply.py``.
   2. Else (or on miss): search the public web for the same posting and upgrade
      apply_url only at high confidence (title + company alias + distinctive JD
-     overlap). LinkedIn is kept on job_url / source_url / alternate_urls.
+     overlap, or company-host job URL). LinkedIn is kept on job_url /
+     source_url / alternate_urls.
+
+Discovery / prune order for unresolved aggregators:
+  LinkedIn HTTP href (if LinkedIn) → public company+title search → only then
+  stamp failed/no_external and Unresolved URL prune. Company careers pages
+  (e.g. coinbase.com/careers/positions/…?gh_jid=) count as resolved targets.
 
 Public search still never scrapes authenticated LinkedIn for discovery.
 Authenticated LinkedIn is only for apply-URL redirect capture via the dedicated
@@ -18,10 +24,14 @@ profile.
 Never: submit applications, solve CAPTCHA, bypass Workday/iCIMS/Akamai, or use
 applicant PII.
 
-Search backends (first that returns hits; fail soft):
-  1. DuckDuckGo HTML (default, no key)
-  2. Brave Search API if BRAVE_SEARCH_API_KEY is set
-  3. Google CSE if GOOGLE_CSE_KEY + GOOGLE_CSE_CX are set
+Resolve path for public company+title recovery (fail soft):
+  0. Direct ATS board APIs (Ashby/Greenhouse/Lever/…) using ats_companies.json
+     slugs + company-name slug guesses — finds jobs.ashbyhq.com the way a
+     Google ``Title Company`` search would, without depending on HTML SERPs
+  1. Google CSE if GOOGLE_CSE_KEY / GOOGLE_CSE_KEYS + GOOGLE_CSE_CX are set
+     (multiple keys rotate on 403/429/quota)
+  2. Brave Search HTML / Bing HTML / DuckDuckGo HTML (no key)
+  3. Brave Search API if BRAVE_SEARCH_API_KEY is set
   4. JSearch if JSEARCH_API_KEY is set
 
 Keys may also live in gitignored web_keys.json (Adzuna pattern). Never scrape
@@ -33,9 +43,14 @@ Usage:
   python3 scripts/resolve_apply_urls.py --all --write       # persist high-confidence upgrades
   python3 scripts/resolve_apply_urls.py JOB_ID --write
   python3 scripts/resolve_apply_urls.py --all --limit 20 --delay 2.5
+  python3 scripts/resolve_apply_urls.py --reresolve-deleted --write --limit 0
+  # limit 0 = keep draining checkpointed chunks (40/cycle) until backlog empty;
+  # or pass --limit 100 for a single bounded batch.
 
 Dry-run is the default. --write records medium-confidence candidates without
-overwriting apply_url. Easy Apply / no ATS host / Workday / iCIMS stay as-is.
+overwriting apply_url. Easy Apply / CAPTCHA / profile lock skip public search;
+other LinkedIn misses (http_error, no_external, …) always search before prune.
+Dashboard backlog auto-retries pruned Unresolved URL rows via public search.
 """
 from __future__ import annotations
 
@@ -44,7 +59,9 @@ import json
 import os
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -57,6 +74,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from apply_urls import (  # noqa: E402
     enrich_listing_urls,
     is_aggregator_url,
+    is_ats_or_company_apply,
     is_known_ats_url,
     normalize_url,
 )
@@ -67,6 +85,7 @@ from text_normalize import normalize_company, normalize_title  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 LOGS_DIR = ROOT / "logs"
 PROGRESS_FILE = LOGS_DIR / "resolve_apply_urls_progress.json"
+RERESOLVE_PROGRESS_FILE = LOGS_DIR / "reresolve_unresolved_deleted_progress.json"
 REGISTRY_FILE = ROOT / "ats_companies.json"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -89,6 +108,8 @@ _REASON_STATUS = {
     "linkedin_apply_href": "ok",
     "linkedin_external_redirect": "ok",
     "upgraded": "ok",
+    "ats_board_api": "ok",
+    "public_search": "ok",
 }
 
 # Terminal outcomes — discovery auto-resolve skips these unless apply_url is
@@ -98,13 +119,77 @@ TERMINAL_APPLY_RESOLVE_STATUSES = frozenset({"ok", "easy_apply", "no_external"})
 # Default HTTP batch size for post-discover LinkedIn resolve (clamped 1–40).
 DISCOVERY_RESOLVE_HTTP_CONCURRENCY = 36
 
+# Company careers / job-posting path hints (Greenhouse embeds, /positions/N, …).
+_JOB_APPLY_PATH_RE = re.compile(
+    r"/(?:jobs?|job-detail|positions?|openings?|careers|opportunit(?:y|ies)|"
+    r"requisitions?|apply)(?:/|$)",
+    re.I,
+)
+_GH_JID_RE = re.compile(r"(?:^|&)gh_jid=\d+", re.I)
+_NUMERIC_JOB_ID_RE = re.compile(r"/\d{5,}(?:/|$)")
+# Ashby / Lever-style UUID job ids in the path.
+_ATS_UUID_RE = re.compile(
+    r"/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:/|$)",
+    re.I,
+)
+
+# Public board JSON endpoints used when HTML SERPs miss ATS hosts.
+_ATS_BOARD_API = {
+    "ashby": "https://api.ashbyhq.com/posting-api/job-board/{slug}",
+    "greenhouse": "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs",
+    "lever": "https://api.lever.co/v0/postings/{slug}?mode=json",
+    "smartrecruiters": (
+        "https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit=100"
+    ),
+    "workable": "https://apply.workable.com/api/v1/widget/accounts/{slug}",
+}
+_ATS_BOARD_PROBE_ORDER = (
+    "ashby",
+    "greenhouse",
+    "lever",
+    "smartrecruiters",
+    "workable",
+)
+_ATS_BOARD_CACHE: dict[tuple[str, str], list[dict]] = {}
+_ATS_BOARD_CACHE_LOCK = threading.Lock()
+_ATS_BOARD_MAX_PROBES = 12
+
+# LinkedIn HTTP/session outcomes that are terminal — do not fall back to search.
+_LINKEDIN_TERMINAL_NO_SEARCH = frozenset(
+    {"easy_apply", "blocked_captcha", "profile_in_use"}
+)
+# May soft-delete without a public-search attempt (search cannot help).
+_PRUNE_OK_WITHOUT_SEARCH_REASONS = frozenset(
+    {"easy_apply", "blocked_captcha", "profile_in_use"}
+)
+# Reasons that imply public company+title search already ran (legacy + current).
+_SEARCH_ATTEMPTED_REASONS = frozenset(
+    {"no_ats_host", "public_search", "unfetchable_ats"}
+)
+
+# Cap for re-resolving pruned unresolved_apply_url rows via public search.
+# 0 / None = process the full remaining backlog (checkpointed).
+RERESOLVE_DELETED_DEFAULT_LIMIT = 0
+RERESOLVE_DELETED_DEFAULT_WORKERS = 2
+RERESOLVE_DELETED_CHUNK = 25
+_AGGREGATOR_RERESOLVE_PRIORITY = (
+    "weworkremotely",
+    "rss",
+    "indeed",
+    "remoteok",
+    "remotive",
+    "jobicy",
+    "builtin",
+    "authenticjobs",
+)
+
 _DEFAULT_RESOLVE_MESSAGES = {
     "not_logged_in": "Open LinkedIn resolve browser first: ./open_linkedin_resolve.sh",
     "authwall": "Open LinkedIn resolve browser first: ./open_linkedin_resolve.sh",
     "blocked_captcha": "CAPTCHA / bot check on LinkedIn — stopped (never solve).",
     "easy_apply": "Easy Apply only (stays on LinkedIn) — not automating apply.",
     "no_external_apply": "No offsite Apply redirect found on LinkedIn.",
-    "no_ats_host": "Search did not find a known ATS apply URL.",
+    "no_ats_host": "Search did not find a company/ATS apply URL.",
     "unfetchable_ats": "Landed on Workday/iCIMS — left unresolved.",
     "profile_in_use": "LinkedIn resolve profile is locked — close login window first.",
     "browser_error": "LinkedIn resolve browser error.",
@@ -159,13 +244,62 @@ def is_unfetchable_ats(url) -> bool:
     return any(h in host for h in UNFETCHABLE_HOST_HINTS)
 
 
+def looks_like_job_apply_url(url) -> bool:
+    """True for known ATS hosts or company career URLs that look like a job post."""
+    s = str(url or "").strip()
+    if not s:
+        return False
+    if is_known_ats_url(s):
+        return True
+    if not is_ats_or_company_apply(s):
+        return False
+    try:
+        p = urlparse(s)
+    except ValueError:
+        return False
+    path = p.path or ""
+    query = p.query or ""
+    if _JOB_APPLY_PATH_RE.search(path):
+        return True
+    if _GH_JID_RE.search(query):
+        return True
+    # Bare /12345/ on a random company host is too loose (matches /questions/514625/).
+    # Only accept numeric ids when the path also has a job-ish segment.
+    if _NUMERIC_JOB_ID_RE.search(path) and re.search(
+        r"/(?:job|jobs|position|positions|opening|openings|career|careers|"
+        r"opportunit|requisition|apply|role|roles)(?:/|$)",
+        path,
+        re.I,
+    ):
+        return True
+    return False
+
+
+def is_acceptable_resolve_target(url) -> bool:
+    """ATS or company job URL usable as apply_url (not aggregator / Workday / iCIMS)."""
+    s = str(url or "").strip()
+    if not s or is_aggregator_url(s) or is_unfetchable_ats(s):
+        return False
+    if is_known_ats_url(s):
+        return True
+    return bool(is_ats_or_company_apply(s) and looks_like_job_apply_url(s))
+
+
+def is_resolved_apply_url(url) -> bool:
+    """True when apply_url is already a company/ATS destination (not aggregator)."""
+    s = str(url or "").strip()
+    if not s or is_aggregator_url(s):
+        return False
+    return bool(is_ats_or_company_apply(s))
+
+
 def is_fetchable_ats_url(url) -> bool:
-    """Known ATS host we can fetch without bypassing Akamai/CAPTCHA."""
-    return bool(is_known_ats_url(url) and not is_unfetchable_ats(url))
+    """ATS / company job URL we can try to fetch without bypassing Akamai/CAPTCHA."""
+    return is_acceptable_resolve_target(url)
 
 
 def filter_candidate_urls(urls) -> list[str]:
-    """Keep unique fetchable ATS apply URLs; drop aggregators and Workday/iCIMS."""
+    """Keep unique fetchable ATS/company job URLs; drop aggregators and Workday/iCIMS."""
     out: list[str] = []
     seen: set[str] = set()
     for raw in urls or []:
@@ -180,21 +314,319 @@ def filter_candidate_urls(urls) -> list[str]:
     return out
 
 
-def build_search_queries(company: str, title: str) -> list[str]:
-    """Company + title queries. Do not rely on guessing {company}.applytojob.com."""
+def prefer_company_relevant_urls(urls: list[str], company: str) -> list[str]:
+    """When company is known, prefer URLs whose host/path mention the employer.
+
+    Stops Bing ``Applied …`` false-positives (applied.com) from crowding out
+    real ATS hits when both appear in a SERP mix.
+    """
+    company = str(company or "").strip()
+    if not company or not urls:
+        return list(urls or [])
+    relevant: list[str] = []
+    other: list[str] = []
+    for u in urls:
+        if company_matches_url(company, u) or companies_match(
+            company, _host(u).split(".")[0] if _host(u) else ""
+        ):
+            relevant.append(u)
+        else:
+            other.append(u)
+    return relevant + other if relevant else list(urls)
+
+
+def build_search_queries(
+    company: str,
+    title: str,
+    location: str | None = None,
+) -> list[str]:
+    """Company + title queries. Prefer Google-style company-first phrasing.
+
+    Title-first queries make Bing latch onto common words like ``Applied``
+    (applied.com) and miss the employer. Do not rely on guessing
+    ``{company}.applytojob.com`` alone.
+    """
     company = str(company or "").strip()
     title = str(title or "").strip()
     if not company or not title:
         return []
-    return [
+    out = [
+        # Google page-1 style: company first, then title (no filler words).
+        f"{company} {title}",
+        f'"{company}" "{title}"',
         f'"{title}" "{company}" apply',
         (
             f'"{title}" {company} '
-            "(greenhouse OR lever OR ashby OR applytojob OR smartrecruiters "
-            "OR workable OR bamboohr)"
+            "(greenhouse OR lever OR ashby OR ashbyhq OR applytojob OR "
+            "smartrecruiters OR workable OR bamboohr OR careers)"
         ),
+        f"site:jobs.ashbyhq.com {company} {title}",
+        f"site:boards.greenhouse.io {company} {title}",
+        f"site:jobs.lever.co {company} {title}",
         f"{title} {company} careers apply",
     ]
+    loc = str(location or "").strip()
+    if loc and loc.lower() not in ("remote", "remote, us", "united states", "us"):
+        out.append(f'"{company}" "{title}" {loc} apply')
+    # Dedupe while preserving order.
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for q in out:
+        if q in seen:
+            continue
+        seen.add(q)
+        uniq.append(q)
+    return uniq
+
+
+_ATS_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def company_ats_slug_candidates(company: str) -> list[str]:
+    """Slug guesses for Ashby/Greenhouse/Lever board hosts.
+
+    Only URL-safe path segments (no spaces/commas) — raw multi-word company
+    names must never be interpolated into board API URLs.
+    """
+    raw = str(company or "").strip()
+    if not raw:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(s: str) -> None:
+        s = str(s or "").strip()
+        if not s or not _ATS_SLUG_RE.fullmatch(s):
+            return
+        key = s.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(s)
+
+    # Prefer compact / hyphenated forms; skip raw "Foo Bar Inc." with spaces.
+    if _ATS_SLUG_RE.fullmatch(raw):
+        _add(raw)
+    if _ATS_SLUG_RE.fullmatch(raw.lower()):
+        _add(raw.lower())
+    compact = normalize_company(raw)
+    if compact:
+        _add(compact)
+    words = re.findall(r"[A-Za-z0-9]+", raw)
+    if words:
+        _add("".join(words).lower())
+        _add("-".join(w.lower() for w in words))
+        if len(words) > 1:
+            _add(words[0].lower())
+    return out
+
+
+def load_ats_registry(registry_path: Path | None = None) -> dict:
+    path = Path(registry_path) if registry_path is not None else REGISTRY_FILE
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def registry_slugs_matching_company(
+    company: str,
+    registry: dict | None = None,
+) -> list[tuple[str, str]]:
+    """``(ats, slug)`` pairs from ``ats_companies.json`` that match ``company``."""
+    reg = registry if isinstance(registry, dict) else load_ats_registry()
+    company = str(company or "").strip()
+    if not company:
+        return []
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for ats in _ATS_BOARD_PROBE_ORDER:
+        slugs = reg.get(ats)
+        if not isinstance(slugs, list):
+            continue
+        for slug in slugs:
+            s = str(slug or "").strip()
+            if not s:
+                continue
+            if not (
+                companies_match(company, s)
+                or companies_match(company, s.replace("-", " "))
+            ):
+                continue
+            key = (ats, s.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((ats, s))
+    return out
+
+
+def _http_get_json(url: str, *, timeout: int = 15) -> dict | list | None:
+    try:
+        raw = _http_get(url, headers={"Accept": "application/json"}, timeout=timeout)
+        data = json.loads(raw)
+    except (URLError, HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, (dict, list)) else None
+
+
+def fetch_ats_board_postings(ats: str, slug: str) -> list[dict]:
+    """Fetch public board JSON → ``[{title, url, company}]``. Cached per process."""
+    ats_key = str(ats or "").strip().lower()
+    slug = str(slug or "").strip()
+    if not ats_key or not slug or ats_key not in _ATS_BOARD_API:
+        return []
+    cache_key = (ats_key, slug.lower())
+    with _ATS_BOARD_CACHE_LOCK:
+        if cache_key in _ATS_BOARD_CACHE:
+            return list(_ATS_BOARD_CACHE[cache_key])
+
+    postings: list[dict] = []
+    url = _ATS_BOARD_API[ats_key].format(slug=slug)
+    data = _http_get_json(url)
+    if data is None:
+        with _ATS_BOARD_CACHE_LOCK:
+            _ATS_BOARD_CACHE[cache_key] = []
+        return []
+
+    if ats_key == "ashby" and isinstance(data, dict):
+        for job in data.get("jobs") or []:
+            if not isinstance(job, dict):
+                continue
+            job_url = str(job.get("jobUrl") or job.get("applyUrl") or "").strip()
+            title = str(job.get("title") or "").strip()
+            if job_url and title:
+                postings.append({"title": title, "url": job_url, "company": slug})
+    elif ats_key == "greenhouse" and isinstance(data, dict):
+        for job in data.get("jobs") or []:
+            if not isinstance(job, dict):
+                continue
+            job_url = str(job.get("absolute_url") or "").strip()
+            title = str(job.get("title") or "").strip()
+            if job_url and title:
+                postings.append({"title": title, "url": job_url, "company": slug})
+    elif ats_key == "lever" and isinstance(data, list):
+        for job in data:
+            if not isinstance(job, dict):
+                continue
+            job_url = str(job.get("hostedUrl") or job.get("applyUrl") or "").strip()
+            title = str(job.get("text") or "").strip()
+            if job_url and title:
+                postings.append({"title": title, "url": job_url, "company": slug})
+    elif ats_key == "smartrecruiters" and isinstance(data, dict):
+        for job in data.get("content") or []:
+            if not isinstance(job, dict):
+                continue
+            title = str(job.get("name") or "").strip()
+            ref = str(job.get("refNumber") or job.get("id") or "").strip()
+            company_slug = str(
+                ((job.get("company") or {}) if isinstance(job.get("company"), dict) else {}).get(
+                    "identifier"
+                )
+                or slug
+            ).strip()
+            job_url = str(job.get("applyUrl") or "").strip()
+            if not job_url and ref:
+                job_url = (
+                    f"https://jobs.smartrecruiters.com/{company_slug}/{ref}"
+                )
+            if job_url and title:
+                postings.append({"title": title, "url": job_url, "company": company_slug})
+    elif ats_key == "workable" and isinstance(data, dict):
+        for job in data.get("jobs") or []:
+            if not isinstance(job, dict):
+                continue
+            title = str(job.get("title") or "").strip()
+            shortcode = str(job.get("shortcode") or "").strip()
+            job_url = str(job.get("url") or "").strip()
+            # Prefer slug-prefixed apply URLs so company_matches_url / scoring
+            # can see the employer (API often returns /j/{code} without slug).
+            if shortcode:
+                slug_url = f"https://apply.workable.com/{slug}/j/{shortcode}/"
+                if (not job_url) or re.search(
+                    r"apply\.workable\.com/j/[A-Za-z0-9]+/?$", job_url, re.I
+                ):
+                    job_url = slug_url
+            if job_url and title:
+                postings.append({"title": title, "url": job_url, "company": slug})
+
+    with _ATS_BOARD_CACHE_LOCK:
+        _ATS_BOARD_CACHE[cache_key] = list(postings)
+    return list(postings)
+
+
+def search_ats_boards(
+    company: str,
+    title: str,
+    *,
+    registry_path: Path | None = None,
+    max_probes: int = _ATS_BOARD_MAX_PROBES,
+) -> list[str]:
+    """Return ATS job URLs by probing known boards (registry + slug guesses).
+
+    This is the free path that recovers ``jobs.ashbyhq.com/…`` when Brave/Bing
+    HTML SERPs are empty, rate-limited, or return irrelevant hosts.
+    """
+    company = str(company or "").strip()
+    title = str(title or "").strip()
+    if not company or not title:
+        return []
+
+    reg = load_ats_registry(registry_path)
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add_pair(ats: str, slug: str) -> None:
+        ats_k = str(ats or "").strip().lower()
+        s = str(slug or "").strip()
+        if not ats_k or not s or ats_k not in _ATS_BOARD_API:
+            return
+        key = (ats_k, s.lower())
+        if key in seen:
+            return
+        seen.add(key)
+        pairs.append((ats_k, s))
+
+    for ats, slug in registry_slugs_matching_company(company, reg):
+        _add_pair(ats, slug)
+
+    # Slug guesses only for the big three (cheap, high hit-rate).
+    for slug in company_ats_slug_candidates(company):
+        for ats in ("ashby", "greenhouse", "lever"):
+            _add_pair(ats, slug)
+
+    matched: list[str] = []
+    matched_seen: set[str] = set()
+    probes = 0
+    limit = max(1, int(max_probes or _ATS_BOARD_MAX_PROBES))
+    for ats, slug in pairs:
+        if probes >= limit:
+            break
+        probes += 1
+        try:
+            postings = fetch_ats_board_postings(ats, slug)
+        except Exception as e:
+            log(f"ats board {ats}/{slug} failed: {e}")
+            continue
+        board_hits = 0
+        for post in postings:
+            if not titles_match(title, post.get("title") or ""):
+                continue
+            u = str(post.get("url") or "").strip()
+            if not u or not is_fetchable_ats_url(u):
+                continue
+            key = normalize_url(u) or u.lower()
+            if key in matched_seen:
+                continue
+            matched_seen.add(key)
+            matched.append(u)
+            board_hits += 1
+        if board_hits:
+            # One matching board is enough — avoid extra probes.
+            break
+    return matched
+
 
 
 def companies_match(a: str, b: str) -> bool:
@@ -209,18 +641,58 @@ def companies_match(a: str, b: str) -> bool:
     return False
 
 
+_HOST_LABEL_SKIP = frozenset(
+    {
+        "www",
+        "careers",
+        "jobs",
+        "job",
+        "apply",
+        "boards",
+        "board",
+        "my",
+        "app",
+        "apps",
+        "go",
+        "get",
+        "hire",
+        "hiring",
+        "talent",
+        "recruiting",
+        "recruit",
+        "com",
+        "org",
+        "net",
+        "io",
+        "co",
+        "us",
+        "uk",
+        "ai",
+    }
+)
+
+
 def company_matches_url(company: str, url: str) -> bool:
+    """True when the employer appears in the URL host or early path segments.
+
+    Checks every host label (not just the subdomain) so
+    ``careers.airbnb.com`` / ``apply.careers.microsoft.com`` / ``jobs.greystar.com``
+    still match — Ashby UUID paths already match via the company slug segment.
+    """
     host = _host(url)
     if not host:
         return False
-    slug = host.split(".")[0]
-    if companies_match(company, slug):
-        return True
+    for label in host.split("."):
+        lab = str(label or "").strip().lower()
+        if not lab or lab in _HOST_LABEL_SKIP:
+            continue
+        if companies_match(company, lab):
+            return True
     try:
         path = unquote(urlparse(url).path or "")
     except ValueError:
         path = ""
-    for part in [p for p in path.split("/") if p][:2]:
+    for part in [p for p in path.split("/") if p][:3]:
         if companies_match(company, part.replace("-", " ")):
             return True
     return False
@@ -314,10 +786,12 @@ def needs_apply_resolution(job: dict) -> bool:
         return False
     apply = str(job.get("apply_url") or "").strip()
     job_url = str(job.get("job_url") or "").strip()
-    if is_known_ats_url(apply):
+    if is_resolved_apply_url(apply):
         return False
     res = job.get("apply_url_resolution") if isinstance(job.get("apply_url_resolution"), dict) else {}
-    if str(res.get("confidence") or "") == "high" and is_known_ats_url(res.get("url") or apply):
+    if str(res.get("confidence") or "") == "high" and is_resolved_apply_url(
+        res.get("url") or apply
+    ):
         return False
     primary = apply or job_url
     if not primary:
@@ -338,9 +812,9 @@ def apply_url_still_linkedin(job: dict) -> bool:
 def should_auto_resolve_job(job: dict) -> bool:
     """Whether Discover's post-merge HTTP resolve should touch this job.
 
-    Skip when apply_url is already a known ATS, or when ``apply_resolve_status``
-    is terminal (ok / easy_apply / no_external) **unless** apply_url is still
-    LinkedIn (stamped ok but never upgraded).
+    Skip when apply_url is already a known ATS/company careers page, or when
+    ``apply_resolve_status`` is terminal (ok / easy_apply / no_external)
+    **unless** apply_url is still LinkedIn (stamped ok but never upgraded).
     """
     if not isinstance(job, dict):
         return False
@@ -350,7 +824,7 @@ def should_auto_resolve_job(job: dict) -> bool:
     if status in ("deleted", "merged", "applied", "blocked_captcha"):
         return False
     apply = str(job.get("apply_url") or "").strip()
-    if is_known_ats_url(apply):
+    if is_resolved_apply_url(apply):
         return False
     resolve_status = str(job.get("apply_resolve_status") or "").strip().lower()
     still_li = apply_url_still_linkedin(job)
@@ -412,6 +886,19 @@ def select_jobs_for_discovery_resolve(
     return out
 
 
+def _specific_job_id_in_url(url: str) -> bool:
+    try:
+        p = urlparse(str(url or ""))
+    except ValueError:
+        return False
+    path = p.path or ""
+    return bool(
+        _GH_JID_RE.search(p.query or "")
+        or _NUMERIC_JOB_ID_RE.search(path)
+        or _ATS_UUID_RE.search(path)
+    )
+
+
 def score_candidate(job: dict, url: str, page: dict | None) -> dict:
     page = page or {}
     title_ok = titles_match(job.get("title"), page.get("title") or "") or titles_match(
@@ -420,6 +907,7 @@ def score_candidate(job: dict, url: str, page: dict | None) -> dict:
     company_ok = companies_match(job.get("company") or "", page.get("company") or "") or (
         company_matches_url(job.get("company") or "", url)
     )
+    company_host_ok = company_matches_url(job.get("company") or "", url)
     in_hand = (
         (job.get("job_description") or "")
         or (job.get("description") or "")
@@ -432,12 +920,25 @@ def score_candidate(job: dict, url: str, page: dict | None) -> dict:
         conf = "low"
     elif not company_ok:
         conf = "low"
-    elif not title_ok:
-        conf = "low"
-    elif overlap >= HIGH_OVERLAP:
+    elif title_ok and overlap >= HIGH_OVERLAP:
+        conf = "high"
+    elif title_ok and company_host_ok and looks_like_job_apply_url(url):
+        # Company careers / Greenhouse-backed pages often block JD fetch; title +
+        # company host match on a job-shaped URL is enough for high confidence.
+        conf = "high"
+    elif title_ok:
+        conf = "medium"
+    elif (
+        company_host_ok
+        and looks_like_job_apply_url(url)
+        and _specific_job_id_in_url(url)
+        and not str(page.get("title") or "").strip()
+    ):
+        # Public-search hit on a company job-id URL when the page title was not
+        # fetchable (SPA / bot wall) — still upgrade rather than prune.
         conf = "high"
     else:
-        conf = "medium"
+        conf = "low"
 
     return {
         "confidence": conf,
@@ -579,16 +1080,22 @@ def set_apply_resolve_fields(job: dict, result: dict | None) -> bool:
     jobs.json via timestamp-only updates).
     """
     fields = compact_apply_resolve_fields(result)
-    if apply_resolve_fields_unchanged(job, fields):
-        return False
-    job["apply_resolve_status"] = fields["apply_resolve_status"]
-    job["apply_resolve_reason"] = fields["apply_resolve_reason"]
-    job["apply_resolve_at"] = fields["apply_resolve_at"]
-    if fields.get("apply_resolve_message"):
-        job["apply_resolve_message"] = fields["apply_resolve_message"]
-    else:
-        job.pop("apply_resolve_message", None)
-    return True
+    changed = False
+    if not apply_resolve_fields_unchanged(job, fields):
+        job["apply_resolve_status"] = fields["apply_resolve_status"]
+        job["apply_resolve_reason"] = fields["apply_resolve_reason"]
+        job["apply_resolve_at"] = fields["apply_resolve_at"]
+        if fields.get("apply_resolve_message"):
+            job["apply_resolve_message"] = fields["apply_resolve_message"]
+        else:
+            job.pop("apply_resolve_message", None)
+        changed = True
+    if public_search_was_attempted(job, result) and not job.get(
+        "apply_resolve_search_attempted"
+    ):
+        job["apply_resolve_search_attempted"] = True
+        changed = True
+    return changed
 
 
 # Soft-delete discovered Open jobs when apply resolve leaves a non-ATS
@@ -601,12 +1108,12 @@ UNRESOLVED_APPLY_RESOLVE_STATUSES = frozenset({"failed", "no_external", "easy_ap
 
 
 def apply_url_still_unresolved_aggregator(job: dict) -> bool:
-    """True when apply_url is still LinkedIn/aggregator (not a known ATS)."""
+    """True when apply_url is still LinkedIn/aggregator (not ATS/company careers)."""
     if not isinstance(job, dict):
         return False
     apply = str(job.get("apply_url") or "").strip()
     job_url = str(job.get("job_url") or "").strip()
-    if is_known_ats_url(apply):
+    if is_resolved_apply_url(apply):
         return False
     primary = apply or job_url
     if not primary:
@@ -614,8 +1121,25 @@ def apply_url_still_unresolved_aggregator(job: dict) -> bool:
     return is_aggregator_url(primary) or is_aggregator_url(job_url)
 
 
+def public_search_was_attempted(job: dict | None = None, result: dict | None = None) -> bool:
+    """True when company+title public search already ran for this job/result."""
+    if isinstance(result, dict) and result.get("search_attempted"):
+        return True
+    if not isinstance(job, dict):
+        return False
+    if job.get("apply_resolve_search_attempted"):
+        return True
+    reason = str(job.get("apply_resolve_reason") or "").strip().lower()
+    return reason in _SEARCH_ATTEMPTED_REASONS
+
+
 def should_prune_unresolved_apply_url(job: dict) -> bool:
-    """True when an Open job should be tombstoned for unresolved apply URL."""
+    """True when an Open job should be tombstoned for unresolved apply URL.
+
+    Never prune LinkedIn/aggregator misses (http_error, no_external, failed, …)
+    until public company+title search was attempted — except Easy Apply /
+    CAPTCHA / profile lock, where search is intentionally skipped.
+    """
     if not isinstance(job, dict):
         return False
     if str(job.get("status") or "").strip().lower() != "discovered":
@@ -623,8 +1147,11 @@ def should_prune_unresolved_apply_url(job: dict) -> bool:
     if not apply_url_still_unresolved_aggregator(job):
         return False
     resolve_status = str(job.get("apply_resolve_status") or "").strip().lower()
-    if resolve_status in UNRESOLVED_APPLY_RESOLVE_STATUSES:
+    reason = str(job.get("apply_resolve_reason") or "").strip().lower()
+    if resolve_status == "easy_apply" or reason in _PRUNE_OK_WITHOUT_SEARCH_REASONS:
         return True
+    if resolve_status in UNRESOLVED_APPLY_RESOLVE_STATUSES:
+        return public_search_was_attempted(job)
     # Legacy Easy Apply flag without a resolve stamp, still on LinkedIn.
     if is_easy_apply_job(job) and apply_url_still_linkedin(job):
         return True
@@ -733,6 +1260,464 @@ def sweep_unresolved_apply_urls(*, write: bool = True) -> dict:
 sweep_apply_resolve_failed = sweep_unresolved_apply_urls
 
 
+def clear_unresolved_deleted_fields(job: dict) -> None:
+    """Clear soft-delete / Unresolved URL fields; set status back to discovered."""
+    job["status"] = "discovered"
+    job.pop("deleted_reason", None)
+    job.pop("deleted_at", None)
+    job.pop("status_detail", None)
+    stamp_unresolved_apply_url_tag(job, on=False)
+    job["updated_at"] = now_iso()
+
+
+def _company_title_key(company: str, title: str) -> tuple[str, str]:
+    return (normalize_company(company), normalize_title(title))
+
+
+def find_sibling_resolved_apply_url(
+    job: dict,
+    jobs: list | None,
+) -> str | None:
+    """Return another job's company/ATS apply_url for the same company+title.
+
+    Fast restore path when a duplicate/sibling row already has a good URL —
+    no public search required.
+    """
+    if not isinstance(job, dict) or not jobs:
+        return None
+    key = _company_title_key(job.get("company") or "", job.get("title") or "")
+    if not key[0] or not key[1]:
+        return None
+    jid = str(job.get("id") or "")
+    for other in jobs:
+        if not isinstance(other, dict):
+            continue
+        oid = str(other.get("id") or "")
+        if oid and oid == jid:
+            continue
+        if _company_title_key(other.get("company") or "", other.get("title") or "") != key:
+            continue
+        url = str(other.get("apply_url") or "").strip()
+        if url and is_acceptable_resolve_target(url):
+            return url
+    return None
+
+
+def _restore_method_bucket(reason: str | None, method: str | None = None) -> str:
+    """Map resolve reason/method to sibling | existing | ats_board_api | public_search."""
+    r = str(reason or "").strip().lower()
+    m = str(method or "").strip().lower()
+    if r == "sibling_resolved_apply_url" or m == "sibling":
+        return "sibling"
+    if r == "already_resolved_apply_url" or m == "existing":
+        return "existing"
+    if r == "ats_board_api" or m == "ats_board_api":
+        return "ats_board_api"
+    return "public_search"
+
+
+def try_existing_or_sibling_apply_url(
+    job: dict,
+    jobs: list | None,
+) -> dict | None:
+    """Return a high-confidence result from existing apply_url or a sibling row.
+
+    Used by Discover post-resolve and deleted re-resolve before board/search.
+    """
+    if not isinstance(job, dict):
+        return None
+    existing = str(job.get("apply_url") or "").strip()
+    if existing and (
+        is_acceptable_resolve_target(existing) or is_resolved_apply_url(existing)
+    ):
+        return {
+            "confidence": "high",
+            "url": existing,
+            "reason": "already_resolved_apply_url",
+            "method": "existing",
+            "score": 1.0,
+            "search_attempted": True,
+        }
+    sibling_url = find_sibling_resolved_apply_url(job, jobs)
+    if sibling_url:
+        return {
+            "confidence": "high",
+            "url": sibling_url,
+            "reason": "sibling_resolved_apply_url",
+            "method": "sibling",
+            "score": 1.0,
+            "search_attempted": True,
+        }
+    return None
+
+
+def restore_unresolved_deleted_job(
+    job: dict,
+    *,
+    apply_url: str | None = None,
+    resolve_reason: str = "public_search",
+    resolve_method: str | None = None,
+) -> bool:
+    """Undelete a job tombstoned for unresolved_apply_url. Optionally set apply_url.
+
+    Mutates ``job`` in place. Caller should ``unblock_job`` outside the jobs lock
+    when write=True. Returns True when the job was restored.
+    """
+    if not isinstance(job, dict):
+        return False
+    status = str(job.get("status") or "").strip().lower()
+    reason = str(job.get("deleted_reason") or "").strip().lower()
+    if status != "deleted" or reason != UNRESOLVED_APPLY_URL_REASON:
+        return False
+    clear_unresolved_deleted_fields(job)
+    url = str(apply_url or "").strip()
+    if url and is_acceptable_resolve_target(url):
+        merge_resolved_apply(job, url)
+        method = str(resolve_method or "").strip() or (
+            "sibling"
+            if resolve_reason == "sibling_resolved_apply_url"
+            else "existing"
+            if resolve_reason == "already_resolved_apply_url"
+            else "ats_board_api"
+            if resolve_reason == "ats_board_api"
+            else "public_search"
+        )
+        set_apply_resolve_fields(
+            job,
+            {
+                "confidence": "high",
+                "url": url,
+                "reason": resolve_reason,
+                "method": method,
+                "score": 1.0,
+            },
+        )
+        stamp_unresolved_apply_url_tag(job, on=False)
+    return True
+
+
+def _aggregator_reresolve_rank(job: dict) -> tuple:
+    """Lower = higher priority for bounded re-resolve batches."""
+    company = str(job.get("company") or "").strip().lower()
+    reason = str(job.get("apply_resolve_reason") or "").strip().lower()
+    blob = " ".join(
+        str(job.get(k) or "")
+        for k in ("source", "apply_url", "job_url", "source_url")
+    ).lower()
+    # Coinbase / recent http_error first (user-visible false prunes).
+    coinbase = 0 if "coinbase" in company else 1
+    http_err = 0 if reason == "http_error" else 1
+    agg_rank = 50
+    for i, hint in enumerate(_AGGREGATOR_RERESOLVE_PRIORITY):
+        if hint in blob:
+            agg_rank = i
+            break
+    else:
+        if "linkedin.com" in blob or (job.get("source") or "").lower() == "linkedin":
+            agg_rank = 99
+    deleted_at = str(job.get("deleted_at") or job.get("updated_at") or "")
+    # Recent first within bucket (ISO lexicographic invert via negation of string).
+    return (coinbase, http_err, agg_rank, "" if not deleted_at else deleted_at, str(job.get("id") or ""))
+
+
+def select_unresolved_deleted_for_reresolve(
+    jobs: list,
+    *,
+    limit: int | None = RERESOLVE_DELETED_DEFAULT_LIMIT,
+    include_linkedin: bool = True,
+    skip_ids: set[str] | None = None,
+) -> list[dict]:
+    """Pick pruned unresolved_apply_url jobs for a cheap public-search retry.
+
+    LinkedIn-sourced rows are included by default (http_error backlog). Pass
+    ``include_linkedin=False`` only to prefer non-LinkedIn aggregators.
+    """
+    skip = {str(x) for x in (skip_ids or set()) if x}
+    out: list[dict] = []
+    for job in jobs or []:
+        if not isinstance(job, dict):
+            continue
+        jid = str(job.get("id") or "")
+        if jid and jid in skip:
+            continue
+        if str(job.get("status") or "").strip().lower() != "deleted":
+            continue
+        if str(job.get("deleted_reason") or "").strip().lower() != UNRESOLVED_APPLY_URL_REASON:
+            continue
+        if not (job.get("company") and job.get("title")):
+            continue
+        if not include_linkedin:
+            blob = " ".join(
+                str(job.get(k) or "")
+                for k in ("source", "apply_url", "job_url")
+            ).lower()
+            if "linkedin.com" in blob or (job.get("source") or "").lower() == "linkedin":
+                continue
+        out.append(job)
+
+    def _sort_key(j: dict) -> tuple:
+        r = _aggregator_reresolve_rank(j)
+        deleted_iso = r[3]
+        try:
+            ts = datetime.fromisoformat(deleted_iso.replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            ts = 0.0
+        # Newest deleted_at first within the same priority bucket.
+        return (r[0], r[1], r[2], -ts, r[4])
+
+    out.sort(key=_sort_key)
+    if limit is not None and int(limit) > 0:
+        out = out[: int(limit)]
+    return out
+
+
+def reresolve_unresolved_deleted(
+    *,
+    limit: int | None = RERESOLVE_DELETED_DEFAULT_LIMIT,
+    write: bool = True,
+    include_linkedin: bool = True,
+    search_fn=None,
+    fetch_fn=None,
+    job_ids: set[str] | None = None,
+    workers: int = RERESOLVE_DELETED_DEFAULT_WORKERS,
+    progress_path: Path | str | None = None,
+    reset_progress: bool = False,
+    reliable_only: bool = False,
+    extra_skip_ids: set[str] | None = None,
+) -> dict:
+    """Re-resolve pruned Unresolved URL jobs (HTTP, no Chrome).
+
+    Order per job: existing apply_url → sibling company+title → ATS board API
+    → optional public search (skipped when ``reliable_only``).
+
+    On high-confidence hit: restore to discovered, upgrade apply_url, unblock.
+    ``limit`` 0/None = full remaining backlog. Checkpointed via
+    ``logs/reresolve_unresolved_deleted_progress.json`` so long runs resume.
+    LinkedIn included by default. Parallel workers for search (default 4).
+
+    ``reliable_only``: sibling + board API only (no CSE/HTML SERP). Ignores the
+    search checkpoint for selection so registry/sibling growth can still restore
+    previously attempted rows; non-restores are *not* marked done (search backlog
+    stays eligible). Restores are checkpointed so full search skips them.
+    ``extra_skip_ids``: session-local skips (reliable-only multi-chunk drains).
+    """
+    progress_path = Path(progress_path) if progress_path else RERESOLVE_PROGRESS_FILE
+    if reset_progress and progress_path.is_file():
+        try:
+            progress_path.unlink()
+        except OSError:
+            pass
+    done_ids = _load_progress(progress_path)
+    with locked_jobs_for_read() as data:
+        jobs = list(data.get("jobs") or [])
+    # Process in chunks so checkpoints land frequently on large backlogs.
+    chunk = int(limit) if (limit is not None and int(limit) > 0) else RERESOLVE_DELETED_CHUNK
+    # Reliable-only re-probes unresolved rows (ignore search checkpoint) but
+    # honors extra_skip_ids so multi-chunk drains advance.
+    skip_ids: set[str] | None
+    if job_ids:
+        skip_ids = None
+    elif reliable_only:
+        skip_ids = {str(x) for x in (extra_skip_ids or set()) if x}
+    else:
+        skip_ids = set(done_ids)
+        if extra_skip_ids:
+            skip_ids |= {str(x) for x in extra_skip_ids if x}
+    selected = select_unresolved_deleted_for_reresolve(
+        jobs,
+        limit=chunk if not job_ids else None,
+        include_linkedin=include_linkedin,
+        skip_ids=skip_ids,
+    )
+    if job_ids:
+        want = {str(x) for x in job_ids if x}
+        selected = [
+            j for j in select_unresolved_deleted_for_reresolve(
+                jobs, limit=None, include_linkedin=include_linkedin, skip_ids=None,
+            )
+            if str(j.get("id") or "") in want
+        ]
+        if limit and int(limit) > 0 and len(selected) > int(limit):
+            selected = selected[: int(limit)]
+
+    summary: dict = {
+        "considered": len(selected),
+        "restored": 0,
+        "still_unresolved": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "upgraded": [],
+        "errors": [],
+        "dry_run": not write,
+        "include_linkedin": include_linkedin,
+        "workers": max(1, int(workers or 1)),
+        "checkpoint": str(progress_path),
+        "skipped_done": 0 if reliable_only else len(done_ids),
+        "reliable_only": bool(reliable_only),
+        "restored_by": {
+            "sibling": 0,
+            "existing": 0,
+            "ats_board_api": 0,
+            "public_search": 0,
+        },
+        "considered_ids": [
+            str(j.get("id") or "") for j in selected if j.get("id")
+        ],
+    }
+    workers_n = max(1, int(workers or 1))
+    # Board/sibling only — never call CSE/HTML/Brave/JSearch.
+    effective_search = (lambda _q: []) if reliable_only else search_fn
+
+    def _resolve_one(job: dict) -> tuple[str, dict | None, str | None]:
+        jid = str(job.get("id") or "")
+        cheap = try_existing_or_sibling_apply_url(job, jobs)
+        if cheap:
+            return jid, cheap, None
+        snap = dict(job)
+        snap["status"] = "discovered"
+        snap.pop("deleted_reason", None)
+        try:
+            result = resolve_job(
+                snap,
+                search_fn=effective_search,
+                fetch_fn=fetch_fn,
+                write=False,
+                linkedin_session=False,
+            )
+            return jid, result, None
+        except Exception as e:
+            return jid, None, str(e)[:200]
+
+    results: list[tuple[str, dict | None, str | None]] = []
+    if workers_n <= 1 or len(selected) <= 1:
+        for job in selected:
+            results.append(_resolve_one(job))
+    else:
+        with ThreadPoolExecutor(max_workers=workers_n) as pool:
+            futs = {pool.submit(_resolve_one, job): job for job in selected}
+            for fut in as_completed(futs):
+                results.append(fut.result())
+
+    # Preserve selection order for logging/upgrades
+    by_id = {jid: (res, err) for jid, res, err in results}
+    progress_dirty = False
+    for job in selected:
+        jid = str(job.get("id") or "")
+        result, err = by_id.get(jid, (None, "missing"))
+        # Full search marks attempts done; reliable-only only checkpoints restores.
+        if not reliable_only:
+            done_ids.add(jid)
+            progress_dirty = True
+        if err or result is None:
+            summary["errors"].append({"id": jid, "error": err or "missing"})
+            summary["still_unresolved"] += 1
+            continue
+        conf = str(result.get("confidence") or "low")
+        summary[conf] = summary.get(conf, 0) + 1
+        if conf != "high" or not result.get("url"):
+            summary["still_unresolved"] += 1
+            # Stamp search_attempted on deleted row so prune gate / UI know
+            # we tried — without restoring. Skip on reliable-only (board miss
+            # is not a public-search attempt).
+            if write and not reliable_only:
+                try:
+                    with locked_jobs_for_write() as data:
+                        live = next(
+                            (j for j in data.get("jobs") or [] if j.get("id") == jid),
+                            None,
+                        )
+                        if live is not None and public_search_was_attempted(
+                            live, result
+                        ):
+                            live["apply_resolve_search_attempted"] = True
+                            live["apply_resolve_reason"] = str(
+                                result.get("reason") or live.get("apply_resolve_reason") or ""
+                            )[:80]
+                            live["apply_resolve_at"] = now_iso()
+                            live["updated_at"] = now_iso()
+                except Exception as e:
+                    summary["errors"].append({"id": jid, "error": str(e)[:200]})
+            continue
+        url = str(result.get("url") or "").strip()
+        bucket = _restore_method_bucket(
+            result.get("reason"), result.get("method")
+        )
+        if not write:
+            summary["restored"] += 1
+            summary["restored_by"][bucket] = int(
+                summary["restored_by"].get(bucket) or 0
+            ) + 1
+            summary["upgraded"].append({"id": jid, "url": url, "method": bucket})
+            if reliable_only:
+                done_ids.add(jid)
+                progress_dirty = True
+            continue
+        unblocked = None
+        with locked_jobs_for_write() as data:
+            live = next(
+                (j for j in data.get("jobs") or [] if j.get("id") == jid),
+                None,
+            )
+            if live is None:
+                summary["still_unresolved"] += 1
+                continue
+            if not restore_unresolved_deleted_job(
+                live,
+                apply_url=url,
+                resolve_reason=str(result.get("reason") or "public_search"),
+                resolve_method=str(result.get("method") or "") or None,
+            ):
+                # Already restored / wrong reason — still try apply upgrade.
+                if is_acceptable_resolve_target(url):
+                    merge_resolved_apply(live, url)
+                    set_apply_resolve_fields(live, result)
+                    stamp_unresolved_apply_url_tag(live, on=False)
+                    live["status"] = "discovered"
+                    live.pop("deleted_reason", None)
+                    live.pop("deleted_at", None)
+                    live["updated_at"] = now_iso()
+                else:
+                    summary["still_unresolved"] += 1
+                    continue
+            live["apply_resolve_search_attempted"] = True
+            unblocked = dict(live)
+        if unblocked is not None:
+            try:
+                from blocked_urls import unblock_job
+
+                unblock_job(unblocked)
+            except Exception:
+                pass
+            summary["restored"] += 1
+            summary["restored_by"][bucket] = int(
+                summary["restored_by"].get(bucket) or 0
+            ) + 1
+            summary["upgraded"].append({"id": jid, "url": url, "method": bucket})
+            log(f"restored {jid} → {url} ({bucket})")
+            if reliable_only:
+                done_ids.add(jid)
+                progress_dirty = True
+        else:
+            summary["still_unresolved"] += 1
+
+    if progress_dirty or not reliable_only:
+        try:
+            _save_progress(
+                progress_path,
+                done_ids,
+                extra={
+                    "restored_total": int(summary.get("restored") or 0),
+                    "last_batch_considered": len(selected),
+                    "last_batch_restored": int(summary.get("restored") or 0),
+                    "last_reliable_only": bool(reliable_only),
+                },
+            )
+        except OSError as e:
+            summary["errors"].append({"id": "*", "error": f"checkpoint: {e}"[:200]})
+    return summary
+
+
 def jazzhr_slug_from_url(url: str) -> str | None:
     host = _host(url)
     if host.endswith(".applytojob.com"):
@@ -803,8 +1788,54 @@ def parse_ddg_html(html: str) -> list[str]:
     return found
 
 
+def _parse_cse_key_list(raw) -> list[str]:
+    """Normalize a GOOGLE_CSE_KEYS value (list or JSON-array string) to strings."""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(x).strip() for x in raw if str(x or "").strip()]
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return []
+        if s.startswith("["):
+            try:
+                parsed = json.loads(s)
+            except json.JSONDecodeError:
+                return []
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x or "").strip()]
+            return []
+        return [s]
+    return []
+
+
+def _unique_nonempty(*groups: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            s = str(item or "").strip()
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+    return out
+
+
 def load_search_keys() -> dict:
-    """Env vars win; fall back to web_keys.json. Missing → empty."""
+    """Env vars win / merge first; fall back to web_keys.json. Missing → empty.
+
+    Expected ``web_keys.json`` CSE shape (placeholders only — never commit secrets)::
+
+        {
+          "GOOGLE_CSE_CX": "...",
+          "GOOGLE_CSE_KEYS": ["key1", "key2", "key3", "key4"]
+        }
+
+    Single ``GOOGLE_CSE_KEY`` / ``google_cse_key`` still works and is merged
+    uniquely into the fallback list (env then file). Shared CX via
+    ``GOOGLE_CSE_CX`` / ``google_cse_cx``.
+    """
     file_keys: dict = {}
     try:
         from india_scrape_common import load_web_keys
@@ -828,26 +1859,69 @@ def load_search_keys() -> dict:
                 return str(v)
         return None
 
+    cse_keys = _unique_nonempty(
+        _parse_cse_key_list(os.environ.get("GOOGLE_CSE_KEY")),
+        _parse_cse_key_list(os.environ.get("GOOGLE_CSE_KEYS")),
+        _parse_cse_key_list(
+            file_keys.get("GOOGLE_CSE_KEY") or file_keys.get("google_cse_key")
+        ),
+        _parse_cse_key_list(
+            file_keys.get("GOOGLE_CSE_KEYS") or file_keys.get("google_cse_keys")
+        ),
+    )
+
     return {
         "brave": pick("BRAVE_SEARCH_API_KEY", "brave_search_api_key"),
-        "google_cse_key": pick("GOOGLE_CSE_KEY", "google_cse_key"),
+        "google_cse_key": cse_keys[0] if cse_keys else None,
+        "google_cse_keys": cse_keys,
         "google_cse_cx": pick("GOOGLE_CSE_CX", "google_cse_cx"),
         "jsearch": pick("JSEARCH_API_KEY", "jsearch_api_key"),
     }
 
 
+# Process-level CSE quota flag. Set when every configured key returns 403/429/
+# quota; available_search_backends then omits google_cse for the rest of the
+# process lifetime so we never thrash exhausted keys.
+_CSE_QUOTA_EXHAUSTED = False
+
+
 def available_search_backends(*, include_ddg: bool = True) -> list[dict]:
     keys = load_search_keys()
     out: list[dict] = []
+    cse_keys = keys.get("google_cse_keys") or (
+        [keys["google_cse_key"]] if keys.get("google_cse_key") else []
+    )
+    # Prefer CSE early when key(s)+cx are configured (API more reliable than HTML).
+    # Once this process marks CSE quota/429 exhausted, omit it entirely so we
+    # never burn another request until the interpreter restarts.
+    if cse_keys and keys.get("google_cse_cx") and not _CSE_QUOTA_EXHAUSTED:
+        out.append({"name": "google_cse"})
+    # HTML engines need no API keys. DDG often times out — Brave/Bing first.
+    out.append({"name": "brave_html"})
+    out.append({"name": "bing"})
     if include_ddg:
         out.append({"name": "duckduckgo"})
     if keys.get("brave"):
         out.append({"name": "brave"})
-    if keys.get("google_cse_key") and keys.get("google_cse_cx"):
-        out.append({"name": "google_cse"})
     if keys.get("jsearch"):
         out.append({"name": "jsearch"})
     return out
+
+
+# Simple cross-thread throttle for HTML search backends (avoid 429).
+_SEARCH_LOCK = threading.Lock()
+_LAST_HTML_SEARCH_AT = 0.0
+_HTML_SEARCH_MIN_INTERVAL_S = 0.75
+
+
+def _throttle_html_search() -> None:
+    global _LAST_HTML_SEARCH_AT
+    with _SEARCH_LOCK:
+        now = time.monotonic()
+        wait = _HTML_SEARCH_MIN_INTERVAL_S - (now - _LAST_HTML_SEARCH_AT)
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_HTML_SEARCH_AT = time.monotonic()
 
 
 def _http_get(url: str, headers: dict | None = None, timeout: int = 20) -> str:
@@ -858,19 +1932,131 @@ def _http_get(url: str, headers: dict | None = None, timeout: int = 20) -> str:
 
 
 def search_duckduckgo(query: str) -> list[str]:
+    _throttle_html_search()
     q = urlencode({"q": query})
     for base in (
         "https://html.duckduckgo.com/html/",
         "https://lite.duckduckgo.com/lite/",
     ):
         try:
-            html = _http_get(base + "?" + q)
+            html = _http_get(base + "?" + q, timeout=12)
         except (URLError, HTTPError, TimeoutError, OSError, ValueError):
             continue
         urls = parse_ddg_html(html)
         if urls:
             return urls
     return []
+
+
+def search_bing_html(query: str) -> list[str]:
+    """Parse Bing web search HTML for result URLs (no API key)."""
+    _throttle_html_search()
+    url = "https://www.bing.com/search?" + urlencode({"q": query, "count": "10"})
+    try:
+        html = _http_get(url, timeout=15)
+    except (URLError, HTTPError, TimeoutError, OSError, ValueError):
+        return []
+    html = (html or "").replace("&amp;", "&")
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        u = str(raw or "").strip()
+        if not u:
+            return
+        host = _host(u)
+        if not host or "bing.com" in host or "microsoft.com" in host:
+            return
+        key = normalize_url(u) or u.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(u)
+
+    # Unwrap bing.com/ck redirect ``u=a1…`` base64 payloads.
+    for m in re.finditer(r"[?&]u=(a1[^&\"'\s]+)", html):
+        payload = m.group(1)[2:]
+        pad = "=" * ((4 - len(payload) % 4) % 4)
+        try:
+            import base64
+
+            dec = base64.urlsafe_b64decode(payload + pad).decode("utf-8", "replace")
+        except Exception:
+            continue
+        if dec.startswith("http"):
+            _add(dec)
+        elif dec.startswith("/"):
+            continue
+    # Cite display URLs (often the real host/path with › separators).
+    for m in re.finditer(r"<cite[^>]*>(.*?)</cite>", html, re.I | re.S):
+        cite = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        cite = cite.replace(" › ", "/").replace("»", "/").strip()
+        if cite.startswith("http"):
+            _add(cite)
+        elif "." in cite and " " not in cite:
+            _add("https://" + cite.lstrip("/"))
+    for m in _HTTP_RE.finditer(html):
+        u = m.group(0).rstrip(".,;:!?)")
+        if is_known_ats_url(u) or looks_like_job_apply_url(u):
+            _add(u)
+    return found
+
+
+def search_brave_html(query: str) -> list[str]:
+    """Parse Brave Search HTML for result URLs (no API key)."""
+    _throttle_html_search()
+    url = "https://search.brave.com/search?" + urlencode({"q": query})
+    try:
+        html = _http_get(
+            url,
+            headers={"Accept": "text/html"},
+            timeout=15,
+        )
+    except HTTPError as e:
+        if getattr(e, "code", None) == 429:
+            time.sleep(2.0)
+            try:
+                html = _http_get(
+                    url,
+                    headers={"Accept": "text/html"},
+                    timeout=15,
+                )
+            except (URLError, HTTPError, TimeoutError, OSError, ValueError):
+                return []
+        else:
+            return []
+    except (URLError, TimeoutError, OSError, ValueError):
+        return []
+    html = (html or "").replace("&amp;", "&")
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        u = str(raw or "").strip()
+        if not u.startswith("http"):
+            return
+        host = _host(u)
+        if not host or "brave.com" in host or "search.brave" in host:
+            return
+        key = normalize_url(u) or u.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(u)
+
+    # Prefer result anchors; Brave uses hashed svelte class names.
+    for m in re.finditer(r'<a[^>]+href="(https?://[^"]+)"', html, re.I):
+        u = m.group(1).strip()
+        if is_known_ats_url(u) or looks_like_job_apply_url(u) or is_ats_or_company_apply(u):
+            _add(u)
+    if not found:
+        for m in _HTTP_RE.finditer(html):
+            u = m.group(0).rstrip(".,;:!?)")
+            if is_known_ats_url(u) or looks_like_job_apply_url(u):
+                _add(u)
+                if len(found) >= 20:
+                    break
+    return found
 
 
 def search_brave(query: str, api_key: str) -> list[str]:
@@ -896,19 +2082,93 @@ def search_brave(query: str, api_key: str) -> list[str]:
     return urls
 
 
-def search_google_cse(query: str, api_key: str, cx: str) -> list[str]:
-    url = "https://www.googleapis.com/customsearch/v1?" + urlencode(
-        {"key": api_key, "cx": cx, "q": query, "num": 10}
-    )
+def _is_cse_quota_or_rate_error(exc: BaseException) -> bool:
+    """True for CSE 403/429 or quota/rate-limit bodies (no secrets logged)."""
+    if not isinstance(exc, HTTPError):
+        return False
+    code = getattr(exc, "code", None)
+    if code in (403, 429):
+        return True
+    body = ""
     try:
-        data = json.loads(_http_get(url))
-    except (URLError, HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        fp = getattr(exc, "fp", None)
+        if fp is not None:
+            raw = fp.read() if hasattr(fp, "read") else b""
+            if isinstance(raw, bytes):
+                body = raw.decode("utf-8", errors="replace")
+            else:
+                body = str(raw or "")
+    except Exception:
+        body = ""
+    blob = body.lower()
+    return any(
+        marker in blob
+        for marker in (
+            "dailylimitexceeded",
+            "userratelimitexceeded",
+            "ratelimitexceeded",
+            "quotaexceeded",
+            "quota exceeded",
+            "rate limit",
+        )
+    )
+
+
+def search_google_cse(
+    query: str,
+    api_key: str | list[str],
+    cx: str,
+) -> list[str]:
+    """Query Google Programmable Search. ``api_key`` may be one key or a list.
+
+    On 403/429/quota for a key, try the next key; stop on the first successful
+    HTTP response (including empty result sets). Never logs key material.
+    When every key is rate-limited, marks CSE exhausted for this process so
+    ``default_search`` falls through to Brave/Bing/… instead of thrashing.
+    """
+    global _CSE_QUOTA_EXHAUSTED
+    if _CSE_QUOTA_EXHAUSTED:
         return []
-    urls: list[str] = []
-    for item in (data.get("items") or []) if isinstance(data, dict) else []:
-        if isinstance(item, dict) and item.get("link"):
-            urls.append(item["link"])
-    return urls
+
+    if isinstance(api_key, str):
+        keys = _unique_nonempty([api_key])
+    else:
+        keys = _unique_nonempty(list(api_key or []))
+    cx = str(cx or "").strip()
+    if not keys or not cx:
+        return []
+
+    rate_limited = 0
+    for key in keys:
+        url = "https://www.googleapis.com/customsearch/v1?" + urlencode(
+            {"key": key, "cx": cx, "q": query, "num": 10}
+        )
+        try:
+            data = json.loads(_http_get(url))
+        except HTTPError as e:
+            try:
+                if _is_cse_quota_or_rate_error(e):
+                    rate_limited += 1
+                    continue
+                return []
+            finally:
+                close = getattr(e, "close", None)
+                if callable(close):
+                    close()
+        except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+            return []
+        urls: list[str] = []
+        for item in (data.get("items") or []) if isinstance(data, dict) else []:
+            if isinstance(item, dict) and item.get("link"):
+                urls.append(item["link"])
+        return urls
+    if rate_limited and rate_limited >= len(keys):
+        _CSE_QUOTA_EXHAUSTED = True
+        log(
+            f"google_cse: all {rate_limited} key(s) rate-limited/quota — "
+            "falling through to other backends"
+        )
+    return []
 
 
 def search_jsearch(query: str, api_key: str) -> list[str]:
@@ -950,12 +2210,25 @@ def default_search(query: str) -> list[str]:
         name = backend.get("name")
         urls: list[str] = []
         try:
-            if name == "duckduckgo":
+            if name == "duckduckgo" and collected:
+                # DDG often times out; skip when Brave/Bing already returned hits.
+                continue
+            if name == "bing":
+                urls = search_bing_html(query)
+            elif name == "brave_html":
+                urls = search_brave_html(query)
+            elif name == "duckduckgo":
                 urls = search_duckduckgo(query)
             elif name == "brave" and keys.get("brave"):
                 urls = search_brave(query, keys["brave"])
-            elif name == "google_cse" and keys.get("google_cse_key") and keys.get("google_cse_cx"):
-                urls = search_google_cse(query, keys["google_cse_key"], keys["google_cse_cx"])
+            elif name == "google_cse" and keys.get("google_cse_cx"):
+                if _CSE_QUOTA_EXHAUSTED:
+                    continue
+                cse_keys = keys.get("google_cse_keys") or (
+                    [keys["google_cse_key"]] if keys.get("google_cse_key") else []
+                )
+                if cse_keys:
+                    urls = search_google_cse(query, cse_keys, keys["google_cse_cx"])
             elif name == "jsearch" and keys.get("jsearch"):
                 urls = search_jsearch(query, keys["jsearch"])
         except Exception as e:
@@ -1048,6 +2321,7 @@ def resolve_job(
     *,
     search_fn: Callable[[str], list[str]] | None = None,
     fetch_fn: Callable[[str], dict | None] | None = None,
+    board_search_fn: Callable[[str, str], list[str]] | None = None,
     write: bool = False,
     resumes_dir: Path | None = None,
     delay_s: float = 0.0,
@@ -1079,31 +2353,59 @@ def resolve_job(
         if session_result:
             conf = str(session_result.get("confidence") or "low")
             reason = str(session_result.get("reason") or "")
-            # Terminal: high upgrade, Easy Apply, CAPTCHA, explicit login needed
-            # when we will not find ATS via search either is handled below.
+            # Terminal: high upgrade, Easy Apply, CAPTCHA, profile lock
             if conf == "high" and session_result.get("url"):
                 session_result.setdefault("reason", "linkedin_external_redirect")
                 return _done(session_result)
-            if reason in ("easy_apply", "blocked_captcha", "profile_in_use"):
+            if reason in _LINKEDIN_TERMINAL_NO_SEARCH:
                 return _done(session_result)
-            # Cookie+HTTP already parsed the job page — skip slow public search.
-            if session_result.get("method") == "linkedin_http" and reason in (
-                "no_external_apply",
-                "not_logged_in",
-                "unfetchable_ats",
-                "browser_error",
-            ):
-                return _done(session_result)
+            # LinkedIn HTTP/session miss (http_error, no_external, failed, …)
+            # → fall through to public company+title search before prune.
 
     search_fn = search_fn or default_search
     fetch_fn = fetch_fn or default_fetch
-    queries = build_search_queries(job.get("company") or "", job.get("title") or "")
+    board_search_fn = board_search_fn or search_ats_boards
+    loc = (
+        job.get("location")
+        or job.get("job_location")
+        or job.get("city")
+        or ""
+    )
+    company = str(job.get("company") or "").strip()
+    title = str(job.get("title") or "").strip()
+    queries = build_search_queries(
+        company,
+        title,
+        location=str(loc) if loc else None,
+    )
     hits: list[str] = []
     seen_q: set[str] = set()
+    search_attempted = False
+
+    # Prefer direct ATS board APIs before HTML SERPs — Brave/Bing often 429 or
+    # return irrelevant hosts while Ashby/GH/Lever board JSON has the job.
+    board_hit_set: set[str] = set()
+    if company and title:
+        try:
+            board_hits = board_search_fn(company, title) or []
+        except Exception as e:
+            log(f"ats board search failed: {e}")
+            board_hits = []
+        if board_hits:
+            hits.extend(board_hits)
+            search_attempted = True
+            for u in board_hits:
+                key = normalize_url(u) or u.lower()
+                board_hit_set.add(key)
+
     for i, q in enumerate(queries):
         if q in seen_q:
             continue
         seen_q.add(q)
+        # Skip slow HTML search when board API already produced ATS candidates.
+        if filter_candidate_urls(hits):
+            break
+        search_attempted = True
         if delay_s and i:
             time.sleep(delay_s)
         try:
@@ -1112,18 +2414,37 @@ def resolve_job(
             log(f"search failed for {q!r}: {e}")
         if filter_candidate_urls(hits):
             break
-    candidates = filter_candidate_urls(hits)
+    # Empty query list still counts as attempted when we reached this path
+    # (company+title missing → cannot search; stamp so we don't spin forever).
+    if not queries and not hits:
+        search_attempted = True
+
+    def _with_search(result: dict) -> dict:
+        if search_attempted:
+            result = dict(result)
+            result["search_attempted"] = True
+        return result
+
+    candidates = prefer_company_relevant_urls(filter_candidate_urls(hits), company)
     if not candidates:
         # Prefer LinkedIn session's not_logged_in / no_external message over bare
-        # no_ats_host when we already tried the profile path.
+        # no_ats_host when we already tried the profile path — but only after
+        # search was attempted (so prune gate sees search_attempted).
         if session_result and session_result.get("reason") in (
             "not_logged_in",
             "no_external_apply",
             "unfetchable_ats",
             "browser_error",
+            "http_error",
+            "failed",
+            "authwall",
         ):
-            return _done(session_result)
-        return _done({"confidence": "low", "url": None, "reason": "no_ats_host", "score": 0.0})
+            return _done(_with_search(session_result))
+        return _done(
+            _with_search(
+                {"confidence": "low", "url": None, "reason": "no_ats_host", "score": 0.0}
+            )
+        )
 
     in_hand = description_text(job, resumes_dir=resumes_dir) or (
         job.get("job_description") or job.get("description") or ""
@@ -1144,15 +2465,35 @@ def resolve_job(
             break
 
     if best is None:
-        return _done({"confidence": "low", "url": None, "reason": "no_ats_host", "score": 0.0})
+        return _done(
+            _with_search(
+                {"confidence": "low", "url": None, "reason": "no_ats_host", "score": 0.0}
+            )
+        )
     if not best.get("reason"):
-        if best.get("confidence") == "low":
+        best_url_key = normalize_url(str(best.get("url") or "")) or str(
+            best.get("url") or ""
+        ).lower()
+        if best_url_key and best_url_key in board_hit_set:
+            best["reason"] = "ats_board_api"
+            best["method"] = "ats_board_api"
+            # Board APIs already title-filtered the posting against a company
+            # registry/slug probe. Promote low/medium → high when the URL is
+            # job-shaped — Workable/SmartRecruiters/Ashby hosts often miss the
+            # stricter company_host gate without a fetchable JD overlap.
+            if (
+                best.get("confidence") in ("low", "medium")
+                and looks_like_job_apply_url(str(best.get("url") or ""))
+            ):
+                best = dict(best)
+                best["confidence"] = "high"
+        elif best.get("confidence") == "low":
             best["reason"] = "low_confidence"
         elif best.get("confidence") == "medium":
             best["reason"] = "medium_no_overwrite"
         else:
             best["reason"] = "upgraded"
-    return _done(best)
+    return _done(_with_search(best))
 
 
 def _load_progress(progress_path: Path | None) -> set[str]:
@@ -1249,8 +2590,8 @@ def persist_job_resolution(job_id: str, scored: dict) -> dict | None:
         )
         if posted_changed or after_posted != before_posted:
             posted_changed = True
-        # Clear chip when apply_url upgraded to known ATS.
-        if is_known_ats_url(str(job.get("apply_url") or "").strip()):
+        # Clear chip when apply_url upgraded to known ATS / company careers.
+        if is_resolved_apply_url(str(job.get("apply_url") or "").strip()):
             stamp_unresolved_apply_url_tag(job, on=False)
         pruned = tombstone_unresolved_apply_url(job)
         if pruned:
@@ -1368,6 +2709,8 @@ def resolve_discovery_apply_urls(
 
     with locked_jobs_for_read() as data:
         jobs = list(data.get("jobs") or [])
+    # Full jobs list for sibling lookups (not just the resolve batch).
+    all_jobs = jobs
     selected = select_jobs_for_discovery_resolve(
         jobs, since_iso=since_iso, job_ids=job_ids, limit=limit,
     )
@@ -1422,6 +2765,15 @@ def resolve_discovery_apply_urls(
         if progress_cb:
             progress_cb(done, total)
 
+    # LinkedIn HTTP hits that did not upgrade — fall back to public search before
+    # stamping failed/no_external (Unresolved URL prune).
+    linkedin_search_fallback: list[dict] = []
+    jobs_by_id = {
+        str(j.get("id") or ""): j
+        for j in selected
+        if isinstance(j, dict) and j.get("id")
+    }
+
     http_many = http_many_fn or resolve_linkedin_http_many
     if linkedin_pairs and http_many is not None:
         if abort_cb and abort_cb():
@@ -1454,32 +2806,63 @@ def resolve_discovery_apply_urls(
                 "method": "linkedin_http",
                 "score": 0.0,
             }
-            try:
-                if write:
-                    persist_job_resolution(jid, result)
-            except Exception as e:
-                summary["errors"].append({"id": jid, "error": str(e)[:200]})
-            _bump(result, jid)
+            conf = str(result.get("confidence") or "low")
+            reason = str(result.get("reason") or "")
+            if conf == "high" and result.get("url"):
+                try:
+                    if write:
+                        persist_job_resolution(jid, result)
+                except Exception as e:
+                    summary["errors"].append({"id": jid, "error": str(e)[:200]})
+                _bump(result, jid)
+                continue
+            if reason in _LINKEDIN_TERMINAL_NO_SEARCH:
+                try:
+                    if write:
+                        persist_job_resolution(jid, result)
+                except Exception as e:
+                    summary["errors"].append({"id": jid, "error": str(e)[:200]})
+                _bump(result, jid)
+                continue
+            # Miss → public company+title search before fail/prune.
+            job_snap = jobs_by_id.get(jid)
+            if job_snap:
+                linkedin_search_fallback.append(dict(job_snap))
+            else:
+                try:
+                    if write:
+                        persist_job_resolution(jid, result)
+                except Exception as e:
+                    summary["errors"].append({"id": jid, "error": str(e)[:200]})
+                _bump(result, jid)
     elif linkedin_pairs and http_many is None:
         for jid, _u in linkedin_pairs:
-            summary["errors"].append({"id": jid, "error": "linkedin_resolve_apply unavailable"})
-            _bump({"confidence": "low", "reason": "browser_error"}, jid)
+            job_snap = jobs_by_id.get(jid)
+            if job_snap:
+                linkedin_search_fallback.append(dict(job_snap))
+            else:
+                summary["errors"].append({"id": jid, "error": "linkedin_resolve_apply unavailable"})
+                _bump({"confidence": "low", "reason": "browser_error"}, jid)
 
     if summary.get("aborted"):
         return summary
 
     resolve_one = resolve_job_fn or resolve_job
-    for job in other_jobs:
+    search_jobs = list(linkedin_search_fallback) + list(other_jobs)
+    for job in search_jobs:
         if abort_cb and abort_cb():
             summary["aborted"] = True
             break
         jid = str(job.get("id") or "")
         try:
-            result = resolve_one(
-                dict(job),
-                write=False,
-                linkedin_session=False,
-            )
+            # Prefer existing ATS URL / same company+title sibling before board+search.
+            result = try_existing_or_sibling_apply_url(job, all_jobs)
+            if result is None:
+                result = resolve_one(
+                    dict(job),
+                    write=False,
+                    linkedin_session=False,
+                )
             if write:
                 persist_job_resolution(jid, result)
         except Exception as e:
@@ -1599,13 +2982,45 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip authenticated LinkedIn profile redirect capture (public search only)",
     )
+    parser.add_argument(
+        "--reresolve-deleted",
+        action="store_true",
+        help="Public-search retry for pruned unresolved_apply_url jobs (checkpointed)",
+    )
+    parser.add_argument(
+        "--include-linkedin",
+        action="store_true",
+        default=True,
+        help="With --reresolve-deleted, include LinkedIn-sourced rows (default: on)",
+    )
+    parser.add_argument(
+        "--no-linkedin",
+        action="store_true",
+        help="With --reresolve-deleted, skip LinkedIn-sourced rows",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=RERESOLVE_DELETED_DEFAULT_WORKERS,
+        help=f"Parallel public-search workers for --reresolve-deleted (default {RERESOLVE_DELETED_DEFAULT_WORKERS})",
+    )
+    parser.add_argument(
+        "--reliable-only",
+        action="store_true",
+        help=(
+            "With --reresolve-deleted: sibling + ATS board API only "
+            "(skip CSE/HTML search; ignore search checkpoint for selection)"
+        ),
+    )
     args = parser.parse_args(argv)
 
-    if args.reset_progress and PROGRESS_FILE.is_file():
-        PROGRESS_FILE.write_text(json.dumps({"done_ids": [], "updated_at": now_iso()}, indent=2))
+    if args.reset_progress:
+        for path in (PROGRESS_FILE, RERESOLVE_PROGRESS_FILE):
+            if path.is_file():
+                path.write_text(json.dumps({"done_ids": [], "updated_at": now_iso()}, indent=2))
 
-    if not args.job_id and not args.all:
-        parser.error("pass JOB_ID or --all")
+    if not args.job_id and not args.all and not args.reresolve_deleted:
+        parser.error("pass JOB_ID, --all, or --reresolve-deleted")
 
     backends = [b["name"] for b in available_search_backends(include_ddg=True)]
     log(f"search backends: {', '.join(backends) or '(none — fail soft)'}")
@@ -1614,6 +3029,76 @@ def main(argv: list[str] | None = None) -> int:
     else:
         log("dry-run (pass --write to persist)")
     use_li = not args.no_linkedin_session
+
+    if args.reresolve_deleted:
+        include_li = not args.no_linkedin
+        lim = args.limit if args.limit is not None else RERESOLVE_DELETED_DEFAULT_LIMIT
+        # limit 0 / None → drain checkpointed chunks until no candidates remain.
+        drain = lim is None or int(lim) <= 0
+        totals = {
+            "considered": 0,
+            "restored": 0,
+            "still_unresolved": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "upgraded": [],
+            "errors": [],
+            "batches": 0,
+            "dry_run": not args.write,
+            "include_linkedin": include_li,
+            "workers": args.workers,
+            "reliable_only": bool(args.reliable_only),
+            "restored_by": {
+                "sibling": 0,
+                "existing": 0,
+                "ats_board_api": 0,
+                "public_search": 0,
+            },
+        }
+        session_skip: set[str] = set()
+        while True:
+            summary = reresolve_unresolved_deleted(
+                limit=0 if drain else lim,
+                write=args.write,
+                include_linkedin=include_li,
+                job_ids={args.job_id} if args.job_id else None,
+                workers=args.workers,
+                reset_progress=False,
+                reliable_only=bool(args.reliable_only),
+                extra_skip_ids=session_skip if args.reliable_only else None,
+            )
+            totals["batches"] += 1
+            for k in ("considered", "restored", "still_unresolved", "high", "medium", "low"):
+                totals[k] = int(totals.get(k) or 0) + int(summary.get(k) or 0)
+            totals["upgraded"].extend(summary.get("upgraded") or [])
+            totals["errors"].extend(summary.get("errors") or [])
+            for bk, bv in (summary.get("restored_by") or {}).items():
+                totals["restored_by"][bk] = int(
+                    totals["restored_by"].get(bk) or 0
+                ) + int(bv or 0)
+            totals["checkpoint"] = summary.get("checkpoint")
+            for cid in summary.get("considered_ids") or []:
+                if cid:
+                    session_skip.add(str(cid))
+            log(
+                f"reresolve batch {totals['batches']}: "
+                f"considered={summary.get('considered')} "
+                f"restored={summary.get('restored')} "
+                f"still={summary.get('still_unresolved')} "
+                f"by={summary.get('restored_by')}"
+            )
+            if args.job_id or not drain:
+                break
+            if int(summary.get("considered") or 0) <= 0:
+                break
+            # Reliable-only over the full unresolved set: stop when a full
+            # chunk yields zero restores (gains flattened) after at least one
+            # non-empty pass — but keep chunking via session_skip until empty.
+            if args.reliable_only and int(summary.get("considered") or 0) <= 0:
+                break
+        print(json.dumps(totals, indent=2))
+        return 0
 
     if args.job_id:
         out = resolve_job_id(

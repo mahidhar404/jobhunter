@@ -722,6 +722,14 @@
     text-transform: none;
     letter-spacing: 0.02em;
   }
+  .tag.closed-posting {
+    color: var(--red);
+    border-color: var(--red-edge);
+    background: var(--red-dim);
+    text-transform: none;
+    letter-spacing: 0.02em;
+    font-family: var(--mono);
+  }
   .tag.salary,
   .tag.applied-count {
     color: var(--blood-orange);
@@ -2865,6 +2873,7 @@
           <label class="prune-opt"><input type="checkbox" data-prune-reason="staffing" checked onchange="savePruneSettings()"><span>Staffing agency</span></label>
           <label class="prune-opt"><input type="checkbox" data-prune-reason="stale_listing" checked onchange="savePruneSettings()"><span>Posted over 10 days ago (prevents hidden listings accumulating forever)</span></label>
           <label class="prune-opt"><input type="checkbox" data-prune-reason="unresolved_apply_url" checked onchange="savePruneSettings()"><span>Unresolved apply URL (LinkedIn / aggregator after resolve)</span></label>
+          <label class="prune-opt"><input type="checkbox" data-prune-reason="closed_posting" checked onchange="savePruneSettings()"><span>Closed / dead apply URL (all ATS + company careers — dead/404, closed/lever, closed/greenhouse, …)</span></label>
         </div>
         <label class="prune-schedule">
           <span>Automatic sweep</span>

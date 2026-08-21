@@ -208,6 +208,22 @@
       "street": "1615 Parkview Drive",
       "unit": "Unit 14C",
       "generated": true
+    },
+    {
+      "city": "Providence",
+      "state": "RI",
+      "zip": "02809",
+      "street": "869 Riverside Avenue",
+      "unit": "Unit 16A",
+      "generated": true
+    },
+    {
+      "city": "Round Rock",
+      "state": "TX",
+      "zip": "75201",
+      "street": "2764 Cedar Street",
+      "unit": "Apt 11A",
+      "generated": true
     }
   ]
 }

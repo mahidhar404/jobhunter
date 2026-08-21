@@ -371,6 +371,28 @@ never 10-wide CDP). CDP fallback ≤2 only on authwall/miss (`--http-only` skips
 Unresolved terminals (`failed` / `no_external` / `easy_apply` with apply_url still
 LinkedIn/aggregator) auto-prune Open jobs to Deleted (`deleted_reason=unresolved_apply_url`)
 and stamp the **Unresolved URL** chip — on resolve write, startup sweep, and scheduled prune.
+**Gate:** prune only after public company+title search was attempted (or Easy Apply /
+CAPTCHA / profile lock, which skip search). LinkedIn `http_error` / `browser_error` /
+`no_external` always fall through to search before stamp/prune.
+**Resolve backends (public search):** ATS board API (Ashby/GH/Lever/…) first, then
+Google CSE (`GOOGLE_CSE_KEYS`+`CX` in `web_keys.json`) → Brave/Bing/DDG HTML →
+optional `BRAVE_SEARCH_API_KEY` / `JSEARCH_API_KEY`. CSE all-keys 429 marks the
+process exhausted and omits CSE from backends (do not thrash quota). Re-resolve also
+restores siblings (same company+title already on ATS) and existing good apply_urls
+without search. Prefer `--limit 5..10` smokes — never unbounded `--limit 0` drains
+while debugging. **Reliable-only:** `--reresolve-deleted --reliable-only --write`
+(sibling + board; ignores search checkpoint; no CSE/HTML).
+**Auto recovery:** dashboard apply-resolve backlog + startup run a **reliable-only**
+pass first, then checkpointed `reresolve_unresolved_deleted` (LinkedIn included) so
+pruned Unresolved URL rows keep getting retries without a manual CLI. Manual:
+`python3 scripts/resolve_apply_urls.py --reresolve-deleted --write --limit 10 --workers 2`.
+`python3 scripts/resolve_apply_urls.py --reresolve-deleted --reliable-only --write --limit 75 --workers 6`.
+Separate path: known ATS + company careers apply/listing URLs that 404/410 or
+show closed-page HTML prune with concrete reasons (`dead/404`, `closed/lever`,
+`closed/greenhouse`, `closed/ashby`, `closed/smartrecruiters`, …) via
+`scripts/link_liveness.py` (scheduled prune + startup bounded batch, oldest Open
+first; soft failures / LinkedIn authwalls never prune). Manual:
+`python3 scripts/link_liveness.py --write --limit 40 --concurrency 6`.
 
 ### Discovery — ATS board scrape (`scrape_ats.py`)
 

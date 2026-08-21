@@ -5,8 +5,10 @@ under the menu bar). The outer window — titlebar (~28px), traffic lights, and
 shadows — is inset a few pixels inside that frame, then sized to ~2/3 of the
 inset width and right-aligned at full inset height.
 
-Dashboard launches maximized to the full inset usable frame. Fill/PartyRock
-still use the right ~2/3 on their own Chrome windows (separate processes).
+Dashboard launches in true fullscreen (Chromium ``--start-fullscreen`` plus
+macOS AXFullScreen). Maximized-to-usable-frame is the fallback if fullscreen
+cannot be applied. Fill/PartyRock still use the right ~2/3 on their own
+Chrome windows (separate processes).
 
 Coordinate space is logical points (top-left origin), not retina backing pixels.
 
@@ -97,8 +99,63 @@ def left_third_outer(screen: ScreenMetrics, *, inset: int = INSET_PX) -> Rect:
 
 
 def maximized_outer(screen: ScreenMetrics, *, inset: int = INSET_PX) -> Rect:
-    """Outer window: full inset usable frame (dashboard launch — maximized on screen)."""
+    """Outer window: full inset usable frame (dashboard fallback if fullscreen fails)."""
     return _inset_box(screen, inset)
+
+
+def chromium_dashboard_launch_flags() -> list[str]:
+    """Chromium argv for ops dashboard: true fullscreen, maximized as fallback."""
+    return ["--start-fullscreen", "--start-maximized"]
+
+
+def chrome_cdp_fullscreen_bounds() -> dict[str, Any]:
+    """CDP ``Browser.setWindowBounds`` payload for OS fullscreen (not kiosk)."""
+    return {"windowState": "fullscreen"}
+
+
+def macos_fullscreen_applescript(pid: int) -> str:
+    """System Events: enter macOS Space fullscreen (green-button), not maximize.
+
+    Reads AXFullScreen first so Cmd+Ctrl+F is not toggled if already fullscreen.
+    """
+    return (
+        f'tell application "System Events"\n'
+        f"  tell (first process whose unix id is {int(pid)})\n"
+        f"    if (count of windows) is 0 then return \"no_window\"\n"
+        f"    set frontmost to true\n"
+        f"    delay 0.12\n"
+        f"    set w to window 1\n"
+        f"    try\n"
+        f"      set fs to value of attribute \"AXFullScreen\" of w\n"
+        f"      if fs is true then return \"already\"\n"
+        f"      set value of attribute \"AXFullScreen\" of w to true\n"
+        f"      return \"ax\"\n"
+        f"    end try\n"
+        f"  end tell\n"
+        f"  keystroke \"f\" using {{control down, command down}}\n"
+        f"  return \"key\"\n"
+        f"end tell"
+    )
+
+
+def enter_macos_fullscreen(pid: int) -> bool:
+    """Best-effort true fullscreen for window 1 of *pid* (macOS only)."""
+    if sys.platform != "darwin" or pid <= 0:
+        return False
+    script = macos_fullscreen_applescript(pid)
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=6,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    token = (proc.stdout or "").strip().splitlines()[-1].strip().lower() if (proc.stdout or "").strip() else ""
+    return token in {"ax", "already", "key", "true"}
 
 
 def _content_height(outer: Rect, *, titlebar_px: int = TITLEBAR_PX) -> int:
@@ -354,7 +411,11 @@ def work_window_plan(
     anchor: Rect | None = None,
     pid: int | None = None,
 ) -> Rect | None:
-    """Return outer bounds for fill/PartyRock (``fill``) or dashboard (``dashboard``)."""
+    """Return outer bounds for fill/PartyRock (``fill``) or dashboard fallback.
+
+    Dashboard *placement* prefers ``enter_macos_fullscreen``; this rect is the
+    maximized usable-frame fallback only (fill still right ~2/3).
+    """
     screen = resolve_screen(metrics=metrics, screens=screens, anchor=anchor, pid=pid)
     if screen is None:
         return None
@@ -438,7 +499,9 @@ def _rect_json(rect: Rect) -> dict[str, int]:
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Place fill/PartyRock/dashboard windows")
+    parser = argparse.ArgumentParser(
+        description="Place fill/PartyRock windows; dashboard uses macOS fullscreen"
+    )
     parser.add_argument("--role", choices=("fill", "partyrock", "dashboard"), default="fill")
     parser.add_argument("--apply-pid", type=int, default=0, help="System Events place window 1")
     parser.add_argument("--json", action="store_true")
@@ -452,14 +515,22 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"ok": False, "error": "no_screen_metrics"}))
         return 1
     applied = False
+    fullscreen = False
     if pid:
-        applied = apply_system_events_bounds(pid, outer)
+        if role == "dashboard":
+            fullscreen = enter_macos_fullscreen(pid)
+            applied = fullscreen
+            if not applied:
+                applied = apply_system_events_bounds(pid, outer)
+        else:
+            applied = apply_system_events_bounds(pid, outer)
     payload = {
         "ok": True,
         "role": role,
         "outer": _rect_json(outer),
-        "cdp": chrome_cdp_bounds(outer),
+        "cdp": chrome_cdp_bounds(outer) if role != "dashboard" else chrome_cdp_fullscreen_bounds(),
         "applied": applied,
+        "fullscreen": fullscreen,
         "pid": pid,
     }
     if args.json or not pid:

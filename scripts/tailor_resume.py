@@ -71,7 +71,7 @@ def strip_line_numbers(text: str) -> str:
     separate markup. A greedy "strip leading digits" regex is wrong here:
     when real content starts with a digit too (a phone number, a year),
     it gets eaten along with the line-number prefix (observed: line 26's
-    "405-667-0068" became "-667-0068"). Line numbers are strictly
+    "555-123-4567" became "-123-4567"). Line numbers are strictly
     sequential from 1, so strip exactly len(str(line_index)) leading
     characters instead - that consumes precisely the number gutter no
     matter what the actual content starts with."""

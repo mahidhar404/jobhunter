@@ -1277,10 +1277,10 @@
           "updated_at": "2026-08-11T19:10:59Z"
         },
         "select[name=\"cards[004cdb5c-e061-45f7-920b-d2b79556b182][field2]\"]:visible": {
-          "attempts": 3,
+          "attempts": 4,
           "demoted": true,
-          "demoted_at": "2026-08-11T19:10:56Z",
-          "fail": 3,
+          "demoted_at": "2026-08-19T13:23:57Z",
+          "fail": 4,
           "host": "",
           "success": 0,
           "success_rate": 0.0,
@@ -1406,7 +1406,7 @@
           "updated_at": "2026-08-11T19:10:59Z"
         }
       },
-      "updated_at": "2026-08-11T19:12:40Z"
+      "updated_at": "2026-08-19T13:23:57Z"
     },
     "recruitee": {
       "selectors": {

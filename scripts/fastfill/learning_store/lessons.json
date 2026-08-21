@@ -1275,8 +1275,8 @@
       "label_pattern": "how did you hear about this job?\u2731",
       "platform": "lever",
       "reason": "UNFILLABLE_AFTER_2: multiselect_uncommitted",
-      "seen": 3,
-      "updated_at": "2026-08-11T19:10:56Z"
+      "seen": 4,
+      "updated_at": "2026-08-19T13:23:57Z"
     },
     {
       "avoid_strategy": "retry_same_selector",
@@ -1328,18 +1328,18 @@
       "field_type": null,
       "label_pattern": "he/him",
       "platform": "lever",
-      "reason": "UNFILLABLE_AFTER_2: unclassified",
-      "seen": 5,
-      "updated_at": "2026-08-11T19:12:37Z"
+      "reason": "UNFILLABLE_AFTER_2: radio_unchecked_left",
+      "seen": 6,
+      "updated_at": "2026-08-19T13:23:57Z"
     },
     {
       "avoid_strategy": "refill_pass_1",
       "field_type": null,
       "label_pattern": "pronouns",
       "platform": "lever",
-      "reason": "UNFILLABLE_AFTER_2: unclassified",
-      "seen": 5,
-      "updated_at": "2026-08-11T19:12:37Z"
+      "reason": "UNFILLABLE_AFTER_2: radio_unchecked_left",
+      "seen": 6,
+      "updated_at": "2026-08-19T13:23:57Z"
     },
     {
       "avoid_strategy": "retry_same_selector",
@@ -1391,9 +1391,9 @@
       "field_type": null,
       "label_pattern": "femalemalenon-binary",
       "platform": "lever",
-      "reason": "UNFILLABLE_AFTER_2: unanswered_radio_group",
-      "seen": 2,
-      "updated_at": "2026-08-11T19:12:37Z"
+      "reason": "UNFILLABLE_AFTER_2: empty_readback",
+      "seen": 3,
+      "updated_at": "2026-08-19T13:23:57Z"
     },
     {
       "avoid_strategy": "enumerate_unanswered_choices",
@@ -1799,6 +1799,15 @@
       "reason": "UNFILLABLE_AFTER_2: unverified_readback",
       "seen": 1,
       "updated_at": "2026-08-18T11:38:47Z"
+    },
+    {
+      "avoid_strategy": "refill_pass_1",
+      "field_type": "TWITTER",
+      "label_pattern": "twitter url",
+      "platform": "lever",
+      "reason": "UNFILLABLE_AFTER_2: no_value",
+      "seen": 1,
+      "updated_at": "2026-08-19T13:23:57Z"
     }
   ],
   "version": 1

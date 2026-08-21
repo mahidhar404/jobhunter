@@ -77,10 +77,21 @@ def test_apply_resolve_backlog_skips_while_discovery_running() -> None:
 
 def test_apply_resolve_backlog_passes_limit_no_since() -> None:
     captured: list[dict] = []
+    reresolve_calls: list[dict] = []
 
     def fake_resolve(**kwargs):
         captured.append(kwargs)
         return {"considered": 2, "upgraded": [{"id": "x"}], "high": 1}
+
+    def fake_reresolve(**kwargs):
+        reresolve_calls.append(kwargs)
+        return {
+            "considered": 3,
+            "restored": 1,
+            "still_unresolved": 2,
+            "errors": [],
+            "restored_by": {"sibling": 1},
+        }
 
     sleeps = [None, StopIteration]
 
@@ -95,10 +106,19 @@ def test_apply_resolve_backlog_passes_limit_no_since() -> None:
          mock.patch.object(srv, "APPLY_RESOLVE_BACKLOG_INTERVAL_S", 0), \
          mock.patch.object(srv, "APPLY_RESOLVE_BACKLOG_LIMIT", 8), \
          mock.patch.object(srv, "APPLY_RESOLVE_BACKLOG_CONCURRENCY", 3), \
+         mock.patch.object(srv, "APPLY_RESOLVE_RERESOLVE_LIMIT", 40), \
+         mock.patch.object(srv, "APPLY_RESOLVE_RERESOLVE_WORKERS", 4), \
+         mock.patch.object(srv, "APPLY_RESOLVE_RELIABLE_LIMIT", 80), \
+         mock.patch.object(srv, "APPLY_RESOLVE_RELIABLE_WORKERS", 6), \
          mock.patch(
              "resolve_apply_urls.resolve_discovery_apply_urls",
              side_effect=fake_resolve,
          ), \
+         mock.patch(
+             "resolve_apply_urls.reresolve_unresolved_deleted",
+             side_effect=fake_reresolve,
+         ), \
+         mock.patch.object(srv, "_invalidate_jobs_list_cache"), \
          mock.patch.object(srv.time, "sleep", side_effect=_sleep):
         try:
             srv._apply_resolve_backlog_loop()
@@ -109,6 +129,17 @@ def test_apply_resolve_backlog_passes_limit_no_since() -> None:
     assert captured[0].get("limit") == 8
     assert captured[0].get("concurrency") == 3
     assert captured[0].get("write") is True
+    # Reliable-only first, then checkpointed full search.
+    assert len(reresolve_calls) == 2
+    assert reresolve_calls[0].get("reliable_only") is True
+    assert reresolve_calls[0].get("limit") == 80
+    assert reresolve_calls[0].get("workers") == 6
+    assert reresolve_calls[0].get("write") is True
+    assert reresolve_calls[1].get("reliable_only") is False
+    assert reresolve_calls[1].get("include_linkedin") is True
+    assert reresolve_calls[1].get("limit") == 40
+    assert reresolve_calls[1].get("write") is True
+    assert reresolve_calls[1].get("workers") == 4
 
 
 def test_set_discovery_resolve_progress_updates_label() -> None:

@@ -219,10 +219,18 @@ PRUNE_REASON_CODES = (
     "staffing",
     "stale_listing",
     "unresolved_apply_url",
+    # ATS apply/listing URL dead (404/410 / known closed page). Concrete
+    # deleted_reason stamped per hit: dead/404, closed/lever, …
+    "closed_posting",
 )
 _PRUNE_REASON_ALIASES = {
     "apply_resolve_failed": "unresolved_apply_url",
+    "dead_apply_url": "closed_posting",
 }
+# Bounded HTTP liveness batch per scheduled / manual prune (oldest ATS first).
+CLOSED_POSTING_PRUNE_LIMIT = 40
+CLOSED_POSTING_PRUNE_CONCURRENCY = 6
+CLOSED_POSTING_PRUNE_TIMEOUT_S = 12.0
 STALE_LISTING_MAX_AGE_DAYS = 10
 PRUNE_INTERVALS_S = (0, 300, 900, 3600, 86400)
 # Per-source progress for crash/quit resume (under logs/ — gitignored).
@@ -8898,7 +8906,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             self._send_json({"error": str(e)}, 400)
             return
-        moved = _auto_delete_sweep_once(set(reasons))
+        moved = _run_scheduled_prune_once({"reasons": reasons})
         self._send_json({"ok": True, "moved": moved, "reasons": reasons})
 
     def _handle_prune_settings(self, payload=None):
@@ -9210,6 +9218,14 @@ def _backfill_company_key_loop() -> None:
 APPLY_RESOLVE_BACKLOG_INTERVAL_S = 180
 APPLY_RESOLVE_BACKLOG_LIMIT = 8
 APPLY_RESOLVE_BACKLOG_CONCURRENCY = 3
+# Public-search recovery for already-pruned Unresolved URL rows (LinkedIn +
+# aggregators). Checkpointed; drains until exhausted across cycles.
+# Reliable-only pass (sibling + ATS board API) runs first each cycle and
+# ignores the search checkpoint so registry growth can still restore rows.
+APPLY_RESOLVE_RERESOLVE_LIMIT = 40
+APPLY_RESOLVE_RERESOLVE_WORKERS = 4
+APPLY_RESOLVE_RELIABLE_LIMIT = 80
+APPLY_RESOLVE_RELIABLE_WORKERS = 6
 # Ongoing missing-JD fetch after the one-shot v1 marker (small batches).
 MISSING_JD_BACKFILL_INTERVAL_S = 300
 MISSING_JD_BACKFILL_LIMIT = 5
@@ -9280,8 +9296,10 @@ def _apply_resolve_backlog_loop() -> None:
     """Rate-limited HTTP resolve for unresolved LinkedIn/aggregator backlog.
 
     Discover only resolves jobs touched since the run started. This loop
-    drains older unresolved rows in small batches (HTTP-only, no CDP).
-    Skips while Discover is running so it never contends for machine load.
+    drains older unresolved Open rows in small batches (HTTP-only, no CDP),
+    then public-searches pruned Unresolved URL deleted rows (LinkedIn
+    included) until the checkpointed backlog is exhausted. Skips while
+    Discover is running so it never contends for machine load.
     """
     _wait_jobs_list_boot()
     while True:
@@ -9306,6 +9324,56 @@ def _apply_resolve_backlog_loop() -> None:
                 )
         except Exception as e:
             print(f"warn: apply-resolve backlog failed: {e}")
+        if is_session_running(DISCOVERY_SESSION_KEY):
+            continue
+        try:
+            import resolve_apply_urls as rau
+
+            # 1) Free reliable path first: sibling + ATS board (no CSE/HTML).
+            rr_rel = rau.reresolve_unresolved_deleted(
+                limit=APPLY_RESOLVE_RELIABLE_LIMIT,
+                write=True,
+                include_linkedin=True,
+                workers=APPLY_RESOLVE_RELIABLE_WORKERS,
+                reliable_only=True,
+            )
+            rel_considered = int(rr_rel.get("considered") or 0)
+            rel_restored = int(rr_rel.get("restored") or 0)
+            if rel_considered:
+                print(
+                    f"unresolved-deleted reliable: considered={rel_considered} "
+                    f"restored={rel_restored} by={rr_rel.get('restored_by')}"
+                )
+                if rel_restored:
+                    try:
+                        _invalidate_jobs_list_cache()
+                    except Exception:
+                        pass
+            # 2) Checkpointed full resolve (board already tried; CSE skipped
+            # when process-level quota exhausted).
+            rr = rau.reresolve_unresolved_deleted(
+                limit=APPLY_RESOLVE_RERESOLVE_LIMIT,
+                write=True,
+                include_linkedin=True,
+                workers=APPLY_RESOLVE_RERESOLVE_WORKERS,
+                reliable_only=False,
+            )
+            considered = int(rr.get("considered") or 0)
+            restored = int(rr.get("restored") or 0)
+            if considered:
+                print(
+                    f"unresolved-deleted reresolve: considered={considered} "
+                    f"restored={restored} still={rr.get('still_unresolved')} "
+                    f"by={rr.get('restored_by')} "
+                    f"errors={len(rr.get('errors') or [])}"
+                )
+                if restored:
+                    try:
+                        _invalidate_jobs_list_cache()
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"warn: unresolved-deleted reresolve failed: {e}")
 
 
 def _backfill_multi_opening_loop() -> None:
@@ -9859,9 +9927,51 @@ def _backfill_auto_delete_loop() -> None:
             _run_scheduled_prune_once(settings)
 
 
+def _run_closed_posting_liveness_once(*, limit: int | None = None) -> int:
+    """HTTP-check oldest Open ATS/company URLs; prune clear 404/closed only.
+
+    Mixed ATS + company careers (skips pure LinkedIn/aggregators). Soft failures
+    never prune. Concrete deleted_reason: dead/404, closed/lever, closed/greenhouse, …
+    """
+    try:
+        from link_liveness import sweep_closed_postings
+    except Exception as e:
+        print(f"warn: link_liveness import failed: {e}")
+        return 0
+    try:
+        summary = sweep_closed_postings(
+            write=True,
+            limit=CLOSED_POSTING_PRUNE_LIMIT if limit is None else limit,
+            concurrency=CLOSED_POSTING_PRUNE_CONCURRENCY,
+            timeout_s=CLOSED_POSTING_PRUNE_TIMEOUT_S,
+        )
+        pruned = int(summary.get("pruned") or 0)
+        checked = int(summary.get("checked") or 0)
+        if checked:
+            print(
+                f"closed_posting liveness: checked={checked} "
+                f"dead={summary.get('dead')} soft_fail={summary.get('soft_fail')} "
+                f"pruned={pruned} reasons={summary.get('reasons') or []} "
+                f"by_reason={summary.get('pruned_by_reason') or {}} "
+                f"by_host={summary.get('pruned_by_host') or {}}"
+            )
+        if pruned:
+            _invalidate_jobs_list_cache()
+        return pruned
+    except Exception as e:
+        print(f"warn: closed_posting liveness failed: {e}")
+        return 0
+
+
 def _run_scheduled_prune_once(settings: dict) -> int:
     """Run one timer-triggered sweep with the persisted rule selection."""
-    return _auto_delete_sweep_once(set(settings.get("reasons") or []))
+    reasons = set(settings.get("reasons") or [])
+    # Local filters first (no HTTP). closed_posting is HTTP — separate path.
+    local_reasons = reasons - {"closed_posting"}
+    moved = _auto_delete_sweep_once(local_reasons) if local_reasons else 0
+    if "closed_posting" in reasons:
+        moved += _run_closed_posting_liveness_once()
+    return moved
 
 
 def _install_lifecycle_signal_handlers() -> None:
@@ -9967,6 +10077,50 @@ def _startup_reconcile_async() -> None:
             _invalidate_jobs_list_cache()
     except Exception as e:
         print(f"warn: unresolved_apply_url sweep failed: {e}")
+    try:
+        # Kick recovery for pruned Unresolved URL backlog: reliable sibling/board
+        # first, then checkpointed public-search (CSE skipped when exhausted).
+        from resolve_apply_urls import reresolve_unresolved_deleted
+
+        rr_rel = reresolve_unresolved_deleted(
+            limit=APPLY_RESOLVE_RELIABLE_LIMIT,
+            write=True,
+            include_linkedin=True,
+            workers=APPLY_RESOLVE_RELIABLE_WORKERS,
+            reliable_only=True,
+        )
+        rel_restored = int(rr_rel.get("restored") or 0)
+        rel_considered = int(rr_rel.get("considered") or 0)
+        if rel_considered:
+            print(
+                f"startup unresolved-deleted reliable: considered={rel_considered} "
+                f"restored={rel_restored} by={rr_rel.get('restored_by')}"
+            )
+            if rel_restored:
+                _invalidate_jobs_list_cache()
+        rr = reresolve_unresolved_deleted(
+            limit=APPLY_RESOLVE_RERESOLVE_LIMIT,
+            write=True,
+            include_linkedin=True,
+            workers=APPLY_RESOLVE_RERESOLVE_WORKERS,
+            reliable_only=False,
+        )
+        restored = int(rr.get("restored") or 0)
+        considered = int(rr.get("considered") or 0)
+        if considered:
+            print(
+                f"startup unresolved-deleted reresolve: considered={considered} "
+                f"restored={restored} by={rr.get('restored_by')}"
+            )
+            if restored:
+                _invalidate_jobs_list_cache()
+    except Exception as e:
+        print(f"warn: startup unresolved-deleted reresolve failed: {e}")
+    try:
+        # Bounded oldest-first ATS dead-link pass (concrete dead/404 labels).
+        _run_closed_posting_liveness_once(limit=CLOSED_POSTING_PRUNE_LIMIT)
+    except Exception as e:
+        print(f"warn: startup closed_posting liveness failed: {e}")
 
 
 def _wait_jobs_list_boot(timeout: float = 120.0) -> None:

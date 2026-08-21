@@ -1,5 +1,7 @@
 {
-  "_comment": "TEMPLATE — copy to the repo root as web_keys.json (git-ignored). Per-site ATS account passwords used by fastfill. All values below are FAKE. Never commit real passwords.",
+  "_comment": "TEMPLATE — copy to the repo root as web_keys.json (git-ignored). Per-site ATS account passwords used by fastfill. All values below are FAKE. Never commit real passwords. Optional Google CSE (resolve_apply_urls): set GOOGLE_CSE_CX plus GOOGLE_CSE_KEYS (array) or GOOGLE_CSE_KEY; keys rotate on 403/429/quota.",
+  "GOOGLE_CSE_CX": "",
+  "GOOGLE_CSE_KEYS": [],
   "sites": {
     "jobs.example-ashby.com": {
       "company": "Example Corp",

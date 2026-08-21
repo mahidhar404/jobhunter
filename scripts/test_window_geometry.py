@@ -20,7 +20,10 @@ from window_geometry import (  # noqa: E402
     ScreenMetrics,
     _guard_usable_frame,
     chrome_cdp_bounds,
+    chrome_cdp_fullscreen_bounds,
+    chromium_dashboard_launch_flags,
     chromium_window_args,
+    macos_fullscreen_applescript,
     left_third_outer,
     maximized_outer,
     pick_screen,
@@ -150,6 +153,7 @@ def test_retina_uses_logical_points_not_backing_pixels() -> None:
 
 
 def test_dashboard_maximized_fills_inset_box() -> None:
+    """Fallback geometry if fullscreen cannot be applied — still not fill 2/3."""
     screen = _mbp14()
     outer = work_window_plan(role="dashboard", metrics=screen)
     assert outer is not None
@@ -162,6 +166,38 @@ def test_dashboard_maximized_fills_inset_box() -> None:
     assert outer.height == inset_h
     assert outer.x == screen.visible_x + INSET_PX
     assert outer.y == screen.visible_y + INSET_PX
+    fill = work_window_plan(role="fill", metrics=screen)
+    assert fill is not None
+    assert fill.width < outer.width
+    assert fill.x > outer.x
+
+
+def test_chromium_dashboard_launch_flags_fullscreen_then_maximized() -> None:
+    flags = chromium_dashboard_launch_flags()
+    assert flags == ["--start-fullscreen", "--start-maximized"]
+    assert "--start-kiosk" not in flags
+
+
+def test_chrome_cdp_fullscreen_state() -> None:
+    bounds = chrome_cdp_fullscreen_bounds()
+    assert bounds == {"windowState": "fullscreen"}
+    fill_cdp = chrome_cdp_bounds(right_two_thirds_outer(_mbp14()))
+    assert fill_cdp["windowState"] == "normal"
+
+
+def test_macos_fullscreen_script_does_not_toggle_if_already() -> None:
+    script = macos_fullscreen_applescript(4242)
+    assert "unix id is 4242" in script
+    assert 'attribute "AXFullScreen"' in script
+    assert 'if fs is true then return "already"' in script
+    assert "control down, command down" in script
+    assert "set size of window" not in script
+    fill_place = (
+        ROOT / "scripts" / "window_geometry.py"
+    ).read_text(encoding="utf-8")
+    # Fill apply path still sizes windows; dashboard apply uses fullscreen helper.
+    assert "def apply_system_events_bounds" in fill_place
+    assert "enter_macos_fullscreen" in fill_place
 
 
 def test_left_third_does_not_overlap_right_two_thirds() -> None:
@@ -329,11 +365,44 @@ def test_wiring_fast_fill_places_after_launch() -> None:
     assert "place_playwright_window" in src or "place_headed_fill_window" in src
 
 
-def test_wiring_launch_dashboard_maximized() -> None:
+def test_enter_macos_fullscreen_accepts_ax_token() -> None:
+    from unittest.mock import patch
+
+    from window_geometry import enter_macos_fullscreen
+
+    class _Proc:
+        returncode = 0
+        stdout = "ax\n"
+        stderr = ""
+
+    with patch("window_geometry.sys.platform", "darwin"):
+        with patch("window_geometry.subprocess.run", return_value=_Proc()) as run:
+            assert enter_macos_fullscreen(99) is True
+            argv = run.call_args[0][0]
+            assert argv[:2] == ["/usr/bin/osascript", "-e"]
+            assert 'attribute "AXFullScreen"' in argv[2]
+
+
+def test_fill_wiring_avoids_dashboard_fullscreen() -> None:
+    launch = (ROOT / "scripts" / "fastfill" / "browser_launch.py").read_text(encoding="utf-8")
+    assert "start-fullscreen" not in launch
+    assert 'role="fill"' in launch or "role='fill'" in launch
+    cft = (ROOT / "scripts" / "chrome_for_testing.py").read_text(encoding="utf-8")
+    assert "start-fullscreen" not in cft
+    party = (ROOT / "scripts" / "partyrock_tabs.py").read_text(encoding="utf-8")
+    assert 'role="fill"' in party or "role='fill'" in party
+
+
+def test_wiring_launch_dashboard_fullscreen() -> None:
     src = (ROOT / "dashboard" / "launch_dashboard.sh").read_text(encoding="utf-8")
     assert "window_geometry" in src
     assert "--role dashboard" in src
+    assert "--start-fullscreen" in src
     assert "--start-maximized" in src
+    open_chunk = src.split("open_dashboard_ui() {", 1)[1].split("\n}\n", 1)[0]
+    assert "--start-fullscreen" in open_chunk
+    assert "--start-maximized" in open_chunk
+    assert "--kiosk" not in open_chunk
 
 
 def test_wiring_chrome_for_testing_window_args_when_url() -> None:
@@ -347,6 +416,9 @@ if __name__ == "__main__":
     test_right_two_thirds_small_screen()
     test_retina_uses_logical_points_not_backing_pixels()
     test_dashboard_maximized_fills_inset_box()
+    test_chromium_dashboard_launch_flags_fullscreen_then_maximized()
+    test_chrome_cdp_fullscreen_state()
+    test_macos_fullscreen_script_does_not_toggle_if_already()
     test_left_third_does_not_overlap_right_two_thirds()
     test_chrome_cdp_bounds_subtract_titlebar()
     test_chromium_window_args_use_content_size()
@@ -359,6 +431,8 @@ if __name__ == "__main__":
     test_wiring_partyrock_places_on_create_and_open()
     test_wiring_browser_launch_headed_uses_helper()
     test_wiring_fast_fill_places_after_launch()
-    test_wiring_launch_dashboard_maximized()
+    test_enter_macos_fullscreen_accepts_ax_token()
+    test_fill_wiring_avoids_dashboard_fullscreen()
+    test_wiring_launch_dashboard_fullscreen()
     test_wiring_chrome_for_testing_window_args_when_url()
     print("OK test_window_geometry")

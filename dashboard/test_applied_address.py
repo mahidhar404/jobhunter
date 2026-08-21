@@ -83,6 +83,159 @@ def test_applied_table_hide_toggle_session_focus():
         assert "opsAppliedTableHidden" not in source
 
 
+def test_apply_url_validation():
+    assert srv._validated_apply_url("https://jobs.lever.co/acme/abc") == "https://jobs.lever.co/acme/abc"
+    try:
+        srv._validated_apply_url("not-a-url")
+    except ValueError as error:
+        assert "http(s)" in str(error)
+    else:
+        raise AssertionError("invalid apply url was accepted")
+    try:
+        srv._validated_apply_url("javascript:alert(1)")
+    except ValueError as error:
+        assert "http(s)" in str(error)
+    else:
+        raise AssertionError("javascript URL was accepted")
+    try:
+        srv._validated_apply_url("")
+    except ValueError as error:
+        assert "required" in str(error)
+    else:
+        raise AssertionError("empty apply url was accepted")
+
+
+def test_apply_url_edit_handler_persists_manual_flag():
+    data = {
+        "jobs": [
+            {
+                "id": "open-role",
+                "status": "new",
+                "title": "Engineer",
+                "company": "Example",
+                "apply_url": "https://www.linkedin.com/jobs/view/1",
+                "timeline": [],
+            }
+        ]
+    }
+    responses = []
+    handler = object.__new__(srv.Handler)
+    handler._send_json = lambda body, status=200: responses.append((body, status))
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _fake_locked(*, allow_purge=False):
+        yield data
+
+    with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked):
+        handler._handle_apply_url_edit(
+            "open-role",
+            {"apply_url": "https://jobs.lever.co/acme/apply"},
+        )
+
+    persisted = data["jobs"][0]
+    assert persisted["apply_url"] == "https://jobs.lever.co/acme/apply"
+    assert persisted["apply_url_manual"] is True
+    assert persisted["job_url_direct"] == "https://jobs.lever.co/acme/apply"
+    assert responses[0][1] == 200
+    assert responses[0][0]["job"]["apply_url"] == persisted["apply_url"]
+
+
+def test_apply_url_edit_rejects_invalid_and_missing_job():
+    responses = []
+    handler = object.__new__(srv.Handler)
+    handler._send_json = lambda body, status=200: responses.append((body, status))
+    handler._handle_apply_url_edit("any", {"apply_url": "ftp://jobs.example/apply"})
+    assert responses[0][1] == 400
+    assert "http(s)" in responses[0][0]["error"]
+
+    data = {"jobs": [{"id": "other", "status": "filling", "apply_url": "https://a.example/x", "timeline": []}]}
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _fake_locked(*, allow_purge=False):
+        yield data
+
+    with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked):
+        handler._handle_apply_url_edit("missing-id", {"apply_url": "https://jobs.lever.co/acme/x"})
+    assert responses[1][1] == 404
+    assert data["jobs"][0]["apply_url"] == "https://a.example/x"
+
+
+def test_apply_url_edit_ui_controls():
+    source = (STATIC / "app.js").read_text()
+    assert "openApplyUrlEditor(" in source
+    assert "saveApplyUrl(" in source
+    assert "/apply-url" in source
+    assert "apply-url-edit-btn" in source
+    assert "APPLY_URL_EDIT_ICON_SVG" in source
+    assert "apply-url-placeholder" in source
+    assert "Edit apply link" in source
+    assert "Set apply link" in source
+    assert ">Edit apply link</button>" not in source
+    assert ">Set apply link</button>" not in source
+    assert "DISCOVER_RADAR_SVG" in source
+    assert "DISCOVER_RADAR_IDLE_SVG" in source
+    assert "DISCOVER_ICON_SVG" not in source
+    assert "DISCOVER_PICKAXE_SVG" not in source
+    assert "DISCOVER_PICKAXE_IDLE_SVG" not in source
+    assert "radar-idle" in source
+    assert "radar-sweeping" in source
+    assert "DISCOVER_ABORT_ICON_SVG" not in source
+    idle_svg = source.split("const DISCOVER_RADAR_IDLE_SVG", 1)[1].split("const DISCOVER_RADAR_SVG", 1)[0]
+    running_svg = source.split("const DISCOVER_RADAR_SVG", 1)[1].split("`;", 1)[0]
+    assert "radar-idle" in idle_svg
+    assert "radar-sweeping" not in idle_svg
+    assert "radar-sweeping" in running_svg
+    assert "radar-sweep-arm" not in idle_svg
+    assert "radar-sweep-arm" in running_svg
+    assert "M8 1a.75.75 0 0 1 .75.75V9.4l2.1-2.1" not in source
+    assert 'M2 9.2c.5-4 4.2-6.4 8-5.6' not in source
+    assert 'viewBox="0 0 24 24"' in idle_svg
+    assert 'viewBox="0 0 24 24"' in running_svg
+    assert 'cx="12" cy="12" r="9"' in idle_svg
+    assert 'cx="12" cy="12" r="5.5"' in idle_svg
+    assert 'cx="12" cy="12" r="1.35"' in idle_svg
+    assert 'cx="12" cy="12" r="9"' in running_svg
+    assert "radar-sweep-arm" in running_svg
+    assert 'y2="3"' in running_svg
+    assert "m14 13-8.381 8.38" not in source
+    assert "M18.352 3.352" not in source
+    assert "pickaxe-swing-arm" not in source
+    assert "M19.5 4.3" not in source
+    assert "M2.2 21h9.6" not in source
+    assert "btn.innerHTML = DISCOVER_RADAR_IDLE_SVG" in source
+    assert "btn.innerHTML = DISCOVER_RADAR_SVG" in source
+
+
+def test_discover_radar_animation_css():
+    html = (STATIC / "index.html").read_text()
+    assert "radar-sweep" in html
+    assert ".radar-sweeping" in html
+    assert ".radar-idle" in html
+    assert "radar-idle" in html
+    assert "pickaxe-swing" not in html
+    assert "pickaxe-mining" not in html
+    assert "#discover-btn .btn-spinner" not in html
+    btn_block = html.split('id="discover-btn"', 1)[1].split("</button>", 1)[0]
+    assert "radar-idle" in btn_block
+    assert "radar-sweeping" not in btn_block
+    assert "radar-sweep-arm" not in btn_block
+    assert 'viewBox="0 0 24 24"' in btn_block
+    assert 'cx="12" cy="12" r="9"' in btn_block
+    assert 'cx="12" cy="12" r="5.5"' in btn_block
+    assert "m14 13-8.381 8.38" not in btn_block
+    assert "M18.352 3.352" not in btn_block
+    assert ".radar-sweeping .radar-sweep-arm" in html
+    assert "animation: radar-sweep" in html
+    assert "M19.5 4.3" not in btn_block
+    assert "M2.2 21h9.6" not in btn_block
+    assert "M8 1a.75.75 0 0 1 .75.75V9.4l2.1-2.1" not in btn_block
+    assert "M2 9.2c.5-4 4.2-6.4 8-5.6" not in btn_block
+    assert ".header-icon-btn" in html
+    assert "border: none" in html.split(".header-icon-btn", 1)[1].split("}", 1)[0]
+
 def test_applied_rows_have_leftmost_edit_control_and_editor_actions():
     for filename in ("app.js",):
         source = (STATIC / filename).read_text()

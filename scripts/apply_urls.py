@@ -37,6 +37,18 @@ AGGREGATOR_HOST_HINTS = (
     "weworkremotely.com",
     "authenticjobs.com",
     "jobspresso.co",
+    "workingnomads.com",
+    "workingnomads.co",
+    # Job-mirror / scrape sites that mint path-token false positives in SERP score.
+    "tryjeremy.com",
+    "theladders.com",
+    "opentalent.in",
+    "opentalent.com",
+    "himalayas.app",
+    "shine.com",
+    "jobright.ai",
+    "tealhq.com",
+    "jobleads.com",
 )
 
 # Known ATS / hosted apply platforms (prefer these over bare company career pages).

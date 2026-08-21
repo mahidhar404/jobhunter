@@ -39,6 +39,21 @@ const DELETED_REASON_LABELS = {
   easy_apply: { short: "Easy apply", long: "Easy apply / aggregator apply" },
   unresolved_apply_url: { short: "Unresolved URL", long: "Apply URL still LinkedIn / aggregator after resolve" },
   apply_resolve_failed: { short: "Unresolved URL", long: "Apply URL still LinkedIn / aggregator after resolve" },
+  // Concrete dead-link reasons (link_liveness) — prefer these over vague generics.
+  "dead/404": { short: "dead/404", long: "Apply/listing URL HTTP 404 — posting not found" },
+  "dead/410": { short: "dead/410", long: "Apply/listing URL HTTP 410 — posting gone" },
+  "closed/lever": { short: "closed/lever", long: "Lever closed posting (couldn't find / posting closed)" },
+  "closed/greenhouse": { short: "closed/greenhouse", long: "Greenhouse job posting no longer available" },
+  "closed/workday": { short: "closed/workday", long: "Workday job no longer available / not found" },
+  "closed/ashby": { short: "closed/ashby", long: "Ashby job posting no longer available" },
+  "closed/smartrecruiters": { short: "closed/smartrecruiters", long: "SmartRecruiters job posting closed / not found" },
+  "closed/workable": { short: "closed/workable", long: "Workable job posting closed / not found" },
+  "closed/bamboo": { short: "closed/bamboo", long: "BambooHR job posting closed / not found" },
+  "closed/jazzhr": { short: "closed/jazzhr", long: "JazzHR / applytojob posting closed / not found" },
+  "closed/pinpoint": { short: "closed/pinpoint", long: "Pinpoint job posting closed / not found" },
+  "closed/ats": { short: "closed/ats", long: "ATS posting closed / no longer available" },
+  closed_posting: { short: "closed posting", long: "Apply URL closed or dead (see status detail)" },
+  dead_apply_url: { short: "dead/404", long: "Apply URL closed or dead" },
   dead_link: { short: "Dead link", long: "Dead or broken link" },
 };
 /** Canonical order for Deleted reason groups (empty key = No reason, last). */
@@ -54,6 +69,19 @@ const DELETED_REASON_ORDER = [
   "easy_apply",
   "unresolved_apply_url",
   "duplicate",
+  "dead/404",
+  "dead/410",
+  "closed/lever",
+  "closed/greenhouse",
+  "closed/workday",
+  "closed/ashby",
+  "closed/smartrecruiters",
+  "closed/workable",
+  "closed/bamboo",
+  "closed/jazzhr",
+  "closed/pinpoint",
+  "closed/ats",
+  "closed_posting",
   "dead_link",
   "skipped_manual",
   "user",
@@ -1749,6 +1777,7 @@ function normalizeDeletedReasonCode(code) {
   if (key === "non_us") return "non_us_location";
   if (key === "manual") return "user";
   if (key === "apply_resolve_failed") return "unresolved_apply_url";
+  if (key === "dead_apply_url") return "closed_posting";
   return key;
 }
 
@@ -1774,7 +1803,12 @@ function deletedReasonLabel(code, { short = false } = {}) {
   const key = normalizeDeletedReasonCode(code);
   const entry = DELETED_REASON_LABELS[key] || DELETED_REASON_LABELS[String(code).trim().toLowerCase()];
   if (entry) return short ? entry.short : entry.long;
-  const human = String(code).trim().replaceAll("_", " ");
+  // Keep concrete dead/404 and closed/lever codes readable as-is.
+  const raw = String(code).trim();
+  if (/^(dead|closed)\//i.test(raw)) {
+    return short ? raw.toLowerCase() : raw.toLowerCase();
+  }
+  const human = raw.replaceAll("_", " ");
   if (!human) return short ? "No reason" : "";
   return short ? human.replace(/\b\w/g, c => c.toUpperCase()) : human;
 }
@@ -2166,6 +2200,9 @@ function jobSearchSlimHaystack(job) {
   if (job.clearance) parts.push("clearance");
   if (job.us_person) parts.push("us person", "us_person");
   if (job.unresolved_apply_url) parts.push("unresolved url", "unresolved_apply_url");
+  if (job.closed_posting || job.closed_posting_label) {
+    parts.push("closed posting", "closed_posting", String(job.closed_posting_label || job.deleted_reason || ""));
+  }
   if (job.multi_opening) parts.push("multi");
   if (job.jd_incomplete) parts.push("incomplete");
   return parts.filter(Boolean).join(" ").toLowerCase();
@@ -3809,6 +3846,11 @@ function renderJobRow(job, { nested = false, showCompany = true } = {}) {
     pushUniqueListTag(tags, seenTagLabels, "Unresolved URL",
       `<span class="tag unresolved-url" title="Apply URL still LinkedIn / aggregator after resolve">${highlightSearchInText("Unresolved URL", "tag")}</span>`);
   }
+  if (job.closed_posting || (bucket === "deleted" && /^(dead|closed)\//i.test(String(job.deleted_reason || "")))) {
+    const closedLabel = String(job.closed_posting_label || job.deleted_reason || "dead/404").trim() || "dead/404";
+    pushUniqueListTag(tags, seenTagLabels, closedLabel,
+      `<span class="tag closed-posting" title="Apply/listing URL dead or closed posting">${highlightSearchInText(closedLabel, "tag")}</span>`);
+  }
   if (bucket === "deleted") {
     const reasonParts = [];
     for (const code of deletedReasonCodes(job)) {
@@ -5028,6 +5070,9 @@ function renderDossier() {
       <span class="status-pill ${bucket}">${escapeHtml(statusPillText)}</span>
       ${job.multi_opening ? `<span class="tag multi" title="JD advertises multiple openings — informational tag only; fill/apply path is unchanged">Multi-opening</span>` : ""}
       ${job.unresolved_apply_url ? `<span class="tag unresolved-url" title="Apply URL still LinkedIn / aggregator after resolve">Unresolved URL</span>` : ""}
+      ${job.closed_posting || (bucket === "deleted" && /^(dead|closed)\//i.test(String(job.deleted_reason || "")))
+        ? `<span class="tag closed-posting" title="Apply/listing URL dead or closed posting">${escapeHtml(String(job.closed_posting_label || job.deleted_reason || "dead/404"))}</span>`
+        : ""}
     </div>
     <div class="id-meta">
       ${idMetaHtml(job, appHref)}

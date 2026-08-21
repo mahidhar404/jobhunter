@@ -32,6 +32,7 @@ from india_scrape_common import (
     polite_sleep,
     write_listings,
 )
+from known_job_urls import filter_out_known_listings, load_skip_urls_file  # noqa: E402
 
 SITE = "hirist"
 BASE = "https://www.hirist.tech"
@@ -139,13 +140,23 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default=None)
     parser.add_argument("--max-pages", type=int, default=2)
+    parser.add_argument(
+        "--skip-urls", default=None,
+        help="JSON array of URL keys to drop (jobs.json / blocked / prior listing)",
+    )
     args = parser.parse_args()
 
     out_path = (
         Path(args.out) if args.out
         else ROOT / "listings" / f"{date.today().isoformat()}-hirist.json"
     )
+    skip_keys = load_skip_urls_file(Path(args.skip_urls) if args.skip_urls else None)
+    if skip_keys:
+        log(f"skip-urls: {len(skip_keys)} known key(s)")
     listings = scrape(max_pages=max(1, args.max_pages))
+    listings, skipped = filter_out_known_listings(listings, skip_keys)
+    if skipped:
+        log(f"skipped {skipped} already-known URL(s)")
     write_listings(out_path, listings)
     log(f"wrote {len(listings)} listings -> {out_path}")
 

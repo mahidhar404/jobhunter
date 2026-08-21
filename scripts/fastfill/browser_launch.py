@@ -122,6 +122,8 @@ def fill_chrome_exclude_markers() -> tuple[str, ...]:
         "--remote-debugging-port=18800",
         "openclaw/user-data",
         f"--user-data-dir={ROOT / 'partyrock_chrome_profile'}",
+        f"--user-data-dir={ROOT / 'linkedin_resolve_profile'}",
+        "linkedin_resolve_profile",
     )
 
 

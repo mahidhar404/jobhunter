@@ -55,10 +55,21 @@ fan out more than that.
   newly disqualifying
 - Scheduled prune sweep (persisted reasons + interval), including
   ``unresolved_apply_url`` (LinkedIn/aggregator apply URL after resolve
-  failed / no_external / easy_apply) with an **Unresolved URL** chip
+  failed / no_external / easy_apply) with an **Unresolved URL** chip, and
+  ``closed_posting`` (HTTP liveness on known ATS + company careers apply
+  URLs — 404/410 / closed HTML; skips pure LinkedIn/aggregators) with
+  concrete deleted reasons like **dead/404**, **closed/lever**,
+  **closed/greenhouse**, **closed/ashby** (never prune on timeout/429/403)
 - Rate-limited apply-resolve backlog (older unresolved LinkedIn/aggregators;
   HTTP-only, skips while Discover runs); persist path auto-prunes+tags
-  unresolved outcomes on Open jobs
+  unresolved outcomes on Open jobs **only after** public company+title
+  search (except Easy Apply / CAPTCHA / profile lock)
+- Same backlog loop + dashboard startup also **re-search pruned**
+  ``unresolved_apply_url`` Deleted rows (LinkedIn included; checkpointed
+  ``logs/reresolve_unresolved_deleted_progress.json``) until exhausted.
+  Each cycle prefers **reliable** sibling + ATS board API restores first
+  (no CSE), then the checkpointed public-search pass (CSE skipped when
+  process-level quota is exhausted)
 - Background stamp backfills from `jd_full` (YOE / work_mode / salary /
   clearance chips)
 - Posted dates on LinkedIn HTTP resolve via shared `posted_date` helper

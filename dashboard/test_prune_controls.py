@@ -440,17 +440,23 @@ def test_app_js_stale_and_yoe_hide_ignore_approx() -> None:
 
 def test_unresolved_apply_url_in_prune_defaults_and_alias() -> None:
     assert "unresolved_apply_url" in srv.PRUNE_REASON_CODES
+    assert "closed_posting" in srv.PRUNE_REASON_CODES
     with tempfile.TemporaryDirectory() as td:
         settings_file = Path(td) / "prune_settings.json"
         with mock.patch.object(srv, "PRUNE_SETTINGS_FILE", settings_file):
             defaults = srv.load_prune_settings()
             assert "unresolved_apply_url" in defaults["reasons"]
+            assert "closed_posting" in defaults["reasons"]
             # Legacy alias accepted when saving
             saved = srv.save_prune_settings({
                 "interval_s": 300,
-                "reasons": ["apply_resolve_failed", "stale_listing"],
+                "reasons": ["apply_resolve_failed", "stale_listing", "dead_apply_url"],
             })
-            assert saved["reasons"] == ["stale_listing", "unresolved_apply_url"]
+            assert saved["reasons"] == [
+                "stale_listing",
+                "unresolved_apply_url",
+                "closed_posting",
+            ]
 
 
 def test_unresolved_apply_url_chip_in_ui() -> None:
@@ -460,6 +466,10 @@ def test_unresolved_apply_url_chip_in_ui() -> None:
     assert "unresolved_apply_url" in js
     assert 'data-prune-reason="unresolved_apply_url"' in html
     assert ".tag.unresolved-url" in html
+    assert 'data-prune-reason="closed_posting"' in html
+    assert ".tag.closed-posting" in html
+    assert "dead/404" in js
+    assert "closed/lever" in js
 
 
 if __name__ == "__main__":

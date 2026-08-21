@@ -351,13 +351,31 @@ def _with_tmp(fn):
 
 if __name__ == "__main__":
     class _MP:
+        def __init__(self):
+            self._undos = []
+
         def setattr(self, obj, name, value):
+            self._undos.append((obj, name, getattr(obj, name)))
             setattr(obj, name, value)
 
+        def undo(self):
+            while self._undos:
+                obj, name, prev = self._undos.pop()
+                setattr(obj, name, prev)
+
+    def _with_mp(test_fn):
+        def _run(path):
+            mp = _MP()
+            try:
+                test_fn(path, mp)
+            finally:
+                mp.undo()
+        _with_tmp(_run)
+
     _with_tmp(test_resume_latex_source_uses_existing_or_dummy_sample)
-    _with_tmp(lambda p: test_compile_resume_latex_fits_then_atomically_saves(p, _MP()))
-    _with_tmp(lambda p: test_compile_failure_keeps_previous_resume_and_returns_log(p, _MP()))
-    _with_tmp(lambda p: test_fit_best_effort_still_saves(p, _MP()))
+    _with_mp(test_compile_resume_latex_fits_then_atomically_saves)
+    _with_mp(test_compile_failure_keeps_previous_resume_and_returns_log)
+    _with_mp(test_fit_best_effort_still_saves)
     _with_tmp(test_copy_tex_beside_pdf_persists_job_source)
     test_latex_resume_ui_contract()
     test_open_latex_handler_uses_api_body_not_empty_success()
