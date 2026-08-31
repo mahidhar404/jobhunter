@@ -468,55 +468,74 @@ function isIndiaLocation(location) {
   return INDIA_LOCATION_RE.test(loc);
 }
 
-// True when a location is kept under the enabled regions (["us"], ["india"],
-// or both). Mirrors scripts/discovery_filters.py location_matches_regions.
-function locationMatchesRegions(location, regions) {
-  const regs = Array.isArray(regions) ? regions : ["us"];
+// True when a location is kept under the enabled lanes (india / worldwide).
+// Mirrors scripts/discovery_filters.py listing_matches_lanes (US onsite/hybrid
+// needs work_mode — stamped jobs use job.lane when present).
+function isUsBasedLocation(location) {
+  if (isIndiaLocation(location)) return false;
+  if (isClearlyNonUsLocation(location)) return false;
+  const loc = foldAccents(location || "").trim();
+  if (!loc) return false;
+  return US_LOCATION_RE.test(loc);
+}
+
+function locationMatchesRegions(location, regions, workMode) {
+  const regs = Array.isArray(regions) ? regions : ["india", "worldwide"];
   if (!regs.length) return false;
-  if (regs.includes("us") && !isClearlyNonUsLocation(location)) return true;
-  if (regs.includes("india") && isIndiaLocation(location)) return true;
-  return false;
-}
-
-// Best-effort region tag for a location: "india" | "us" | "unknown".
-function regionForLocation(location) {
-  if (isIndiaLocation(location)) return "india";
-  const loc = (location || "").trim();
-  if (!loc) return "unknown";
-  if (!isClearlyNonUsLocation(location) && US_LOCATION_RE.test(foldAccents(loc))) {
-    return "us";
+  // Map legacy "us" → worldwide
+  const lanes = regs.map((r) => (r === "us" ? "worldwide" : r));
+  const wm = (workMode || "").toLowerCase();
+  if (isUsBasedLocation(location) && (wm === "onsite" || wm === "hybrid")) {
+    return false;
   }
-  return "unknown";
+  if (isIndiaLocation(location)) return lanes.includes("india");
+  return lanes.includes("worldwide");
 }
 
-// Enabled discovery regions (US default, India opt-in). Populated from the
-// discovery settings fetch; defaults to US-only so behavior matches today
-// until settings load.
-let enabledRegions = ["us"];
+// Best-effort lane tag: "india" | "worldwide" | "unknown".
+function regionForLocation(location, workMode) {
+  if (isIndiaLocation(location)) return "india";
+  const wm = (workMode || "").toLowerCase();
+  if (isUsBasedLocation(location) && (wm === "onsite" || wm === "hybrid")) {
+    return "unknown";
+  }
+  return "worldwide";
+}
+
+function laneForJob(job) {
+  if (!job) return "unknown";
+  const stamped = (job.lane || job.region || "").trim();
+  if (stamped === "india" || stamped === "worldwide") return stamped;
+  if (stamped === "us") return "worldwide";
+  return regionForLocation(job.location, job.work_mode);
+}
+
+// Enabled discovery lanes. Populated from discovery settings.
+let enabledRegions = ["india", "worldwide"];
 function getEnabledRegions() {
   return Array.isArray(enabledRegions) && enabledRegions.length
     ? enabledRegions
-    : ["us"];
+    : ["india", "worldwide"];
 }
 
-// Sync enabledRegions from a discovery-status/settings payload
-// (discover_us / discover_india). Defaults to US-only when unknown. Returns
-// true when the effective region set changed (so callers can re-render).
+// Sync enabledRegions from discovery payload (discover_worldwide / discover_india).
 function updateEnabledRegionsFromDiscovery(disc) {
-  const us = disc ? disc.discover_us !== false : true;
-  const india = disc ? disc.discover_india === true : false;
+  let ww = true;
+  if (disc) {
+    if (disc.discover_worldwide !== undefined) ww = disc.discover_worldwide === true;
+    else if (disc.discover_us !== undefined) ww = disc.discover_us === true;
+  }
+  const india = disc ? disc.discover_india !== false : true;
   const regs = [];
-  if (us) regs.push("us");
   if (india) regs.push("india");
-  const next = regs.length ? regs : ["us"];
+  if (ww) regs.push("worldwide");
+  const next = regs.length ? regs : ["india"];
   const changed = next.join(",") !== getEnabledRegions().join(",");
   enabledRegions = next;
   return changed;
 }
 
-// Region filter for the active list only: "" (All) | "us" | "india".
-// Prefers the stamped job.region, else derives from location. Kept in sync
-// with scripts/discovery_filters.py region_for_location.
+// Lane filter for the active list: "" (All) | "worldwide" | "india".
 let regionFilter = "";
 
 /** True when a stamped/tag value is marked approximate with a leading ~. */
@@ -532,17 +551,12 @@ function listFilterUnsurePasses(unknown, approx) {
 
 function jobMatchesRegion(j) {
   if (!regionFilter) return true;
-  const stamped = j && j.region != null ? String(j.region).trim() : "";
-  if (stampedApproxPrefix(stamped)) return true;
-  if (stamped === "us" || stamped === "india") return stamped === regionFilter;
+  const filter = regionFilter === "us" ? "worldwide" : regionFilter;
+  const lane = laneForJob(j);
+  if (lane === "india" || lane === "worldwide") return lane === filter;
   const loc = j && j.location != null ? String(j.location).trim() : "";
   if (!loc || stampedApproxPrefix(loc)) return true;
-  const r = regionForLocation(loc);
-  if (r === regionFilter) return true;
-  if (r === "us" || r === "india") return false;
-  if (regionFilter === "us") return !isClearlyNonUsLocation(loc);
-  if (regionFilter === "india") return isIndiaLocation(loc) || !isClearlyNonUsLocation(loc);
-  return true;
+  return locationMatchesRegions(loc, [filter], j && j.work_mode);
 }
 
 function isIntelAgencyEmployer(company, url) {
@@ -947,8 +961,46 @@ function refreshJobListRow(jobId) {
   if (typeof syncListSelection === "function") syncListSelection();
 }
 
-/** Display salary: strict stamp/extract first, else fallback. approx → ~. */
+/** Display salary: INR for India lane; native currency for worldwide. */
 function jobSalaryDisplay(job) {
+  const lane = laneForJob(job);
+  if (lane === "india") {
+    const lpaMin = job && job.salary_inr_min_lpa;
+    if (lpaMin != null && lpaMin !== "") {
+      const n = Number(lpaMin);
+      if (!Number.isNaN(n)) {
+        const hi = job.salary_inr_max_lpa != null && job.salary_inr_max_lpa !== ""
+          ? Number(job.salary_inr_max_lpa) : null;
+        return {
+          min: n,
+          max: hi != null && !Number.isNaN(hi) ? hi : null,
+          approx: false,
+          currency: "INR",
+          display: job.salary_inr_display || job.salary_display || null,
+          unit: "lpa",
+        };
+      }
+    }
+    if (job && job.salary_inr_display) {
+      return { min: null, max: null, approx: false, currency: "INR", display: job.salary_inr_display, unit: "lpa" };
+    }
+  }
+  if (job && job.salary_display && job.salary_currency && job.salary_currency !== "INR") {
+    const stampedMin = job.salary_min;
+    if (stampedMin != null && stampedMin !== "") {
+      const n = Number(stampedMin);
+      if (!Number.isNaN(n)) {
+        const hi = job.salary_max != null && job.salary_max !== "" ? Number(job.salary_max) : null;
+        return {
+          min: n,
+          max: hi != null && !Number.isNaN(hi) ? hi : null,
+          approx: false,
+          currency: job.salary_currency || "USD",
+          display: job.salary_display,
+        };
+      }
+    }
+  }
   const stampedMin = job && job.salary_min;
   if (stampedMin != null && stampedMin !== "") {
     const n = Number(stampedMin);
@@ -959,11 +1011,12 @@ function jobSalaryDisplay(job) {
         min: n,
         max: hi != null && !Number.isNaN(hi) ? hi : null,
         approx: false,
+        currency: (job && job.salary_currency) || (lane === "india" ? "INR" : "USD"),
       };
     }
   }
   const live = extractSalary(null, job && job.title, jobDescriptionText(job));
-  if (live) return { min: live.min, max: live.max ?? null, approx: false };
+  if (live) return { min: live.min, max: live.max ?? null, approx: false, currency: "USD" };
   const fbMin = job && job.salary_min_fallback;
   if (fbMin != null && fbMin !== "") {
     const n = Number(fbMin);
@@ -974,12 +1027,61 @@ function jobSalaryDisplay(job) {
         min: n,
         max: hi != null && !Number.isNaN(hi) ? hi : null,
         approx: true,
+        currency: "USD",
       };
     }
   }
   const fb = extractSalaryFallback(null, job && job.title, jobDescriptionText(job));
-  if (fb) return { min: fb.min, max: fb.max ?? null, approx: true };
-  return { min: null, max: null, approx: false };
+  if (fb) return { min: fb.min, max: fb.max ?? null, approx: true, currency: "USD" };
+  return { min: null, max: null, approx: false, currency: "USD" };
+}
+
+function formatCompactSalaryK(n) {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return "";
+  const k = num / 1000;
+  const nearest = Math.round(k);
+  if (Math.abs(k - nearest) < 0.05) return `${nearest}K`;
+  const oneDec = Math.round(k * 10) / 10;
+  if (Math.abs(oneDec - Math.round(oneDec)) < 0.05) return `${Math.round(oneDec)}K`;
+  return `${oneDec}K`;
+}
+
+const SALARY_CURRENCY_SYMBOL = {
+  USD: "$", EUR: "€", GBP: "£", CAD: "C$", AUD: "A$", CHF: "CHF ",
+  SGD: "S$", JPY: "¥", NZD: "NZ$", INR: "₹",
+};
+
+/** Format salary for tags / dossier. Currency-aware; INR uses LPA. */
+function formatSalaryLabel(min, max, { approx = false, compact = true, currency = "USD", display = null, unit = null } = {}) {
+  if (display) return `${approx ? "~" : ""}${display.replace(/^~/, "")}`;
+  if (currency === "INR" || unit === "lpa") {
+    const lo = min != null && min !== "" ? Number(min) : null;
+    const hi = max != null && max !== "" ? Number(max) : null;
+    const loOk = lo != null && !Number.isNaN(lo);
+    const hiOk = hi != null && !Number.isNaN(hi);
+    if (!loOk && !hiOk) return "";
+    const fmt = (n) => (Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10));
+    let body;
+    if (loOk && hiOk && lo !== hi) body = `₹${fmt(lo)}–${fmt(hi)} LPA`;
+    else body = `₹${fmt(loOk ? lo : hi)} LPA`;
+    return `${approx ? "~" : ""}${body}`;
+  }
+  const lo = min != null && min !== "" ? Number(min) : null;
+  const hi = max != null && max !== "" ? Number(max) : null;
+  const loOk = lo != null && !Number.isNaN(lo);
+  const hiOk = hi != null && !Number.isNaN(hi);
+  if (!loOk && !hiOk) return "";
+  const sym = SALARY_CURRENCY_SYMBOL[currency] || (currency ? `${currency} ` : "$");
+  const fmt = (n) => {
+    if (currency === "JPY") return `${sym}${Math.round(n).toLocaleString("en-US")}`;
+    if (compact) return `${sym}${formatCompactSalaryK(n)}`;
+    return `${sym}${Math.round(n).toLocaleString("en-US")}`;
+  };
+  let body;
+  if (loOk && hiOk && lo !== hi) body = `${fmt(lo)}–${fmt(hi)}`;
+  else body = fmt(loOk ? lo : hi);
+  return `${approx ? "~" : ""}${body}`;
 }
 
 function jobRequiresExcessiveYoe(job) {
@@ -999,34 +1101,6 @@ function formatYoeLabel(n, approx = false, compact = false) {
   const num = Number(n);
   if (Number.isNaN(num)) return "";
   return `${approx ? "~" : ""}${num}+${compact ? "" : " years"}`;
-}
-
-function formatCompactSalaryK(n) {
-  const num = Number(n);
-  if (!Number.isFinite(num)) return "";
-  const k = num / 1000;
-  const nearest = Math.round(k);
-  if (Math.abs(k - nearest) < 0.05) return `${nearest}K`;
-  const oneDec = Math.round(k * 10) / 10;
-  if (Math.abs(oneDec - Math.round(oneDec)) < 0.05) return `${Math.round(oneDec)}K`;
-  return `${oneDec}K`;
-}
-
-/** Format salary for tags / dossier. Always K-style when compact (default). */
-function formatSalaryLabel(min, max, { approx = false, compact = true } = {}) {
-  const lo = min != null && min !== "" ? Number(min) : null;
-  const hi = max != null && max !== "" ? Number(max) : null;
-  const loOk = lo != null && !Number.isNaN(lo);
-  const hiOk = hi != null && !Number.isNaN(hi);
-  if (!loOk && !hiOk) return "";
-  const fmt = (n) => {
-    if (compact) return `$${formatCompactSalaryK(n)}`;
-    return `$${Math.round(n).toLocaleString("en-US")}`;
-  };
-  let body;
-  if (loOk && hiOk && lo !== hi) body = `${fmt(lo)}–${fmt(hi)}`;
-  else body = fmt(loOk ? lo : hi);
-  return `${approx ? "~" : ""}${body}`;
 }
 
 /** Display labels: sentence case only (Remote / Hybrid / In-person). Enums stay lowercase. */
@@ -1089,7 +1163,7 @@ function isHiddenUntouchedListing(job) {
   return job.status === "discovered" && (
     isExcludedTitle(job.title)
     || isStaleListing(job)
-    || !locationMatchesRegions(job.location, getEnabledRegions())
+    || !locationMatchesRegions(job.location, getEnabledRegions(), job.work_mode)
     || jobRequiresClearance(job)
     || jobRequiresExcessiveYoe(job)
     || jobRequiresCitizenOrGc(job)
@@ -1245,7 +1319,7 @@ function applyFilterState(state) {
   regionFilter = str(s.region);
 }
 
-/** Screenshot Today preset: US + ≤5 YOE + posted last 2 days; other dropdowns default. */
+/** Today preset: India + ≤5 YOE + posted last 2 days. */
 const TODAY_FILTER_PRESET = {
   source: "",
   group: "none",
@@ -1255,7 +1329,7 @@ const TODAY_FILTER_PRESET = {
   date: "2d",
   salary: "",
   extras: "",
-  region: "us",
+  region: "india",
 };
 
 /** In-memory map: family key -> captureFilterState() blob. */
@@ -1536,34 +1610,56 @@ const TEST_MODE_STORAGE_KEY = "jobHunterTestMode";
 const PARTYROCK_STORAGE_KEY = "jobHunterPartyRock";
 // India-only discovery sources (mirror server INDIA_ONLY_SOURCE_IDS): only run
 // when the India region is on; greyed/forced-off in the popover otherwise.
-const INDIA_ONLY_SOURCE_IDS = ["internshala", "hirist", "cutshort", "adzuna"];
+const INDIA_ONLY_SOURCE_IDS = [
+  "internshala", "hirist", "cutshort", "shine", "freshersworld", "naukri", "adzuna",
+];
 // Keep in sync with dashboard/discovery_sources.py DISCOVERY_SOURCE_DEFS.
 const DISCOVERY_SOURCE_CATALOG = [
-  { id: "indeed", label: "Indeed", recency: true },
-  { id: "linkedin", label: "LinkedIn", recency: true },
-  { id: "greenhouse", label: "Greenhouse" },
-  { id: "lever", label: "Lever" },
-  { id: "ashby", label: "Ashby" },
-  { id: "recruitee", label: "Recruitee" },
-  { id: "personio", label: "Personio" },
-  { id: "smartrecruiters", label: "SmartRecruiters" },
-  { id: "workable", label: "Workable" },
-  { id: "rippling", label: "Rippling" },
-  { id: "breezy", label: "Breezy" },
-  { id: "bamboohr", label: "BambooHR" },
-  { id: "teamtailor", label: "Teamtailor" },
-  { id: "jazzhr", label: "JazzHR" },
-  { id: "pinpoint", label: "Pinpoint" },
-  { id: "builtin", label: "Built In", recency: true },
-  { id: "remoteok", label: "RemoteOK" },
-  { id: "remotive", label: "Remotive" },
-  { id: "jobicy", label: "Jobicy" },
-  { id: "rss_feeds", label: "RSS feeds" },
-  { id: "adzuna_us", label: "Adzuna (US)", recency: true },
-  { id: "internshala", label: "Internshala", india_only: true },
-  { id: "hirist", label: "Hirist", india_only: true },
-  { id: "cutshort", label: "Cutshort", india_only: true },
-  { id: "adzuna", label: "Adzuna (IN)", india_only: true, recency: true },
+  { id: "indeed", label: "Indeed", recency: true, lane: "shared", scrape_status: "active" },
+  { id: "linkedin", label: "LinkedIn", recency: true, lane: "shared", scrape_status: "active" },
+  { id: "internshala", label: "Internshala", india_only: true, lane: "india", scrape_status: "active" },
+  { id: "hirist", label: "Hirist", india_only: true, lane: "india", scrape_status: "active" },
+  { id: "cutshort", label: "Cutshort", india_only: true, lane: "india", scrape_status: "active" },
+  { id: "shine", label: "Shine", india_only: true, lane: "india", scrape_status: "active" },
+  { id: "freshersworld", label: "Freshersworld", india_only: true, lane: "india", scrape_status: "active" },
+  { id: "naukri", label: "Naukri", india_only: true, lane: "india", scrape_status: "active" },
+  { id: "adzuna", label: "Adzuna (IN)", india_only: true, recency: true, lane: "india", scrape_status: "api" },
+  { id: "angellist_india", label: "AngelList India", india_only: true, lane: "india", scrape_status: "catalog" },
+  { id: "remoteok", label: "RemoteOK", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "remotive", label: "Remotive", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "jobicy", label: "Jobicy", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "rss_feeds", label: "RSS feeds (bundle)", worldwide_only: true, lane: "worldwide", scrape_status: "rss" },
+  { id: "himalayas", label: "Himalayas", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "weworkremotely", label: "We Work Remotely", worldwide_only: true, lane: "worldwide", scrape_status: "rss" },
+  { id: "jobspresso", label: "Jobspresso", worldwide_only: true, lane: "worldwide", scrape_status: "rss" },
+  { id: "authentic_jobs", label: "Authentic Jobs", worldwide_only: true, lane: "worldwide", scrape_status: "rss" },
+  { id: "nodesk", label: "NoDesk", worldwide_only: true, lane: "worldwide", scrape_status: "rss" },
+  { id: "landing_jobs", label: "Landing.jobs", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "jsremotely", label: "JS Remotely", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "working_nomads", label: "Working Nomads", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "europeremotely", label: "EuropeRemotely", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "arbeitnow", label: "Arbeitnow", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "relocate_me", label: "relocate.me", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "germanstartups", label: "German Startups Jobs", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "justremote", label: "JustRemote", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "dynamitejobs", label: "Dynamite Jobs", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "wellfound", label: "Wellfound", worldwide_only: true, lane: "worldwide", scrape_status: "blocked_captcha" },
+  { id: "otta", label: "Otta", worldwide_only: true, lane: "worldwide", scrape_status: "catalog" },
+  { id: "yc_jobs", label: "Y Combinator Jobs", worldwide_only: true, lane: "worldwide", scrape_status: "active" },
+  { id: "turing", label: "Turing", worldwide_only: true, lane: "worldwide", scrape_status: "needs_account" },
+  { id: "angelhub", label: "AngelHub", worldwide_only: true, lane: "worldwide", scrape_status: "catalog" },
+  { id: "producthunt_jobs", label: "Product Hunt Jobs", worldwide_only: true, lane: "worldwide", scrape_status: "catalog" },
+  { id: "remotetechjobs", label: "RemoteTechJobs", worldwide_only: true, lane: "worldwide", scrape_status: "catalog" },
+  { id: "outsourcely", label: "Outsourcely", worldwide_only: true, lane: "worldwide", scrape_status: "catalog" },
+  { id: "hubstaff_talent", label: "Hubstaff Talent", worldwide_only: true, lane: "worldwide", scrape_status: "catalog" },
+  { id: "workew", label: "Workew", worldwide_only: true, lane: "worldwide", scrape_status: "rss" },
+  { id: "pangian", label: "Pangian", worldwide_only: true, lane: "worldwide", scrape_status: "catalog" },
+  { id: "hired", label: "Hired", worldwide_only: true, lane: "worldwide", scrape_status: "needs_account" },
+  { id: "themuse", label: "The Muse", worldwide_only: true, lane: "worldwide", scrape_status: "api" },
+  { id: "jooble", label: "Jooble", worldwide_only: true, lane: "worldwide", scrape_status: "catalog" },
+  { id: "topaijobs", label: "TopAIJobs", worldwide_only: true, lane: "worldwide", scrape_status: "catalog" },
+  { id: "crossover", label: "Crossover", worldwide_only: true, lane: "worldwide", scrape_status: "catalog" },
+  { id: "jobbatical", label: "Jobbatical", worldwide_only: true, lane: "worldwide", scrape_status: "catalog" },
 ];
 function isIndiaOnlySource(id) {
   return INDIA_ONLY_SOURCE_IDS.includes(id)
@@ -1614,8 +1710,11 @@ function savePartyRockSetting(on) {
 
 function defaultDiscoverySourceMap() {
   const m = {};
-  // India-only sources default OFF (India region is opt-in); the rest default ON.
-  for (const s of DISCOVERY_SOURCE_CATALOG) m[s.id] = !s.india_only;
+  const runnable = new Set(["active", "rss", "api"]);
+  for (const s of DISCOVERY_SOURCE_CATALOG) {
+    // Runnable boards on by default; catalog/blocked/dead off until enabled.
+    m[s.id] = runnable.has(s.scrape_status || "active");
+  }
   return m;
 }
 
@@ -1685,7 +1784,6 @@ async function saveSourceDaysSetting(sourceId, value) {
   discoveryState = {
     ...(discoveryState || {}),
     source_days: data.source_days || { ...((discoveryState || {}).source_days || {}), [sourceId]: days },
-    builtin_days_since_updated: data.builtin_days_since_updated,
   };
 }
 
@@ -1701,35 +1799,35 @@ function toggleDiscoverySource(sourceId, checked) {
   renderDiscoverPopover(discoveryState);
 }
 
-// Discover popover US/India region toggles. PATCHes /api/discover/settings and
-// updates local state. When India turns on the first time, auto-enable the
-// India-only sources so a following Discover run actually uses them.
+// Discover popover India / Worldwide lane toggles.
 async function toggleDiscoverRegion(region, checked) {
   const regs = getEnabledRegions();
-  let us = regs.includes("us");
+  let worldwide = regs.includes("worldwide") || regs.includes("us");
   let india = regs.includes("india");
-  if (region === "us") us = !!checked;
+  if (region === "worldwide" || region === "us") worldwide = !!checked;
   else if (region === "india") india = !!checked;
-  if (!us && !india) {
-    // Never allow zero regions — snap the just-cleared one back on.
-    if (region === "us") us = true; else india = true;
-    alert("Keep at least one region on.");
+  if (!worldwide && !india) {
+    india = true;
+    alert("Keep at least one lane on (India is the default).");
   }
   if (region === "india" && india) {
     const map = loadDiscoverySourceSettings();
     for (const id of INDIA_ONLY_SOURCE_IDS) map[id] = true;
     saveDiscoverySourceSettings(map);
   }
-  const { ok, data } = await apiPost("/api/discover/settings", { discover_us: us, discover_india: india }, {
+  const { ok, data } = await apiPost("/api/discover/settings", {
+    discover_worldwide: worldwide,
+    discover_india: india,
+  }, {
     onError: (d) => {
-      alert(d.error || "Could not save region settings.");
+      alert(d.error || "Could not save lane settings.");
       renderDiscoverPopover(discoveryState);
     },
   });
   if (!ok) return;
   discoveryState = {
     ...(discoveryState || {}),
-    discover_us: data.discover_us !== undefined ? data.discover_us : us,
+    discover_worldwide: data.discover_worldwide !== undefined ? data.discover_worldwide : worldwide,
     discover_india: data.discover_india !== undefined ? data.discover_india : india,
   };
   updateEnabledRegionsFromDiscovery(discoveryState);
@@ -1939,7 +2037,7 @@ function companySiblings(job) {
     if (companyKey(j) !== key) return false;
     if (LEGACY_SKIPPED_STATUSES.has(j.status) || j.status === "deleted") return false;
     if (isExcludedTitle(j.title)) return false;
-    if (!locationMatchesRegions(j.location, getEnabledRegions())) return false;
+    if (!locationMatchesRegions(j.location, getEnabledRegions(), j.work_mode)) return false;
     if (jobRequiresClearance(j)) return false;
     if (jobRequiresExcessiveYoe(j)) return false;
     if (jobRequiresCitizenOrGc(j)) return false;
@@ -2007,10 +2105,19 @@ function jobMatchesDateFilter(j) {
 
 function jobMatchesSalaryFilter(j) {
   if (!salaryFilter) return true;
-  const { min, approx } = jobSalaryDisplay(j);
-  if (salaryFilter === "has") return min != null;
-  if (salaryFilter === "unknown") return min == null;
+  const info = jobSalaryDisplay(j);
+  const { min, approx, unit, currency } = info;
+  if (salaryFilter === "has") return min != null || !!info.display;
+  if (salaryFilter === "unknown") return min == null && !info.display;
   if (listFilterUnsurePasses(min == null, approx)) return true;
+  // India LPA thresholds paired with USD bands in the filter labels.
+  if (unit === "lpa" || currency === "INR") {
+    if (salaryFilter === "ge100") return min >= 15;
+    if (salaryFilter === "ge150") return min >= 25;
+    if (salaryFilter === "ge200") return min >= 40;
+    if (salaryFilter === "le120") return min <= 20;
+    return true;
+  }
   if (salaryFilter === "ge100") return min >= 100000;
   if (salaryFilter === "ge150") return min >= 150000;
   if (salaryFilter === "ge200") return min >= 200000;
@@ -2193,8 +2300,11 @@ function jobSearchSlimHaystack(job) {
     const s = typeof jobSalaryDisplay === "function"
       ? jobSalaryDisplay(job)
       : { min: null, max: null, approx: false };
-    if (s && (s.min != null || s.max != null) && typeof formatSalaryLabel === "function") {
-      parts.push(formatSalaryLabel(s.min, s.max, { approx: !!s.approx, compact: true }));
+    if (s && (s.min != null || s.max != null || s.display) && typeof formatSalaryLabel === "function") {
+      parts.push(formatSalaryLabel(s.min, s.max, {
+        approx: !!s.approx, compact: true,
+        currency: s.currency || "USD", display: s.display || null, unit: s.unit || null,
+      }));
     }
   } catch (_) { /* ignore */ }
   if (job.clearance) parts.push("clearance");
@@ -3827,7 +3937,12 @@ function renderJobRow(job, { nested = false, showCompany = true } = {}) {
   }
   const { min: salMin, max: salMax, approx: salApprox } = jobSalaryDisplay(job);
   if (salMin != null || salMax != null) {
-    const salLabel = formatSalaryLabel(salMin, salMax, { approx: salApprox, compact: true });
+    const salLabel = formatSalaryLabel(salMin, salMax, {
+      approx: salApprox, compact: true,
+      currency: (jobSalaryDisplay(job).currency) || "USD",
+      display: jobSalaryDisplay(job).display || null,
+      unit: jobSalaryDisplay(job).unit || null,
+    });
     if (salLabel) {
       pushUniqueListTag(tags, seenTagLabels, salLabel,
         `<span class="tag salary">${highlightSearchInText(salLabel, "tag")}</span>`);
@@ -4816,10 +4931,18 @@ function idMetaHtml(job, appHref) {
     push(`<span class="meta-mode">${escapeHtml(formatWorkMode(mode, modeApprox))}</span>`);
   }
 
-  const { min, max, approx: salApprox } = jobSalaryDisplay(job);
-  const sal = formatSalaryLabel(min, max, { approx: salApprox, compact: true });
+  const salInfo = jobSalaryDisplay(job);
+  const sal = formatSalaryLabel(salInfo.min, salInfo.max, {
+    approx: salInfo.approx, compact: true,
+    currency: salInfo.currency || "USD",
+    display: salInfo.display || null,
+    unit: salInfo.unit || null,
+  });
   if (sal) push(`<span class="meta-pay">${escapeHtml(sal)}</span>`);
-
+  const lane = laneForJob(job);
+  if (lane === "india" || lane === "worldwide") {
+    push(`<span class="meta-lane">${lane === "india" ? "India" : "Worldwide"}</span>`);
+  }
   const { n: ymin, approx: yoeApprox } = jobMinYoeDisplay(job);
   if (ymin != null && !Number.isNaN(Number(ymin))) {
     const yoe = formatYoeLabel(ymin, yoeApprox);
@@ -6352,7 +6475,7 @@ async function runDiscover(fresh = false) {
       sources,
       fresh: !!fresh,
       source_days: (discoveryState && discoveryState.source_days) || {},
-      discover_us: getEnabledRegions().includes("us"),
+      discover_worldwide: getEnabledRegions().includes("worldwide") || getEnabledRegions().includes("us"),
       discover_india: getEnabledRegions().includes("india"),
     }),
   });
@@ -6481,27 +6604,28 @@ function renderDiscoverPopover(disc) {
   </div>
   <div class="pop-sep" style="border-top:1px solid var(--border);margin:10px 0"></div>`;
   const regs = getEnabledRegions();
-  const usOn = regs.includes("us");
+  const wwOn = regs.includes("worldwide") || regs.includes("us");
   const indiaOn = regs.includes("india");
   const regionBlock = `<div class="discover-region-block">
-    <div class="pop-title" style="margin-bottom:6px">Regions</div>
-    <label class="region-toggle" style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-      <input type="checkbox" id="region-us-toggle" ${usOn ? "checked" : ""}
-        onchange="toggleDiscoverRegion('us', this.checked)" ${running ? "disabled" : ""}>
-      <span>US</span>
-    </label>
+    <div class="pop-title" style="margin-bottom:6px">Lanes</div>
     <label class="region-toggle" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
       <input type="checkbox" id="region-india-toggle" ${indiaOn ? "checked" : ""}
         onchange="toggleDiscoverRegion('india', this.checked)" ${running ? "disabled" : ""}>
       <span>India</span>
     </label>
-    <div class="pop-hint">When India is on, Discover keeps India / remote-India roles and runs India-capable sources.</div>
+    <label class="region-toggle" style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <input type="checkbox" id="region-ww-toggle" ${wwOn ? "checked" : ""}
+        onchange="toggleDiscoverRegion('worldwide', this.checked)" ${running ? "disabled" : ""}>
+      <span>Worldwide</span>
+    </label>
+    <div class="pop-hint">India = India roles (₹). Worldwide = non-India + US remote (native currencies). US onsite/hybrid are dropped.</div>
   </div>
   <div class="pop-sep" style="border-top:1px solid var(--border);margin:10px 0"></div>`;
   const rows = catalog.map(c => {
     const indiaOnly = !!c.india_only || isIndiaOnlySource(c.id);
-    // India-only sources are forced off + disabled while India is off.
-    const forcedOff = indiaOnly && !indiaOn;
+    const wwOnly = !!c.worldwide_only || c.lane === "worldwide";
+    const scrapeStatus = c.scrape_status || "";
+    const forcedOff = (indiaOnly && !indiaOn) || (wwOnly && !wwOn && !indiaOnly);
     const on = !forcedOff && enabledMap[c.id] !== false;
     const live = byId[c.id];
     const st = forcedOff ? "skipped" : (live ? (live.status || "pending") : (on ? "idle" : "skipped"));
@@ -6509,8 +6633,8 @@ function renderDiscoverPopover(disc) {
     if (st === "collecting") count = (live && live.count != null) ? live.count : 0;
     else if (live && live.count != null) count = live.count;
     const detail = forcedOff
-      ? "India region off"
-      : (live ? (live.detail || "") : (on ? "" : "Disabled"));
+      ? (indiaOnly ? "India lane off" : "Worldwide lane off")
+      : (live ? (live.detail || "") : (on ? (scrapeStatus && scrapeStatus !== "active" && scrapeStatus !== "rss" && scrapeStatus !== "api" ? scrapeStatus : "") : "Disabled"));
     const canAbortSrc = running && live && live.status === "collecting";
     const recency = sourceSupportsRecency(c);
     const daysVal = effectiveSourceDays(c.id, disc);
@@ -6523,14 +6647,16 @@ function renderDiscoverPopover(disc) {
           title="Look back this many days"
           onchange="saveSourceDaysSetting(this.dataset.sourceId, this.value)"
           ${running || forcedOff ? "disabled" : ""}>${daysOpts}</select>`
-      : `<span class="src-days src-days-na" title="This source has no date filter">full board</span>`;
+      : `<span class="src-days src-days-na" title="This source has no date filter">${escapeHtml(scrapeStatus || "full board")}</span>`;
     const srcDomId = `disc-src-${c.id}`;
+    const laneTag = indiaOnly ? " <span class=\"src-tag\">IN</span>"
+      : (wwOnly ? " <span class=\"src-tag\">WW</span>" : "");
     return `<div class="discover-src-opt ${on ? "src-on" : "src-off"} ${forcedOff ? "src-forced-off" : ""} ${escapeHtml(st)}">
       <input type="checkbox" id="${escapeHtml(srcDomId)}" class="src-check" data-source-id="${escapeHtml(c.id)}" ${on ? "checked" : ""}
         ${forcedOff ? "disabled" : ""}
         onchange="toggleDiscoverySource(this.dataset.sourceId, this.checked)">
       <label class="src-main" for="${escapeHtml(srcDomId)}">
-        <span class="src-label ${on ? "src-on" : "src-off"}">${escapeHtml(c.label || c.id)}${indiaOnly ? " <span class=\"src-tag\">IN</span>" : ""}</span>
+        <span class="src-label ${on ? "src-on" : "src-off"}">${escapeHtml(c.label || c.id)}${laneTag}</span>
         ${detail ? `<span class="src-detail">${escapeHtml(detail)}</span>` : ""}
       </label>
       ${daysControl}
@@ -7389,8 +7515,28 @@ function markDashboardPainted() {
   }
 }
 
+/**
+ * UI-tied stack shutdown (pagehide → /api/shutdown) is for the Desktop Dock
+ * applet only. Plain browser tabs must NOT kill :8787 on refresh — that caused
+ * the permanent "can't reach the server / Retrying…" loop.
+ * Opt in with ?desktop=1 (persists to localStorage jobHunterDesktopApp=1).
+ */
+function isDesktopDashboardApp() {
+  try {
+    const q = new URLSearchParams(window.location.search || "");
+    if (q.get("desktop") === "1") {
+      localStorage.setItem("jobHunterDesktopApp", "1");
+      return true;
+    }
+    return localStorage.getItem("jobHunterDesktopApp") === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
 function shouldRunUiLifecycle() {
-  return !isEmbeddedDashboardView();
+  if (isEmbeddedDashboardView()) return false;
+  return isDesktopDashboardApp();
 }
 
 const REFRESH_BTN_ICON_HTML = `
@@ -7457,13 +7603,23 @@ async function restartDashboard() {
   if (btn) btn.disabled = true;
   if (quitBtn) quitBtn.disabled = true;
   try {
-    await fetch("/api/restart", {
+    const res = await fetch("/api/restart", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ client_id: dashboardClientId() }),
       keepalive: true,
     });
-  } catch (e) { /* server dying mid-response is expected */ }
+    let data = null;
+    try { data = await res.json(); } catch (_) { /* dying mid-response */ }
+    // Lifecycle-off (start_dashboard.sh): server stays up — soft reload only.
+    if (data && data.soft_reload) {
+      _dashboardRestartInFlight = false;
+      if (btn) btn.disabled = false;
+      if (quitBtn) quitBtn.disabled = false;
+      window.location.reload();
+      return;
+    }
+  } catch (e) { /* server dying mid-response is expected for hard restart */ }
   // Keep this window open. Launcher respawns server only; we reload in place.
   // ~60s covers shutdown cleanup + preferred-port reclaim (avoid :8788 hop).
   for (let i = 0; i < 120; i++) {

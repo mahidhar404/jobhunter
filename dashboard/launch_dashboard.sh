@@ -51,7 +51,9 @@
 #   --user-data-dir=~/.openclaw/browser/openclaw/user-data
 #   --remote-debugging-port=18800
 #   or the "Google Chrome for Testing" binary (Playwright)
-# Disable UI lifecycle with JOB_HUNTER_UI_LIFECYCLE=0.
+# UI lifecycle (pagehide → /api/shutdown) is OFF by default so a normal browser
+# tab refresh does not kill :8787. This Dock launcher opts IN for the --app window.
+# Force-disable anytime with JOB_HUNTER_UI_LIFECYCLE=0.
 #
 # Note: KeepAlive LaunchAgent (com.jobhunter.dashboard-server) fights this
 # model — leave it unloaded / KeepAlive=false so a UI quit stays quit.
@@ -63,6 +65,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DASHBOARD_DIR="$ROOT/dashboard"
 DASHBOARD_PORT="${JOBHUNTER_DASHBOARD_PORT:-8787}"
 URL="http://127.0.0.1:${DASHBOARD_PORT}"
+# Opt-in stack teardown for Desktop --app window (not plain Chrome tabs).
+export JOB_HUNTER_UI_LIFECYCLE="${JOB_HUNTER_UI_LIFECYCLE:-1}"
+DESKTOP_BOOT_QS="desktop=1&jh_boot=$(date +%s)"
 LOG_FILE="$ROOT/logs/dashboard_server.out"
 PID_FILE="$ROOT/logs/dashboard_server.pid"
 LAUNCHER_PID_FILE="$ROOT/logs/dashboard_launcher.pid"
@@ -723,6 +728,7 @@ open_dashboard_ui() {
     echo "warn: falling back to Google Chrome tab at ${URL}" >&2
     echo "Fix: python3 -m playwright install chromium" >&2
     echo "Or:  JOB_HUNTER_UI_BROWSER=/path/to/Chrome-for-Testing-or-Chromium" >&2
+    # Plain browser tab: no desktop=1 → refresh must not beacon /api/shutdown.
     if /usr/bin/open -a "Google Chrome" "${URL}/?jh_boot=$(date +%s)" >/dev/null 2>&1; then
       return 0
     fi
@@ -739,6 +745,7 @@ open_dashboard_ui() {
   # Teardown SIGKILLs this window, so also suppress the "Chrome didn't shut
   # down correctly" restore bubble. All scoped to $UI_PROFILE.
   # Do not use `open -a` / AppleScript activate — those spawn blank CfT windows.
+  # desktop=1 opts the UI into pagehide→shutdown (Dock Quit / last window).
   "${ui_bin}" \
     --user-data-dir="$UI_PROFILE" \
     --no-first-run \
@@ -748,7 +755,7 @@ open_dashboard_ui() {
     --disable-session-crashed-bubble \
     --start-fullscreen \
     --start-maximized \
-    --app="${URL}/?jh_boot=$(date +%s)" \
+    --app="${URL}/?${DESKTOP_BOOT_QS}" \
     >/dev/null 2>&1 &
   # The browser may fork; prefer pgrep over $! for the stable pid file.
   local existing _

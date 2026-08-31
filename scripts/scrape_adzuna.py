@@ -49,7 +49,7 @@ REQUEST_DELAY_S = 1.0
 ADZUNA_MAX_RESULTS_PER_PAGE = 50
 ADZUNA_MAX_PAGES_CAP = 5
 US_DEFAULT_MAX_PAGES = 3
-IN_DEFAULT_MAX_PAGES = 1
+IN_DEFAULT_MAX_PAGES = 3
 
 # US terms mirror scout.py's JobSpy queries; India uses india_scrape_common.
 US_SEARCH_TERMS = [

@@ -62,9 +62,10 @@ from discovery_filters import (  # noqa: E402
     extract_inr_salary,
     extract_min_required_yoe,
     extract_min_required_yoe_fallback,
+    extract_native_salary,
     extract_salary,
     extract_salary_fallback,
-    region_for_location,
+    lane_for_job,
     stamp_clearance_us_person_tags,
 )
 from jd_quality import looks_truncated_jd  # noqa: E402
@@ -411,14 +412,6 @@ def ingest_qualified_listings(
         full_description = resolve_listing_description(item)
         title = item.get("title") or ""
         location = item.get("location") or ""
-        prune_reason = auto_delete_reason(
-            title=title,
-            location=location,
-            company=company,
-            description=full_description,
-            url=apply_url or direct_url or url,
-            job_type=item.get("job_type"),
-        )
 
         if full_description:
             write_full_description(job_id, full_description)
@@ -429,11 +422,36 @@ def ingest_qualified_listings(
         wm_fb = detect_work_mode_fallback(
             title=title, location=location, description=full_description
         )
+        prune_reason = auto_delete_reason(
+            title=title,
+            location=location,
+            company=company,
+            description=full_description,
+            url=apply_url or direct_url or url,
+            job_type=item.get("job_type"),
+            work_mode=work_mode,
+        )
+        lane = lane_for_job(
+            location,
+            work_mode=work_mode,
+            title=title,
+            description=full_description,
+        )
         sal = extract_salary(title=title, description=full_description)
         sal_fb = extract_salary_fallback(
             title=title, description=full_description
         )
         inr = extract_inr_salary(title=title, description=full_description)
+        native = None
+        if lane != "india":
+            native = extract_native_salary(
+                title=title, description=full_description
+            )
+        salary_currency = "INR" if (lane == "india" and inr) else None
+        if native and native.get("currency"):
+            salary_currency = native["currency"]
+        elif sal and not salary_currency:
+            salary_currency = "USD"
         tags = stamp_clearance_us_person_tags(
             title=title,
             company=company,
@@ -468,11 +486,14 @@ def ingest_qualified_listings(
             ),
             "work_mode": work_mode,
             "work_mode_fallback": wm_fb if work_mode == "unknown" and wm_fb != "unknown" else None,
-            "region": region_for_location(location),
-            "salary_min": (sal or {}).get("min"),
-            "salary_max": (sal or {}).get("max"),
+            "lane": lane,
+            "region": lane,  # alias for older UI/tests
+            "salary_min": (native or sal or {}).get("min") if lane != "india" else (inr or {}).get("min") or (sal or {}).get("min"),
+            "salary_max": (native or sal or {}).get("max") if lane != "india" else (inr or {}).get("max") or (sal or {}).get("max"),
             "salary_min_fallback": (sal_fb or {}).get("min"),
             "salary_max_fallback": (sal_fb or {}).get("max"),
+            "salary_currency": salary_currency,
+            "salary_display": (inr or {}).get("display") if lane == "india" else (native or {}).get("display"),
             "salary_inr_display": (inr or {}).get("display"),
             "salary_inr_min_lpa": (inr or {}).get("min_lpa"),
             "salary_inr_max_lpa": (inr or {}).get("max_lpa"),

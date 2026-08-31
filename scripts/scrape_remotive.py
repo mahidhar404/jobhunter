@@ -27,15 +27,22 @@ from india_scrape_common import (
     ROOT,
     dedup_by_url,
     fetch_json,
+    is_within_days,
     log,
     polite_sleep,
     write_listings,
 )
 from known_job_urls import filter_out_known_listings, load_skip_urls_file  # noqa: E402
 
-from scrape_ats import RELEVANT_KEYWORDS, clean_html_content  # noqa: E402
+from extract_job_posting import RELEVANT_KEYWORDS, clean_html_content  # noqa: E402
 
 SITE = "remotive"
+# Recency window. These boards keep ads live for weeks, so the old
+# hardcoded 10 days silently discarded most of what they returned
+# (RemoteOK: 38 relevant roles found, 1 inside 10 days).
+DEFAULT_MAX_DAYS = 21
+_MAX_DAYS = DEFAULT_MAX_DAYS
+
 API_URL = "https://remotive.com/api/remote-jobs"
 ATTRIBUTION = (
     "Remotive API: link jobs to remotive.com and credit Remotive as the source."
@@ -86,6 +93,9 @@ def normalize_jobs(rows: list) -> list[dict]:
         url = job.get("url")
         if not url:
             continue
+        posted = _parse_date(job.get("publication_date"))
+        if posted and not is_within_days(posted, max_days=_MAX_DAYS):
+            continue
         company = job.get("company_name") or ""
         description = clean_html_content(job.get("description") or "")
         out.append({
@@ -95,10 +105,10 @@ def normalize_jobs(rows: list) -> list[dict]:
             "job_url": url,
             "job_url_direct": url,
             "description": description,
-            "date_posted": _parse_date(job.get("publication_date")),
+            "date_posted": posted,
             "job_type": (job.get("job_type") or "fulltime").replace("_", ""),
             "location": job.get("candidate_required_location"),
-            "search_term": f"us:{SITE}",
+            "search_term": f"ww:{SITE}",
         })
     return out
 
@@ -127,7 +137,13 @@ def main() -> None:
         "--skip-urls", default=None,
         help="JSON array of URL keys to drop (jobs.json / blocked / prior listing)",
     )
+    parser.add_argument(
+        "--max-days", type=int, default=DEFAULT_MAX_DAYS,
+        help=f"Recency window in days (default {DEFAULT_MAX_DAYS})")
     args = parser.parse_args()
+
+    global _MAX_DAYS
+    _MAX_DAYS = max(1, int(args.max_days))
 
     out_path = (
         Path(args.out) if args.out

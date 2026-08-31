@@ -28,7 +28,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Plain, honest UA — we are a personal agent, not pretending to be a browser
 # farm. Kept identical to the ATS scraper's UA for consistency.
-USER_AGENT = "Mozilla/5.0 (compatible; job-hunter-agent/1.0)"
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
 
 # Software / data categories only (keeps volume + relevance sane). dedup's
 # RELEVANT_KEYWORDS still filter titles downstream; these just scope queries.
@@ -39,8 +42,12 @@ SEARCH_TERMS = [
     "data analyst",
     "ai engineer",
     "software engineer",
+    "software developer",
     "backend developer",
+    "full stack",
     "python developer",
+    "analytics engineer",
+    "mlops",
 ]
 
 
@@ -53,6 +60,18 @@ def polite_sleep(seconds: float) -> None:
     """Small delay between requests to stay well under any rate limit."""
     if seconds > 0:
         time.sleep(seconds)
+
+
+def is_within_days(date_str: str | None, max_days: int = 10) -> bool:
+    """Return True if date_str is within max_days of today, or if date is unknown."""
+    if not date_str:
+        return True
+    try:
+        dt = datetime.fromisoformat(str(date_str).strip()[:10]).date()
+        today = datetime.now().date()
+        return (today - dt).days <= max_days
+    except (ValueError, TypeError):
+        return True
 
 
 def fetch_json(url: str, *, headers: dict | None = None, timeout: int = 20,

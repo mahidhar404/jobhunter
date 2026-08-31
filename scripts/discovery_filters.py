@@ -242,24 +242,30 @@ NON_US_ISO2_CODES = {
 _ISO2_TOKEN_RE = re.compile(r"^[A-Za-z]{2}$")
 
 # ---------------------------------------------------------------------------
-# Region model (multi-region discovery: US default, India opt-in)
-#
-# US discovery stays the default; India is opt-in. The discovery gate keeps a
-# listing when its location matches ANY enabled region:
-#   - "us"    → US-based OR undetermined (today's behavior via
-#               is_clearly_non_us_location).
-#   - "india" → clearly India (cities / states / "India" / ISO ", in" tail)
-#               OR remote-India patterns ("Remote - India", "WFH India",
-#               "Anywhere in India"). Bare "Remote" alone is NOT India.
-# Keep these heuristics in sync with dashboard/static/app.js.
+# Discovery lanes (India / Worldwide) — replaces legacy US/India regions.
+# A listing is kept when it matches ANY enabled lane:
+#   - "india"     → clearly India (cities / states / "India" / ISO ", in"
+#                   tail) OR remote-India ("Remote - India", "WFH India").
+#                   Bare "Remote" alone is NOT India.
+#   - "worldwide" → non-India roles anywhere (remote/hybrid/onsite) plus
+#                   US *remote*. US onsite and US hybrid are always dropped.
+# Legacy env value "us" maps to "worldwide". Sync with dashboard/static/app.js.
 # ---------------------------------------------------------------------------
 
-VALID_REGIONS = ("us", "india")
-DEFAULT_REGIONS: tuple[str, ...] = ("us",)
+VALID_LANES = ("india", "worldwide")
+VALID_REGIONS = VALID_LANES  # alias — env / APIs historically said "regions"
+DEFAULT_REGIONS: tuple[str, ...] = ("india", "worldwide")
+DEFAULT_LANES = DEFAULT_REGIONS
 # Env var read by discovery subprocesses (set by dashboard/server.py before
 # spawning scout / scrape_ats / scrape_builtin / dedup_listings /
-# write_discovered_jobs). Comma-separated, e.g. "us" or "us,india".
+# write_discovered_jobs). Comma-separated, e.g. "india" or "india,worldwide".
 DISCOVERY_REGIONS_ENV = "JOBHUNTER_DISCOVERY_REGIONS"
+# Legacy region id → lane id
+_LEGACY_REGION_TO_LANE = {
+    "us": "worldwide",
+    "india": "india",
+    "worldwide": "worldwide",
+}
 
 # Clear India geography (cities / states / country). Subset of
 # NON_US_LOCATION_RE — no US-state collisions. "ncr" = Delhi NCR.
@@ -339,12 +345,21 @@ def is_india_location(location: str | None) -> bool:
     return False
 
 
-def normalize_regions(regions=None) -> tuple[str, ...]:
-    """Coerce a region spec into an ordered tuple of valid region ids.
+def _coerce_lane_id(raw: str) -> str | None:
+    """Map a raw region/lane token to a valid lane id, or None."""
+    token = str(raw or "").strip().lower()
+    if not token:
+        return None
+    mapped = _LEGACY_REGION_TO_LANE.get(token, token)
+    return mapped if mapped in VALID_LANES else None
 
-    ``None`` → resolve from the ``JOBHUNTER_DISCOVERY_REGIONS`` env var, then
-    fall back to ``DEFAULT_REGIONS`` (US-only). Accepts a comma string or any
-    iterable of ids. Unknown ids are dropped; order follows VALID_REGIONS.
+
+def normalize_regions(regions=None) -> tuple[str, ...]:
+    """Coerce a lane/region spec into an ordered tuple of valid lane ids.
+
+    ``None`` → resolve from ``JOBHUNTER_DISCOVERY_REGIONS``, then
+    ``DEFAULT_REGIONS`` (india + worldwide). Accepts a comma string or any
+    iterable. Legacy ``us`` maps to ``worldwide``. Unknown ids dropped.
     """
     if regions is None:
         return enabled_regions_from_env()
@@ -352,55 +367,133 @@ def normalize_regions(regions=None) -> tuple[str, ...]:
         raw = [r.strip().lower() for r in regions.split(",")]
     else:
         raw = [str(r).strip().lower() for r in regions]
-    picked = {r for r in raw if r in VALID_REGIONS}
-    ordered = tuple(r for r in VALID_REGIONS if r in picked)
-    return ordered
+    picked = set()
+    for r in raw:
+        lane = _coerce_lane_id(r)
+        if lane:
+            picked.add(lane)
+    return tuple(r for r in VALID_LANES if r in picked)
+
+
+normalize_lanes = normalize_regions
 
 
 def enabled_regions_from_env(default: tuple[str, ...] = DEFAULT_REGIONS) -> tuple[str, ...]:
-    """Enabled regions from the discovery env var, or ``default`` if unset."""
+    """Enabled lanes from the discovery env var, or ``default`` if unset."""
     raw = os.environ.get(DISCOVERY_REGIONS_ENV, "")
-    picked = {r.strip().lower() for r in raw.split(",") if r.strip()}
-    picked &= set(VALID_REGIONS)
-    ordered = tuple(r for r in VALID_REGIONS if r in picked)
+    picked = set()
+    for part in raw.split(","):
+        lane = _coerce_lane_id(part)
+        if lane:
+            picked.add(lane)
+    ordered = tuple(r for r in VALID_LANES if r in picked)
     return ordered if ordered else tuple(default)
 
 
-def location_matches_regions(location: str | None, regions=None) -> bool:
-    """True when ``location`` is kept under the enabled regions.
+enabled_lanes_from_env = enabled_regions_from_env
 
-    - ``us`` enabled → keep US-based or undetermined (not clearly non-US).
-    - ``india`` enabled → keep clearly-India / remote-India.
-    Multiple regions keep on the union. Empty region set keeps nothing.
-    """
-    regs = normalize_regions(regions)
-    if not regs:
+
+def is_us_based_location(location: str | None) -> bool:
+    """True when location positively indicates the United States (not India)."""
+    if is_india_location(location):
         return False
-    if "us" in regs and not is_clearly_non_us_location(location):
-        return True
-    if "india" in regs and is_india_location(location):
-        return True
-    return False
+    if is_clearly_non_us_location(location):
+        return False
+    loc = _fold_accents(str(location or "")).strip()
+    if not loc:
+        return False
+    return bool(US_LOCATION_RE.search(loc))
 
 
-def region_for_location(location: str | None, regions=None) -> str:
-    """Best-effort region tag for UI/filtering: 'india' | 'us' | 'unknown'.
+def is_us_onsite_or_hybrid(
+    location: str | None,
+    *,
+    work_mode: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+) -> bool:
+    """True for US geography with onsite or hybrid work mode (always dropped)."""
+    if not is_us_based_location(location):
+        return False
+    wm = (work_mode or "").strip().lower()
+    if wm not in ("remote", "hybrid", "onsite"):
+        wm = detect_work_mode(
+            title=title, location=location, description=description
+        )
+    return wm in ("onsite", "hybrid")
 
-    India takes precedence when clearly India; else US when a US signal is
-    present or the location is undetermined; else 'unknown'.
+
+def lane_for_job(
+    location: str | None,
+    *,
+    work_mode: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+) -> str:
+    """Stamp lane for UI/filtering: 'india' | 'worldwide' | 'unknown'.
+
+    India wins when clearly India. US onsite/hybrid → 'unknown' (dropped).
+    Everything else keepable (US remote, non-US any mode, bare Remote) →
+    'worldwide'.
     """
     if is_india_location(location):
         return "india"
-    loc = str(location or "").strip()
-    if not loc:
+    if is_us_onsite_or_hybrid(
+        location, work_mode=work_mode, title=title, description=description
+    ):
         return "unknown"
-    if not is_clearly_non_us_location(location):
-        # Undetermined or explicit US signal — treat US-side as 'us' only when
-        # there is a positive US cue; pure-undetermined stays 'unknown'.
-        if US_LOCATION_RE.search(_fold_accents(loc)):
-            return "us"
-        return "unknown"
-    return "unknown"
+    return "worldwide"
+
+
+def listing_matches_lanes(
+    location: str | None,
+    regions=None,
+    *,
+    work_mode: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+) -> bool:
+    """True when the listing is kept under the enabled lanes.
+
+    US onsite/hybrid always False. India-related needs ``india``. All other
+    keepable roles need ``worldwide``. Empty lane set keeps nothing.
+    """
+    lanes = normalize_regions(regions)
+    if not lanes:
+        return False
+    if is_us_onsite_or_hybrid(
+        location, work_mode=work_mode, title=title, description=description
+    ):
+        return False
+    if is_india_location(location):
+        return "india" in lanes
+    return "worldwide" in lanes
+
+
+def location_matches_regions(
+    location: str | None,
+    regions=None,
+    *,
+    work_mode: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+) -> bool:
+    """Backward-compatible alias for ``listing_matches_lanes``."""
+    return listing_matches_lanes(
+        location,
+        regions,
+        work_mode=work_mode,
+        title=title,
+        description=description,
+    )
+
+
+def region_for_location(location: str | None, regions=None) -> str:
+    """Legacy stamp: now returns lane id 'india' | 'worldwide' | 'unknown'.
+
+    Prefer ``lane_for_job`` when work_mode / JD text is available.
+    """
+    return lane_for_job(location)
 
 
 def _location_tail_country(loc: str) -> tuple[str | None, list[str]]:
@@ -1731,29 +1824,45 @@ def extract_salary_with_source(
 # ---------------------------------------------------------------------------
 # INR / LPA salary (India roles) — display only, never used to prune
 #
-# Indian postings quote pay as "12 LPA" (lakhs per annum), "12-18 LPA",
-# "₹12 lakhs", "INR 12.5 lacs", etc. 1 lakh = 100,000; "LPA" already means
-# lakhs *per annum*. These are surfaced as a display string only — India
-# roles are kept by region, never pruned on pay. Kept separate from the USD
-# salary extractors so a rupee figure never gets mistaken for a USD range.
+# Indian postings quote pay as "12 LPA", "12-18 LPA", "₹12 lakhs",
+# "INR 12.5 lacs", "CTC 15-20 LPA", "₹12,00,000", "15 lakhs per annum".
 # ---------------------------------------------------------------------------
 
-# Sane annual bounds in lakhs for an IC/early-to-mid role stamp.
 _LPA_MIN = 1.0
 _LPA_MAX = 200.0
 
-_INR_CUR = r"(?:₹|\binr\b|\brs\.?)"
-_LPA_UNIT = r"(?:lpa|lakhs?(?:\s*(?:per\s+annum|p\.?\s*a\.?))?|lacs?)"
+_INR_CUR = r"(?:₹|\binr\b|\brs\.?|\brupees?\b)"
+_LPA_UNIT = r"(?:lpa|lakhs?(?:\s*(?:per\s+annum|p\.?\s*a\.?))?|lacs?(?:\s*(?:per\s+annum|p\.?\s*a\.?))?)"
 _LPA_NUM = r"\d{1,3}(?:\.\d{1,2})?"
 
-# "12-18 LPA", "12 to 18 lakhs", "₹12–18 LPA", "INR 8 - 12 lacs"
+# "12-18 LPA", "CTC 12 to 18 lakhs", "₹12–18 LPA", "INR 8 - 12 lacs"
 _INR_LPA_RANGE_RE = re.compile(
-    rf"(?:{_INR_CUR}\s*)?({_LPA_NUM})\s*(?:[-–—]|to)\s*({_LPA_NUM})\s*{_LPA_UNIT}",
+    rf"(?:(?:ctc|salary|package|pay)\s*[:=]?\s*)?(?:{_INR_CUR}\s*)?"
+    rf"({_LPA_NUM})\s*(?:[-–—]|to)\s*({_LPA_NUM})\s*{_LPA_UNIT}",
     re.I,
 )
-# "12 LPA", "₹12.5 lakhs", "INR 8 lacs per annum"
+# "12 LPA", "₹12.5 lakhs", "CTC 8 lacs per annum"
 _INR_LPA_SINGLE_RE = re.compile(
-    rf"(?:{_INR_CUR}\s*)?({_LPA_NUM})\s*{_LPA_UNIT}",
+    rf"(?:(?:ctc|salary|package|pay)\s*[:=]?\s*)?(?:{_INR_CUR}\s*)?"
+    rf"({_LPA_NUM})\s*{_LPA_UNIT}",
+    re.I,
+)
+# Absolute rupee figures: ₹12,00,000 / INR 1200000 / Rs. 15,00,000 - 20,00,000
+# Indian grouping ends with ,XXX (3) then pairs; Western uses ,XXX groups.
+_INR_ABS_NUM = r"\d{1,3}(?:,\d{2})+,\d{3}|\d{1,3}(?:,\d{3})+|\d{5,8}"
+_INR_ABS_RANGE_RE = re.compile(
+    rf"{_INR_CUR}\s*({_INR_ABS_NUM})\s*(?:[-–—]|to)\s*(?:{_INR_CUR}\s*)?({_INR_ABS_NUM})",
+    re.I,
+)
+_INR_ABS_SINGLE_RE = re.compile(
+    rf"{_INR_CUR}\s*({_INR_ABS_NUM})\b",
+    re.I,
+)
+# Monthly CTC → annualize: "₹80,000 /month", "1.5 LPM"
+_INR_MONTHLY_RE = re.compile(
+    rf"(?:{_INR_CUR}\s*)?({_LPA_NUM})\s*"
+    rf"(?:lpm|lakhs?\s*(?:per\s+)?month|lacs?\s*(?:per\s+)?month)|"
+    rf"{_INR_CUR}\s*({_INR_ABS_NUM})\s*(?:/|\s*per\s*)\s*month",
     re.I,
 )
 
@@ -1767,42 +1876,231 @@ def _fmt_lpa(n: float) -> str:
     return f"{n:.1f}".rstrip("0").rstrip(".")
 
 
+def _parse_inr_abs(raw: str) -> float | None:
+    """Parse Indian/Western digit grouping into rupees (float)."""
+    if raw is None:
+        return None
+    digits = re.sub(r"[^\d.]", "", str(raw))
+    if not digits:
+        return None
+    try:
+        return float(digits)
+    except ValueError:
+        return None
+
+
+def _rupees_to_lpa(rupees: float) -> float | None:
+    if rupees <= 0:
+        return None
+    lpa = rupees / 100_000.0
+    return lpa if _lpa_sane(lpa) else None
+
+
 def extract_inr_salary(
     text: str | None = None,
     *,
     title: str | None = None,
     description: str | None = None,
 ) -> dict | None:
-    """Parse an Indian LPA / lakh salary into a display-only dict, or None.
+    """Parse Indian LPA / lakh / ₹ salary into a display dict, or None.
 
-    Returns ``{"min_lpa": float, "max_lpa": float | None, "display": str}``.
-    ``display`` is UI-ready (``~₹12–18 LPA``). Never used to prune — India
-    roles are kept by region, not pay. Rupee-only (never conflated with USD).
+    Returns ``{"min_lpa", "max_lpa", "display", "currency": "INR",
+    "min", "max"}`` where min/max are annual rupees when known.
+    Never used to prune.
     """
     blob = _salary_blob(text, title=title, description=description)
     if not blob.strip():
         return None
+
+    def _pack(lo: float, hi: float | None) -> dict:
+        display = (
+            f"~₹{_fmt_lpa(lo)}–{_fmt_lpa(hi)} LPA"
+            if hi is not None
+            else f"~₹{_fmt_lpa(lo)} LPA"
+        )
+        return {
+            "min_lpa": lo,
+            "max_lpa": hi,
+            "display": display,
+            "currency": "INR",
+            "min": int(lo * 100_000),
+            "max": int(hi * 100_000) if hi is not None else None,
+        }
+
     m = _INR_LPA_RANGE_RE.search(blob)
     if m:
-        lo = float(m.group(1))
-        hi = float(m.group(2))
+        lo, hi = float(m.group(1)), float(m.group(2))
         if lo > hi:
             lo, hi = hi, lo
         if _lpa_sane(lo) and _lpa_sane(hi):
-            return {
-                "min_lpa": lo,
-                "max_lpa": hi,
-                "display": f"~₹{_fmt_lpa(lo)}–{_fmt_lpa(hi)} LPA",
-            }
+            return _pack(lo, hi)
     m = _INR_LPA_SINGLE_RE.search(blob)
     if m:
         lo = float(m.group(1))
         if _lpa_sane(lo):
-            return {
-                "min_lpa": lo,
-                "max_lpa": None,
-                "display": f"~₹{_fmt_lpa(lo)} LPA",
-            }
+            return _pack(lo, None)
+    m = _INR_ABS_RANGE_RE.search(blob)
+    if m:
+        a, b = _parse_inr_abs(m.group(1)), _parse_inr_abs(m.group(2))
+        if a and b:
+            lo_l, hi_l = _rupees_to_lpa(min(a, b)), _rupees_to_lpa(max(a, b))
+            if lo_l and hi_l:
+                return _pack(lo_l, hi_l)
+    m = _INR_ABS_SINGLE_RE.search(blob)
+    if m:
+        rupees = _parse_inr_abs(m.group(1))
+        if rupees:
+            lo_l = _rupees_to_lpa(rupees)
+            if lo_l:
+                return _pack(lo_l, None)
+    m = _INR_MONTHLY_RE.search(blob)
+    if m:
+        if m.group(1):
+            monthly_lakh = float(m.group(1))
+            annual_lpa = monthly_lakh * 12.0
+            if _lpa_sane(annual_lpa):
+                return _pack(annual_lpa, None)
+        elif m.group(2):
+            monthly = _parse_inr_abs(m.group(2))
+            if monthly:
+                lo_l = _rupees_to_lpa(monthly * 12.0)
+                if lo_l:
+                    return _pack(lo_l, None)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Multi-currency salary (Worldwide lane) — display only
+# ---------------------------------------------------------------------------
+
+_CURRENCY_META = {
+    "USD": {"symbol": "$", "min": 20_000, "max": 1_000_000},
+    "EUR": {"symbol": "€", "min": 15_000, "max": 400_000},
+    "GBP": {"symbol": "£", "min": 15_000, "max": 350_000},
+    "CAD": {"symbol": "C$", "min": 30_000, "max": 400_000},
+    "AUD": {"symbol": "A$", "min": 30_000, "max": 400_000},
+    "CHF": {"symbol": "CHF ", "min": 40_000, "max": 400_000},
+    "SGD": {"symbol": "S$", "min": 30_000, "max": 400_000},
+    "JPY": {"symbol": "¥", "min": 2_000_000, "max": 50_000_000},
+    "NZD": {"symbol": "NZ$", "min": 30_000, "max": 300_000},
+}
+
+_MULTI_CUR_MARKERS = (
+    r"(?P<cur>\$|USD|EUR|€|GBP|£|CAD|C\$|AUD|A\$|CHF|SGD|S\$|JPY|¥|NZD|NZ\$)"
+)
+_MULTI_SAL_NUM = (
+    r"(?P<a>\d{1,3}(?:,\d{3})+(?:\.\d{2})?|\d{2,3}(?:\.\d{1,2})?\s*[kK]|\d{4,7})"
+)
+_MULTI_SALARY_RE = re.compile(
+    rf"{_MULTI_CUR_MARKERS}\s*{_MULTI_SAL_NUM}"
+    rf"(?:\s*(?:[-–—]|to)\s*"
+    rf"(?:\$|USD|EUR|€|GBP|£|CAD|C\$|AUD|A\$|CHF|SGD|S\$|JPY|¥|NZD|NZ\$)?\s*"
+    rf"(?P<b>\d{{1,3}}(?:,\d{{3}})+(?:\.\d{{2}})?|\d{{2,3}}(?:\.\d{{1,2}})?\s*[kK]|\d{{4,7}}))?",
+    re.I,
+)
+
+
+def _normalize_currency_token(tok: str) -> str:
+    t = (tok or "").strip().upper()
+    mapping = {
+        "$": "USD",
+        "USD": "USD",
+        "€": "EUR",
+        "EUR": "EUR",
+        "£": "GBP",
+        "GBP": "GBP",
+        "C$": "CAD",
+        "CAD": "CAD",
+        "A$": "AUD",
+        "AUD": "AUD",
+        "CHF": "CHF",
+        "S$": "SGD",
+        "SGD": "SGD",
+        "¥": "JPY",
+        "JPY": "JPY",
+        "NZ$": "NZD",
+        "NZD": "NZD",
+    }
+    return mapping.get(t, mapping.get(tok.strip(), "USD"))
+
+
+def _parse_sal_amount_token(raw: str) -> int | None:
+    if raw is None:
+        return None
+    s = str(raw).strip().replace(",", "")
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*[kK]$", s)
+    if m:
+        return int(float(m.group(1)) * 1000)
+    try:
+        return int(float(s))
+    except ValueError:
+        return None
+
+
+def extract_native_salary(
+    text: str | None = None,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+) -> dict | None:
+    """Parse a native-currency salary for worldwide roles.
+
+    Returns ``{"min", "max", "currency", "display", "period": "year"}`` or None.
+    Prefer this for worldwide; India should use ``extract_inr_salary``.
+    Falls back to USD ``extract_salary`` when only $ / bare k-ranges match.
+    """
+    blob = _salary_blob(text, title=title, description=description)
+    if not blob.strip():
+        return None
+    # Prefer explicit non-USD markers first
+    best = None
+    for m in _MULTI_SALARY_RE.finditer(blob):
+        cur = _normalize_currency_token(m.group("cur"))
+        a = _parse_sal_amount_token(m.group("a"))
+        b = _parse_sal_amount_token(m.group("b")) if m.group("b") else None
+        meta = _CURRENCY_META.get(cur, _CURRENCY_META["USD"])
+        if a is None:
+            continue
+        if not (meta["min"] <= a <= meta["max"]):
+            continue
+        if b is not None and not (meta["min"] <= b <= meta["max"]):
+            b = None
+        if b is not None and a > b:
+            a, b = b, a
+        sym = meta["symbol"]
+
+        def _fmt(n: int) -> str:
+            if n >= 1000 and cur != "JPY":
+                return f"{n / 1000:.0f}K" if n % 1000 == 0 else f"{n / 1000:.1f}K"
+            return f"{n:,}"
+
+        display = (
+            f"{sym}{_fmt(a)}–{_fmt(b)}" if b is not None else f"{sym}{_fmt(a)}"
+        )
+        cand = {
+            "min": a,
+            "max": b,
+            "currency": cur,
+            "display": display,
+            "period": "year",
+        }
+        if cur != "USD":
+            return cand
+        if best is None:
+            best = cand
+    if best is not None:
+        return best
+    usd = extract_salary(text, title=title, description=description)
+    if usd:
+        lo, hi = usd.get("min"), usd.get("max")
+        display = f"${lo // 1000}K" if hi is None else f"${lo // 1000}K–${hi // 1000}K"
+        return {
+            "min": lo,
+            "max": hi,
+            "currency": "USD",
+            "display": display,
+            "period": usd.get("period") or "year",
+        }
     return None
 
 
@@ -1862,11 +2160,12 @@ def should_keep_listing(
     url: str | None = None,
     job_type: str | None = None,
     regions=None,
+    work_mode: str | None = None,
 ) -> bool:
-    """Discovery keep/drop: False = skip (seniority, region, clearance, YOE, citizen/GC).
+    """Discovery keep/drop: False = skip (seniority, lane, clearance, YOE, citizen/GC).
 
-    ``regions`` selects which geographies to keep (defaults to the discovery
-    env / US-only). See ``location_matches_regions``.
+    ``regions`` selects which lanes to keep (defaults to discovery env).
+    See ``listing_matches_lanes``.
     """
     return auto_delete_reason(
         title=title,
@@ -1876,6 +2175,7 @@ def should_keep_listing(
         url=url,
         job_type=job_type,
         regions=regions,
+        work_mode=work_mode,
     ) is None
 
 
@@ -1888,19 +2188,32 @@ def auto_delete_reason(
     url: str | None = None,
     job_type: str | None = None,
     regions=None,
+    work_mode: str | None = None,
 ) -> str | None:
     """Return prune reason code, or None if the listing should stay active.
 
-    ``regions`` = enabled discovery regions (``None`` → env / US-only). A
-    listing outside every enabled region is dropped with reason
-    ``"non_us_location"`` (kept as the stable code for "outside enabled
-    regions" so existing prune tooling/labels don't need a schema change).
+    ``regions`` = enabled discovery lanes (``None`` → env / india+worldwide).
+    US onsite/hybrid → ``us_onsite_or_hybrid``. Outside enabled lanes →
+    ``non_us_location`` (stable code for outside-enabled-lanes tooling).
     """
     if is_excluded_title(title):
         return "management_track"
     if is_excluded_job_type(job_type):
         return "contract"
-    if not location_matches_regions(location, regions):
+    if is_us_onsite_or_hybrid(
+        location,
+        work_mode=work_mode,
+        title=title,
+        description=description,
+    ):
+        return "us_onsite_or_hybrid"
+    if not listing_matches_lanes(
+        location,
+        regions,
+        work_mode=work_mode,
+        title=title,
+        description=description,
+    ):
         return "non_us_location"
     if requires_security_clearance(
         title=title,

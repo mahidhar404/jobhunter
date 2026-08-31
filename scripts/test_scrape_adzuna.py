@@ -98,9 +98,9 @@ class SkipWithoutKeysTests(unittest.TestCase):
 
 
 class PaginationDefaultsTests(unittest.TestCase):
-    def test_us_defaults_to_three_pages_india_one(self):
+    def test_defaults_to_three_pages(self):
         self.assertEqual(sa.resolve_max_pages("us", None), 3)
-        self.assertEqual(sa.resolve_max_pages("in", None), 1)
+        self.assertEqual(sa.resolve_max_pages("in", None), 3)
         self.assertEqual(sa.resolve_max_pages("us", 99), sa.ADZUNA_MAX_PAGES_CAP)
         self.assertEqual(sa.resolve_max_pages("us", 2), 2)
 

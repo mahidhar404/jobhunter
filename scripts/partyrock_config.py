@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Single source of truth for PartyRock tailor app URLs.
 
-Dashboard Test Mode ON  → test URL (Ultron-Resume-v3-Testing)
-Dashboard Test Mode OFF → real URL (Ultron-Resume-v3)
+Dashboard Test Mode ON  → test URL (partyrock.json "test")
+Dashboard Test Mode OFF → real URL (partyrock.json "real")
+Both currently point at the same Ultron-Resume-v3-share app until a separate Testing app exists.
 
 Used by tailor_resume.py, open_partyrock.sh, and dashboard/server.py.
 """
@@ -19,8 +20,8 @@ CONFIG_PATH = ROOT / "partyrock.json"
 
 # Fallbacks if partyrock.json is missing (keep in sync with that file).
 _DEFAULTS = {
-    "test": "https://partyrock.aws/u/yo68749/qmkzfuEtp/Ultron-Resume-v3-Testing",
-    "real": "https://partyrock.aws/u/yo68749/VLnKjx0N6/Ultron-Resume-v3",
+    "test": "https://partyrock.aws/u/mahidhar40/9owPIgZn3/Ultron-Resume-v3-share",
+    "real": "https://partyrock.aws/u/mahidhar40/9owPIgZn3/Ultron-Resume-v3-share",
 }
 
 

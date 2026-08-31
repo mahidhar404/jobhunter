@@ -46,6 +46,12 @@ AGGREGATOR_HOST_HINTS = (
     "opentalent.com",
     "himalayas.app",
     "shine.com",
+    "naukri.com",
+    "internshala.com",
+    "hirist.tech",
+    "cutshort.io",
+    "freshersworld.com",
+    "foundit.in",
     "jobright.ai",
     "tealhq.com",
     "jobleads.com",
@@ -326,6 +332,7 @@ def site_source_rank(site) -> int:
     if s in (
         "indeed", "linkedin", "builtin", "glassdoor", "ziprecruiter",
         "remoteok", "remotive", "jobicy", "rss_feeds", "adzuna", "adzuna_us",
+        "internshala", "hirist", "cutshort", "shine", "freshersworld", "naukri",
     ):
         return RANK_AGGREGATOR
     return RANK_OTHER

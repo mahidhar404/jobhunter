@@ -37,6 +37,8 @@ class JobicyTests(unittest.TestCase):
         self.assertEqual(jobs[0]["site"], "jobicy")
 
     def test_scrape_fixture(self):
+        from datetime import date
+        today_iso = date.today().isoformat()
         payload = {
             "friendlyNotice": "Credit Jobicy with a link.",
             "jobs": [{
@@ -45,7 +47,7 @@ class JobicyTests(unittest.TestCase):
                 "companyName": "Lab",
                 "url": "https://jobicy.com/jobs/9-data-scientist",
                 "jobDescription": "<p>Analyze</p>",
-                "pubDate": "2026-08-01",
+                "pubDate": today_iso,
             }],
         }
         with mock.patch.object(sj, "fetch_json", return_value=payload), \
@@ -84,7 +86,10 @@ class JobicyTests(unittest.TestCase):
                 "companyName": "B",
             }],
         }
-        payloads = [payload_a] + [payload_b] * 10
+        # One payload per query URL. Sized from query_urls() rather than a
+        # fixed count, so widening the industry/geo/tag axes does not exhaust
+        # the mock and fail with a bare StopIteration.
+        payloads = [payload_a] + [payload_b] * (len(sj.query_urls()) - 1)
         with mock.patch.object(sj, "fetch_json", side_effect=payloads), \
              mock.patch.object(sj, "polite_sleep"):
             jobs = sj.scrape()

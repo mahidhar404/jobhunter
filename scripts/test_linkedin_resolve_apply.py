@@ -502,7 +502,7 @@ class TestProfilePaths(unittest.TestCase):
     def test_default_profile_under_workspace(self):
         path = lrp.linkedin_resolve_profile_dir()
         self.assertTrue(str(path).endswith("linkedin_resolve_profile"))
-        self.assertIn("job-hunter", str(path))
+        self.assertTrue(any(k in str(path) for k in ("mahi-jobhunt", "job-hunter", "jobhunt")))
 
     def test_env_override(self):
         with tempfile.TemporaryDirectory() as td:

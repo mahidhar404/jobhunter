@@ -60,19 +60,22 @@ from stats_aggregate import aggregate_stats  # noqa: E402
 from copy_kit import build_copy_kit  # noqa: E402
 from discovery_sources import (  # noqa: E402
     ADZUNA_MISSING_KEYS_DETAIL,
-    ATS_SOURCE_IDS,
     DISCOVERY_SOURCE_DEFS,
     DISCOVERY_SOURCE_IDS,
+    DISCOVERY_SOURCE_META,
     INDIA_ONLY_SOURCE_IDS,
     INDIA_SOURCE_SCRIPTS,
-    PRE_ATS_SOURCE_IDS,
+    PRIMARY_SOURCE_IDS,
     RECENCY_SOURCE_IDS,
     SCOUT_SOURCE_IDS,
     US_FEED_LOG_LABEL_TO_ID,
     US_FEED_SOURCE_IDS,
     US_FEED_SOURCE_SCRIPTS,
+    WORLDWIDE_FEED_SOURCE_IDS,
+    WORLDWIDE_FEED_SOURCE_SCRIPTS,
     adzuna_api_keys_present,
     adzuna_source_health,
+    catalog_payload,
 )
 from jobs_list import (  # noqa: E402
     cached_jobs_list_response as _cached_jobs_list_response_impl,
@@ -107,7 +110,6 @@ from adaptive_recency import (  # noqa: E402
     adaptive_recency_days,
     newest_job_age_days_from_file,
     parse_iso_datetime,
-    snap_builtin_days,
 )
 from jd_quality import looks_truncated_jd  # noqa: E402
 
@@ -204,11 +206,19 @@ CRON_JOB_NAME = "job-hunter-daily"
 DISCOVERY_SESSION_KEY = "agent:job-hunter:discovery"
 DISCOVERY_LAST_RUN_FILE = Path(__file__).parent / "discovery_last_run.json"
 DISCOVERY_SETTINGS_FILE = ROOT / "logs" / "discovery_settings.json"
+# Every lane a job may legitimately belong to. Used for retention decisions,
+# which must not depend on which lanes the user currently has switched on.
+VALID_DISCOVERY_LANES = ("india", "worldwide")
 SOURCE_DAYS_MIN = 1
-SOURCE_DAYS_MAX = 10
+# Raised from 10 so the per-source "days" control can express what the slower
+# boards actually need. Measured yield vs window (2026-08-26): Jobspresso
+# 1/3/7/47 and Authentic Jobs 0/7/7/21 at 21/45/90/365 days — a 10-day ceiling
+# made the control unable to reach most of what those boards still list.
+# NOTE: widening this only surfaces more *dated* listings if
+# STALE_LISTING_MAX_AGE_DAYS is raised to match, otherwise the extra rows are
+# merged and then pruned as stale.
+SOURCE_DAYS_MAX = 60
 SOURCE_DAYS_DEFAULT = 7
-BUILTIN_SUPPORTED_DAYS = tuple(range(SOURCE_DAYS_MIN, SOURCE_DAYS_MAX + 1))
-BUILTIN_DEFAULT_DAYS = SOURCE_DAYS_DEFAULT
 PRUNE_SETTINGS_FILE = ROOT / "logs" / "prune_settings.json"
 PRUNE_REASON_CODES = (
     "management_track",
@@ -236,11 +246,6 @@ PRUNE_INTERVALS_S = (0, 300, 900, 3600, 86400)
 # Per-source progress for crash/quit resume (under logs/ — gitignored).
 DISCOVERY_CHECKPOINT_FILE = ROOT / "logs" / "discovery_checkpoint.json"
 SCOUT_TIMEOUT_S = 1500  # raised alongside SEARCH_TERMS growing from 6 to 14 terms
-# Per-platform ATS board fetch. 300s was starving Greenhouse/Ashby while
-# slug-guessing ran first. Known slugs fetch first; guesses use leftover budget.
-ATS_SOURCE_TIMEOUT_S = 1800
-ATS_GUESS_BUDGET_S = 180
-ATS_MAX_GUESSES = 80
 TAILOR_SCRIPT = ROOT / "scripts" / "tailor_resume.py"
 RESUMES_DIR = ROOT / "resumes"
 TAILOR_TIMEOUT_S = 700
@@ -510,6 +515,12 @@ _restart_requested = False
 _preserve_fill_cft_on_exit = False
 _http_server: ThreadingHTTPServer | None = None
 RESTART_FLAG_PATH = ROOT / "logs" / "dashboard_restart.flag"
+# launchd KeepAlive PathState flag (start_dashboard.sh). While it exists,
+# launchd respawns a dead server. Explicit Quit deletes it so quit stays quit.
+# Outside ~/Desktop: launchd cannot stat TCC-protected paths (EX_CONFIG).
+KEEPALIVE_FLAG_PATH = (
+    Path.home() / "Library" / "Application Support" / "jobhunter" / "dashboard_keepalive.flag"
+)
 LAUNCHER_PID_PATH = ROOT / "logs" / "dashboard_launcher.pid"
 LAUNCH_DASHBOARD_SH = Path(__file__).resolve().parent / "launch_dashboard.sh"
 # Dedicated Chrome profiles / CDP — never the user's daily Chrome profile.
@@ -535,15 +546,9 @@ DISCOVERY_ABORT_EXIT = -2
 FILL_ABORT_EXIT = -3
 # Catalog / script maps live in discovery_sources.py (imported above).
 # Polite per-source delays mean these run a few minutes at most.
-INDIA_SOURCE_TIMEOUT_S = 600
+INDIA_SOURCE_TIMEOUT_S = 2400
 US_FEED_SOURCE_TIMEOUT_S = 600
 _SCOUT_GOT_RE = re.compile(r"got (\d+) new results from (indeed|linkedin)/")
-_ATS_GOT_RE = re.compile(
-    r"got (\d+) relevant results from ("
-    + "|".join(ATS_SOURCE_IDS)
-    + r")/"
-)
-_ATS_PROGRESS_RE = re.compile(r"\((\d+)/(\d+) done\)")
 _INDIA_GOT_RE = re.compile(
     r"got (\d+) results from ("
     + "|".join(INDIA_ONLY_SOURCE_IDS)
@@ -554,10 +559,9 @@ _US_FEED_GOT_RE = re.compile(
     + "|".join(re.escape(label) for label in US_FEED_LOG_LABEL_TO_ID)
     + r")/"
 )
-_BUILTIN_PROC_RE = re.compile(r"processed (\d+)/(\d+) \((\d+) usable so far\)")
 _WROTE_LISTINGS_RE = re.compile(r"wrote (\d+) listings")
 _ADZUNA_SKIP_KEYS_RE = re.compile(
-    r"disabled/skipped \((adzuna(?:-us)?)\): no Adzuna API keys",
+    r"disabled/skipped \(adzuna\): no Adzuna API keys",
     re.IGNORECASE,
 )
 
@@ -640,6 +644,12 @@ _discovery_procs_by_key: dict[str, subprocess.Popen] = {}
 # Per-source aborts (do not set global abort_requested / do not finish discovery).
 _discovery_source_aborts: set[str] = set()
 _discovery_protect_proc = False  # True during write — finish write instead of killing mid-file.
+# Track keys of steps that must survive an abort (dedup + write into jobs.json).
+# This used to be only the single `_discovery_protect_proc` bool, which any of
+# the ~28 parallel scrapes reset to False as it launched — so an abort called
+# _kill_all_discovery_procs() and killed the in-flight merge too, stranding
+# every already-scraped listing on disk instead of writing it to jobs.json.
+_discovery_protected_keys: set[str] = set()
 
 
 class _DiscoveryProcSetView:
@@ -699,8 +709,6 @@ DISCOVERY_PHASE_LABELS = {
     "resuming": "Continuing previous run…",
     "scraping": "Scraping sources…",
     "scout": "Scouting Indeed/LinkedIn…",
-    "ats": "Scraping ATS boards…",
-    "builtin": "Scraping Built In…",
     "dedup": "Deduplicating listings…",
     "tracker": "Checking tracked companies…",
     "write": "Writing jobs…",
@@ -1336,6 +1344,7 @@ def _begin_discovery(enabled: set[str] | None = None, *, fresh: bool = False) ->
             "resolve_total": None,
         })
         _discovery_procs_by_key.clear()
+        _discovery_protected_keys.clear()
         _discovery_source_aborts.clear()
     _reset_checkpoint_meta(
         run_id=run_id, date=date, merged_paths=merged_paths, merges_ok=merges_ok,
@@ -1383,6 +1392,7 @@ def _finish_discovery(ok: bool, error: str | None = None) -> None:
         })
         # Keep sources for post-run hover inspection.
         _discovery_procs_by_key.clear()
+        _discovery_protected_keys.clear()
         _discovery_source_aborts.clear()
         _discovery_protect_proc = False
     _persist_discovery_last_run(
@@ -1442,17 +1452,6 @@ def normalize_source_days_map(raw, *, current: dict | None = None) -> dict:
     return {sid: out[sid] for sid in RECENCY_SOURCE_IDS if sid in out}
 
 
-def normalize_builtin_days_since_updated(value) -> int:
-    """Validate Built In lookback (1–10). Alias of per-source days."""
-    try:
-        return normalize_source_days(value, default=BUILTIN_DEFAULT_DAYS)
-    except ValueError:
-        raise ValueError(
-            f"builtin_days_since_updated must be an integer from "
-            f"{SOURCE_DAYS_MIN} to {SOURCE_DAYS_MAX}"
-        ) from None
-
-
 def _load_source_days_from_raw(raw: dict) -> dict:
     source_days: dict[str, int] = {}
     raw_map = raw.get("source_days")
@@ -1461,16 +1460,6 @@ def _load_source_days_from_raw(raw: dict) -> dict:
         for sid in RECENCY_SOURCE_IDS:
             if sid in raw_map:
                 source_days[sid] = _clamp_source_days(raw_map[sid])
-    # Legacy files (no source_days object) treated Built In's global
-    # days field as an explicit pin.
-    if (
-        "builtin" not in source_days
-        and not has_map
-        and "builtin_days_since_updated" in raw
-    ):
-        source_days["builtin"] = _clamp_source_days(
-            raw.get("builtin_days_since_updated")
-        )
     return source_days
 
 
@@ -1488,11 +1477,10 @@ def _coerce_bool(value, default: bool) -> bool:
 
 
 def load_discovery_settings() -> dict:
-    # US discovery is the default; India is opt-in (see India region model).
+    # India + Worldwide lanes (legacy discover_us → discover_worldwide).
     defaults = {
-        "builtin_days_since_updated": BUILTIN_DEFAULT_DAYS,
-        "discover_us": True,
-        "discover_india": False,
+        "discover_worldwide": True,
+        "discover_india": True,
         "last_successful_discover_at": None,
         "source_days": {},
     }
@@ -1504,17 +1492,38 @@ def load_discovery_settings() -> dict:
     if not isinstance(raw, dict):
         return dict(defaults)
     source_days = _load_source_days_from_raw(raw)
-    days = source_days.get("builtin", BUILTIN_DEFAULT_DAYS)
     last_ok = raw.get("last_successful_discover_at")
     if not isinstance(last_ok, str) or not last_ok.strip():
         last_ok = None
+    # Migrate legacy discover_us → discover_worldwide.
+    if "discover_worldwide" in raw:
+        discover_worldwide = _coerce_bool(raw.get("discover_worldwide"), True)
+    elif "discover_us" in raw and _coerce_bool(raw.get("discover_us"), False):
+        discover_worldwide = True
+    else:
+        discover_worldwide = True
     return {
-        "builtin_days_since_updated": days,
-        "discover_us": _coerce_bool(raw.get("discover_us"), True),
-        "discover_india": _coerce_bool(raw.get("discover_india"), False),
+        "discover_worldwide": discover_worldwide,
+        "discover_india": _coerce_bool(raw.get("discover_india"), True),
         "last_successful_discover_at": last_ok,
         "source_days": source_days,
     }
+
+
+def _migrate_discovery_settings_file_if_needed() -> None:
+    """Rewrite logs/discovery_settings.json once when legacy discover_us is present."""
+    try:
+        if not DISCOVERY_SETTINGS_FILE.is_file():
+            return
+        raw = json.loads(DISCOVERY_SETTINGS_FILE.read_text())
+        if not isinstance(raw, dict):
+            return
+        if "discover_worldwide" in raw and "discover_us" not in raw:
+            return
+        settings = load_discovery_settings()
+        save_discovery_settings(settings)
+    except Exception as e:
+        print(f"warn: discovery settings migration skipped: {e}")
 
 
 def save_discovery_settings(payload: dict) -> dict:
@@ -1525,29 +1534,28 @@ def save_discovery_settings(payload: dict) -> dict:
         payload.get("source_days") if "source_days" in payload else None,
         current=current.get("source_days") or {},
     )
-    if "builtin_days_since_updated" in payload:
-        source_days["builtin"] = normalize_builtin_days_since_updated(
-            payload.get("builtin_days_since_updated")
+    if "discover_worldwide" in payload:
+        discover_worldwide = _coerce_bool(
+            payload.get("discover_worldwide"), current["discover_worldwide"]
         )
-    days = source_days.get(
-        "builtin", current.get("builtin_days_since_updated", BUILTIN_DEFAULT_DAYS)
-    )
-    discover_us = _coerce_bool(
-        payload.get("discover_us"), current["discover_us"]
-    ) if "discover_us" in payload else current["discover_us"]
+    elif "discover_us" in payload:
+        discover_worldwide = _coerce_bool(
+            payload.get("discover_us"), current["discover_worldwide"]
+        )
+    else:
+        discover_worldwide = current["discover_worldwide"]
     discover_india = _coerce_bool(
         payload.get("discover_india"), current["discover_india"]
     ) if "discover_india" in payload else current["discover_india"]
-    # Guard: never persist "no regions" — that would drop every listing.
-    if not discover_us and not discover_india:
-        discover_us = True
+    # Guard: never persist "no lanes" — snap India back on.
+    if not discover_worldwide and not discover_india:
+        discover_india = True
     last_ok = current.get("last_successful_discover_at")
     if "last_successful_discover_at" in payload:
         raw_ok = payload.get("last_successful_discover_at")
         last_ok = raw_ok.strip() if isinstance(raw_ok, str) and raw_ok.strip() else None
     settings = {
-        "builtin_days_since_updated": days,
-        "discover_us": discover_us,
+        "discover_worldwide": discover_worldwide,
         "discover_india": discover_india,
         "last_successful_discover_at": last_ok,
         "source_days": source_days,
@@ -1607,10 +1615,8 @@ def resolve_discovery_recency(*, now: datetime | None = None) -> dict:
         chosen = int(pinned[sid]) if sid in pinned else int(days)
         source_days[sid] = chosen
         source_hours[sid] = chosen * 24
-    builtin = snap_builtin_days(source_days["builtin"])
     return {
         "days": int(days),
-        "builtin_days": int(builtin),
         "hours_old": int(days) * 24,
         "source_days": source_days,
         "source_hours": source_hours,
@@ -1629,14 +1635,14 @@ def _record_successful_discover(finished_at: str) -> None:
 
 
 def enabled_discovery_regions() -> list[str]:
-    """Ordered region ids from persisted settings (US first, then India)."""
+    """Ordered lane ids from persisted settings (india, worldwide)."""
     s = load_discovery_settings()
     regions = []
-    if s.get("discover_us", True):
-        regions.append("us")
-    if s.get("discover_india", False):
+    if s.get("discover_india", True):
         regions.append("india")
-    return regions or ["us"]
+    if s.get("discover_worldwide", True):
+        regions.append("worldwide")
+    return regions or ["india"]
 
 
 def _discovery_status_in_memory() -> dict:
@@ -1647,12 +1653,20 @@ def _discovery_status_in_memory() -> dict:
             {
                 "id": sid,
                 "label": label,
+                "lane": DISCOVERY_SOURCE_META.get(sid, {}).get("lane", "shared"),
+                "url": DISCOVERY_SOURCE_META.get(sid, {}).get("url", ""),
+                "scrape_status": DISCOVERY_SOURCE_META.get(sid, {}).get(
+                    "scrape_status", "catalog"
+                ),
                 "india_only": sid in INDIA_ONLY_SOURCE_IDS,
+                "worldwide_only": sid in WORLDWIDE_FEED_SOURCE_IDS,
                 "recency": sid in RECENCY_SOURCE_IDS,
             }
             for sid, label in DISCOVERY_SOURCE_DEFS
         ]
         state["india_only_sources"] = list(INDIA_ONLY_SOURCE_IDS)
+        state["worldwide_sources"] = list(WORLDWIDE_FEED_SOURCE_IDS)
+        state["board_catalog"] = catalog_payload()
         enabled = _discovery_state.get("enabled_sources")
         state["enabled_sources"] = list(enabled) if isinstance(enabled, list) else list(DISCOVERY_SOURCE_IDS)
         # Always surface a stable last-run field for the Discover button.
@@ -1721,9 +1735,23 @@ _kill_discovery_process_tree = _kill_process_tree
 
 
 def _kill_all_discovery_procs() -> None:
-    """Kill every registered discovery subprocess process group."""
+    """Kill every registered discovery subprocess group except protected ones.
+
+    Protected keys are the dedup / write-into-jobs.json steps. Killing those
+    mid-flight is how a Stop used to throw away thousands of already-scraped
+    listings: the rows were on disk under listings/ but never reached
+    jobs.json, so they never showed up in the job list.
+    """
     with _discovery_lock:
-        procs = list(_discovery_procs_by_key.values())
+        protected = set(_discovery_protected_keys)
+        procs = [
+            proc for key, proc in _discovery_procs_by_key.items()
+            if key not in protected
+        ]
+        skipped = len(_discovery_procs_by_key) - len(procs)
+    if skipped:
+        print(f"discovery abort: letting {skipped} merge step(s) finish "
+              "so scraped listings still reach jobs.json")
     for proc in procs:
         _kill_process_tree(proc)
 
@@ -2063,6 +2091,10 @@ def _launcher_is_alive() -> bool:
     Prefers ``logs/dashboard_launcher.lockdir/pid`` (single-instance lock), then
     falls back to ``logs/dashboard_launcher.pid``. Avoids spawning a second
     ``--restart`` copy that would race the primary and kill dashboard Chrome.
+
+    Verifies the PID's cmdline still looks like the launcher — a recycled PID
+    from an unrelated process must not block the relaunch fallback (that left
+    :8787 dead after Refresh when started via start_dashboard.sh).
     """
     candidates = [
         ROOT / "logs" / "dashboard_launcher.lockdir" / "pid",
@@ -2075,6 +2107,20 @@ def _launcher_is_alive() -> bool:
                 continue
             pid = int(raw)
             os.kill(pid, 0)
+            # Confirm it's actually our launcher, not a recycled PID.
+            try:
+                cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\x00", b" ")
+                text = cmdline.decode("utf-8", errors="replace")
+            except OSError:
+                # macOS: use ps
+                import subprocess as _sp
+                got = _sp.run(
+                    ["ps", "-p", str(pid), "-o", "command="],
+                    capture_output=True, text=True, timeout=2,
+                )
+                text = got.stdout or ""
+            if "launch_dashboard" not in text and "OmniDex" not in text:
+                continue
             return True
         except (OSError, ValueError):
             continue
@@ -2087,7 +2133,34 @@ def _write_restart_flag() -> None:
 
 
 def _spawn_relaunch_fallback() -> None:
-    """When no launcher is waiting, spawn launch_dashboard.sh --restart."""
+    """When no launcher is waiting, spawn a durable relaunch.
+
+    Prefer ``start_dashboard.sh`` (lifecycle off, plain browser) when UI
+    lifecycle is disabled; otherwise ``launch_dashboard.sh --restart``.
+    """
+    if not ui_lifecycle_enabled():
+        start_sh = ROOT / "start_dashboard.sh"
+        if start_sh.is_file():
+            log_path = ROOT / "logs" / "dashboard_launcher.out"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_f = open(log_path, "a", encoding="utf-8")  # noqa: SIM115
+            try:
+                subprocess.Popen(
+                    ["/bin/bash", str(start_sh)],
+                    cwd=str(ROOT),
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    env={**os.environ, "JOB_HUNTER_UI_LIFECYCLE": "0"},
+                )
+                print("spawned start_dashboard.sh (lifecycle off, no live launcher)")
+                return
+            except Exception as e:
+                print(f"warn: could not spawn start_dashboard.sh: {e}")
+                try:
+                    log_f.close()
+                except Exception:
+                    pass
     if not LAUNCH_DASHBOARD_SH.is_file():
         print(f"warn: missing launcher script: {LAUNCH_DASHBOARD_SH}")
         return
@@ -2113,7 +2186,9 @@ def _spawn_relaunch_fallback() -> None:
 
 
 def ui_lifecycle_enabled() -> bool:
-    raw = (os.environ.get("JOB_HUNTER_UI_LIFECYCLE") or "1").strip().lower()
+    # Default OFF: browser refresh/close must not kill :8787 (see start_dashboard.sh).
+    # Dock/Desktop launcher sets JOB_HUNTER_UI_LIFECYCLE=1 + ?desktop=1.
+    raw = (os.environ.get("JOB_HUNTER_UI_LIFECYCLE") or "0").strip().lower()
     return raw not in ("0", "false", "no", "off")
 
 
@@ -2224,6 +2299,14 @@ def shutdown_dashboard_stack(reason: str, client_id: str | None = None) -> bool:
         _shutdown_requested = True
         _shutdown_reason = reason
     print(f"dashboard shutdown: {reason}" + (f" (client={client_id})" if client_id else ""))
+    # Explicit quit (not Refresh): disarm launchd KeepAlive so we stay down.
+    # Restarts and stray SIGTERMs keep the flag — launchd respawns us.
+    if "restart" not in (reason or "").lower() and "SIGTERM" not in (reason or "") and "SIGINT" not in (reason or ""):
+        try:
+            KEEPALIVE_FLAG_PATH.unlink(missing_ok=True)
+            print("keepalive flag removed (explicit quit — launchd will not respawn)")
+        except OSError as e:
+            print(f"warn: could not remove keepalive flag: {e}")
     try:
         if _discovery_state.get("running"):
             request_discovery_abort()
@@ -2269,15 +2352,24 @@ def shutdown_dashboard_stack(reason: str, client_id: str | None = None) -> bool:
 
 
 def request_ui_restart(client_id: str | None = None) -> tuple[dict, int]:
-    """Refresh path: same child cleanup as shutdown, then relaunch the server.
+    """Refresh path: cleanup + respawn, or soft-reload when lifecycle is off.
 
-    Writes `logs/dashboard_restart.flag` so `launch_dashboard.sh` respawns the
-    server after exit *without* opening a new Chrome window (UI reloads in
-    place). If no launcher is waiting, spawns `launch_dashboard.sh --restart`
-    as a fallback. Forces cleanup even when other tabs are open.
+    When ``JOB_HUNTER_UI_LIFECYCLE=0`` (``start_dashboard.sh``), do **not**
+    kill :8787 — the SPA only needs ``location.reload()``. Hard process
+    restart without a waiting Dock launcher was the main cause of the
+    permanent "can't reach the server / Retrying…" banner.
     """
     global _restart_requested
     cid = (client_id or "").strip() or None
+    if not ui_lifecycle_enabled():
+        print("ui restart: lifecycle off — soft reload only (server stays up)")
+        return {
+            "ok": True,
+            "restart": False,
+            "soft_reload": True,
+            "shutdown": False,
+            "reason": "lifecycle disabled; client should reload in place",
+        }, 200
     _restart_requested = True
     try:
         _write_restart_flag()
@@ -2384,13 +2476,38 @@ def request_discovery_abort(source_id: str | None = None) -> tuple[dict, int]:
     return {"ok": True, "aborting": True, "discovery": discovery_status()}, 200
 
 
+# Every scraper logs how many rows the skip-urls filter removed. Without this
+# a board that found 50 listings you already have reports the same bare "0" as
+# a board that is genuinely broken — which is indistinguishable in the UI.
+_SKIPPED_KNOWN_RES = (
+    re.compile(r"skip-urls:\s+dropped\s+(\d+)\s+known", re.I),
+    re.compile(r"skipped\s+(\d+)\s+already-known", re.I),
+)
+
+
+def _skipped_known_from_log(log_path: Path) -> int:
+    """Total rows a scraper dropped because we already had them."""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    total = 0
+    for rx in _SKIPPED_KNOWN_RES:
+        for m in rx.finditer(text):
+            try:
+                total += int(m.group(1))
+            except (TypeError, ValueError):
+                pass
+    return total
+
+
 def _parse_discovery_log_line(line: str, mode: str | None) -> None:
-    """Update live per-source counts from scout/ats/builtin stdout lines."""
+    """Update live per-source counts from stdout lines."""
     skip = _ADZUNA_SKIP_KEYS_RE.search(line or "")
     if skip:
         label = skip.group(1).lower()
         sid = US_FEED_LOG_LABEL_TO_ID.get(label, label.replace("-", "_"))
-        if sid in ("adzuna", "adzuna_us"):
+        if sid == "adzuna":
             _set_source_fields(
                 sid,
                 status="failed",
@@ -2410,23 +2527,6 @@ def _parse_discovery_log_line(line: str, mode: str | None) -> None:
                         src["status"] = "collecting"
                         src["count"] = int(src.get("count") or 0) + n
                         src["detail"] = f"{src['count']} listings"
-                        break
-        return
-    if mode == "ats":
-        m = _ATS_GOT_RE.search(line)
-        if m:
-            n, ats = int(m.group(1)), m.group(2)
-            prog = _ATS_PROGRESS_RE.search(line)
-            detail = f"{prog.group(1)}/{prog.group(2)} boards" if prog else ""
-            with _discovery_lock:
-                for src in _discovery_state.get("sources") or []:
-                    if src.get("id") == ats:
-                        src["status"] = "collecting"
-                        src["count"] = int(src.get("count") or 0) + n
-                        if detail:
-                            src["detail"] = f"{src['count']} · {detail}"
-                        else:
-                            src["detail"] = f"{src['count']} listings"
                         break
         return
     if mode == "india":
@@ -2454,21 +2554,6 @@ def _parse_discovery_log_line(line: str, mode: str | None) -> None:
                         src["detail"] = f"{src['count']} listings"
                         break
         return
-    if mode == "builtin":
-        m = _BUILTIN_PROC_RE.search(line)
-        if m:
-            done, total, usable = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            _set_source_fields(
-                "builtin",
-                status="collecting",
-                count=usable,
-                detail=f"{done}/{total} pages · {usable} listings",
-            )
-            return
-        m2 = _WROTE_LISTINGS_RE.search(line)
-        if m2:
-            n = int(m2.group(1))
-            _set_source_fields("builtin", status="collecting", count=n, detail=f"{n} listings")
 
 
 class _LogTail:
@@ -2535,6 +2620,10 @@ def _run_subprocess_step(cmd: list[str], log_name: str, timeout_s: int,
         _register_discovery_proc(track_key, proc)
         with _discovery_lock:
             _discovery_protect_proc = protect_from_abort
+            if protect_from_abort:
+                _discovery_protected_keys.add(track_key)
+            else:
+                _discovery_protected_keys.discard(track_key)
     need_tail = bool(log_parse_mode or activity_job_id)
     tail = _LogTail(log_path) if need_tail else None
 
@@ -2579,6 +2668,7 @@ def _run_subprocess_step(cmd: list[str], log_name: str, timeout_s: int,
         if allow_abort:
             _unregister_discovery_proc(track_key, proc)
             with _discovery_lock:
+                _discovery_protected_keys.discard(track_key)
                 if protect_from_abort or not _discovery_procs_by_key:
                     _discovery_protect_proc = False
         log_file.close()
@@ -2600,16 +2690,10 @@ def _listing_file_nonempty(path: Path) -> bool:
 def _source_listing_path(today: str, source_id: str) -> Path:
     if source_id in SCOUT_SOURCE_IDS:
         return LISTINGS_DIR / f"{today}-{source_id}.json"
-    if source_id in ATS_SOURCE_IDS:
-        return LISTINGS_DIR / f"{today}-ats-{source_id}.json"
-    if source_id == "builtin":
-        return LISTINGS_DIR / f"{today}-builtin.json"
     # Adzuna's file is suffixed -adzuna-in to make its India origin explicit;
     # the others use their bare source id.
     if source_id == "adzuna":
         return LISTINGS_DIR / f"{today}-adzuna-in.json"
-    if source_id == "adzuna_us":
-        return LISTINGS_DIR / f"{today}-adzuna-us.json"
     if source_id == "remoteok":
         return LISTINGS_DIR / f"{today}-remoteok.json"
     if source_id == "remotive":
@@ -2620,12 +2704,12 @@ def _source_listing_path(today: str, source_id: str) -> Path:
         return LISTINGS_DIR / f"{today}-rss_feeds.json"
     if source_id in INDIA_ONLY_SOURCE_IDS:
         return LISTINGS_DIR / f"{today}-{source_id}.json"
+    if source_id in WORLDWIDE_FEED_SOURCE_IDS:
+        return LISTINGS_DIR / f"{today}-{source_id}.json"
     raise ValueError(f"unknown discovery source: {source_id}")
 
 
 def _source_qualified_tag(source_id: str) -> str:
-    if source_id in ATS_SOURCE_IDS:
-        return f"ats-{source_id}"
     return source_id
 
 
@@ -2642,50 +2726,14 @@ def _scout_scrape_cmd(
     return cmd
 
 
-def _ats_scrape_cmd(listing: Path, source_id: str, *, skip_urls_file: Path | None) -> list[str]:
-    cmd = [PYTHON_BIN, "-u", str(ROOT / "scripts" / "scrape_ats.py"),
-           "--platforms", source_id, "--out", str(listing),
-           "--max-guesses", str(ATS_MAX_GUESSES),
-           "--guess-budget-s", str(ATS_GUESS_BUDGET_S)]
-    if skip_urls_file is not None:
-        cmd.extend(["--skip-urls", str(skip_urls_file)])
-    return cmd
-
-
-def _builtin_scrape_cmd(
-    listing: Path,
-    *,
-    skip_urls_file: Path | None,
-    days_since_updated: int,
-) -> list[str]:
-    days = normalize_source_days(days_since_updated)
-    cmd = [
-        PYTHON_BIN,
-        "-u",
-        str(ROOT / "scripts" / "scrape_builtin.py"),
-        "--out",
-        str(listing),
-        "--days-since-updated",
-        str(days),
-    ]
-    if skip_urls_file is not None:
-        cmd.extend(["--skip-urls", str(skip_urls_file)])
-    return cmd
-
-
 def _adzuna_scrape_cmd(
-    listing: Path, *, country: str, max_days: int,
+    listing: Path, *, country: str = "in", max_days: int,
     skip_urls_file: Path | None = None,
 ) -> list[str]:
-    country = "us" if str(country).lower() == "us" else "in"
-    script = (
-        US_FEED_SOURCE_SCRIPTS["adzuna_us"]
-        if country == "us"
-        else INDIA_SOURCE_SCRIPTS["adzuna"]
-    )
+    script = INDIA_SOURCE_SCRIPTS["adzuna"]
     cmd = [
         PYTHON_BIN, "-u", str(script),
-        "--country", country,
+        "--country", "in",
         "--out", str(listing),
         "--max-days", str(int(max_days)),
     ]
@@ -2694,13 +2742,53 @@ def _adzuna_scrape_cmd(
     return cmd
 
 
+# Multi-board scripts need the board id; scrape_wellfound serves two lanes.
+_SITE_ARG_SCRIPTS = ("scrape_ww_boards.py", "scrape_probe_board.py")
+_MAX_DAYS_SCRIPTS = (
+    "scrape_ww_boards.py", "scrape_probe_board.py", "scrape_wellfound.py",
+)
+
+
 def _feed_scrape_cmd(
     listing: Path, script: Path, *, skip_urls_file: Path | None = None,
+    max_days: int | None = None, source_id: str | None = None,
 ) -> list[str]:
     cmd = [PYTHON_BIN, "-u", str(script), "--out", str(listing)]
     if skip_urls_file is not None:
         cmd.extend(["--skip-urls", str(skip_urls_file)])
+    # Not every scraper takes --max-days; the India feed scrapers leave
+    # recency to the downstream filters and would reject an unknown flag.
+    if max_days is not None and script.name in _MAX_DAYS_SCRIPTS:
+        cmd.extend(["--max-days", str(int(max_days))])
+    if source_id and script.name in _SITE_ARG_SCRIPTS:
+        cmd.extend(["--site", source_id])
+    if source_id == "angellist_india" and script.name == "scrape_wellfound.py":
+        cmd.append("--india")
     return cmd
+
+
+def _archive_listing_file(listing_path: Path) -> None:
+    """Archive every scraped row into listings.db before any filtering.
+
+    jobs.json only keeps rows that survive relevance / lane / prune filters,
+    and listings/*.json are overwritten by the next run. The archive is what
+    makes a filter change or an interrupted run non-destructive — it is a
+    best-effort side channel and must never fail a merge.
+    """
+    try:
+        import sys as _sys
+        if str(ROOT / "scripts") not in _sys.path:
+            _sys.path.insert(0, str(ROOT / "scripts"))
+        import listings_db
+        conn = listings_db.connect()
+        try:
+            new, updated = listings_db.ingest_file(conn, listing_path)
+        finally:
+            conn.close()
+        if new or updated:
+            print(f"listings.db [{listing_path.name}]: +{new} new, {updated} refreshed")
+    except Exception as e:  # noqa: BLE001
+        print(f"warn: listings.db archive failed for {listing_path.name}: {e}")
 
 
 def _incremental_merge_listing(listing_path: Path, today: str, skip_file: Path,
@@ -2708,6 +2796,8 @@ def _incremental_merge_listing(listing_path: Path, today: str, skip_file: Path,
     """Dedup one source listing and merge into jobs.json. Returns True on write success."""
     if not _listing_file_nonempty(listing_path):
         return False
+    # Archive the raw scrape first — before dedup/prune can drop anything.
+    _archive_listing_file(listing_path)
     qualified_file = LISTINGS_DIR / f"{today}-qualified-{source_tag}.json"
     _set_discovery_phase("dedup")
     dedup_exit, dedup_log = _run_subprocess_step(
@@ -2761,7 +2851,7 @@ def _finalize_discovery_source(
                 only_if_status=("pending", "collecting", "stopped"))
         return
     # Adzuna without keys exits 0 with an empty file — fail loud in UI status.
-    if source_id in ("adzuna", "adzuna_us") and not adzuna_api_keys_present():
+    if source_id == "adzuna" and not adzuna_api_keys_present():
         _set_source_fields(
             source_id,
             status="failed",
@@ -2770,7 +2860,18 @@ def _finalize_discovery_source(
         )
         return
     if listing_path.exists():
-        _apply_site_counts(_count_listings_by_site(listing_path), (source_id,))
+        counts = _count_listings_by_site(listing_path)
+        if not counts.get(source_id):
+            # Zero new rows is not the same as a broken board. Say which it
+            # was, or every healthy board that simply had nothing new reads
+            # exactly like a scraper that failed.
+            skipped = _skipped_known_from_log(ROOT / "logs" / f"scrape_{source_id}.log")
+            if skipped:
+                _set_source_fields(
+                    source_id, status="completed", count=0,
+                    detail=f"No new roles — {skipped} already in your list")
+                return
+        _apply_site_counts(counts, (source_id,))
     elif exit_code != 0:
         _update_discovery_sources((source_id,), status="failed", detail="Failed")
     else:
@@ -2845,11 +2946,19 @@ def run_scout_scrape_then_dedup() -> None:
         today = _today_local_iso()
         enabled = _discovery_enabled_set()
         # Propagate enabled regions (US default, India opt-in) to every
-        # discovery child (scout / scrape_ats / scrape_builtin / dedup /
+        # discovery child (scout / scrape_builtin / dedup /
         # write) via env — they inherit os.environ (no env= on Popen).
         regions = enabled_discovery_regions()
-        os.environ["JOBHUNTER_DISCOVERY_REGIONS"] = ",".join(regions)
-        print(f"discovery regions: {', '.join(regions)}")
+        # The lane switches pick which BOARDS to scrape (above). They must not
+        # also decide what is worth KEEPING: worldwide boards legitimately
+        # surface India roles — Wellfound alone contributed 56 in one run —
+        # and scoping the child steps to the enabled lanes made every one of
+        # them get written and then instantly pruned as `non_us_location`.
+        # Children keep every valid lane; the UI filter hides, it does not
+        # delete. Same principle as the auto-delete sweep.
+        os.environ["JOBHUNTER_DISCOVERY_REGIONS"] = ",".join(VALID_DISCOVERY_LANES)
+        print(f"discovery regions: scraping {', '.join(regions)}; "
+              f"keeping {', '.join(VALID_DISCOVERY_LANES)}")
         LISTINGS_DIR.mkdir(parents=True, exist_ok=True)
         with _discovery_lock:
             resumed = bool(_discovery_state.get("resumed"))
@@ -2884,20 +2993,15 @@ def run_scout_scrape_then_dedup() -> None:
         recency = resolve_discovery_recency()
         print(
             f"discovery recency: adaptive={recency['days']}d "
-            f"(builtin={recency['source_days']['builtin']}, "
-            f"indeed={recency['source_days']['indeed']}, "
+            f"(indeed={recency['source_days']['indeed']}, "
             f"linkedin={recency['source_days']['linkedin']}, "
-            f"adzuna_us={recency['source_days']['adzuna_us']}, "
             f"adzuna={recency['source_days']['adzuna']}, "
             f"last_success={recency['last_successful_discover_at'] or 'never'}, "
             f"jobs_gap={recency['jobs_gap_days']})"
         )
 
-        # Build scrape jobs in two phases: scout / builtin / feed sources first so
-        # scrape_ats slug extraction sees today's listing URLs before ATS boards
-        # fetch (same-run slug discovery, not next-run).
-        pre_ats_jobs: list[tuple[str, Path, list[str], int, str, str]] = []
-        ats_jobs: list[tuple[str, Path, list[str], int, str, str]] = []
+        # Scout / feed / India sources (ATS & Built In discovery removed).
+        primary_jobs: list[tuple[str, Path, list[str], int, str, str]] = []
         for sid in SCOUT_SOURCE_IDS:
             if sid not in enabled or sid in skip_ids:
                 continue
@@ -2906,36 +3010,28 @@ def run_scout_scrape_then_dedup() -> None:
                 listing, sid, hours_old=recency["source_hours"][sid],
                 skip_urls_file=skip_urls_file,
             )
-            pre_ats_jobs.append(
+            primary_jobs.append(
                 (sid, listing, cmd, SCOUT_TIMEOUT_S, f"scout_{sid}.log", "scout"))
-        if "builtin" in enabled and "builtin" not in skip_ids:
-            listing = _source_listing_path(today, "builtin")
-            cmd = _builtin_scrape_cmd(
-                listing,
-                skip_urls_file=skip_urls_file,
-                days_since_updated=recency["source_days"]["builtin"],
-            )
-            pre_ats_jobs.append(
-                ("builtin", listing, cmd, 5400, "scrape_builtin.log", "builtin"))
-        for sid in US_FEED_SOURCE_IDS:
-            if sid not in enabled or sid in skip_ids:
-                continue
-            listing = _source_listing_path(today, sid)
-            if sid == "adzuna_us":
-                cmd = _adzuna_scrape_cmd(
-                    listing, country="us",
-                    max_days=recency["source_days"]["adzuna_us"],
-                    skip_urls_file=skip_urls_file,
-                )
-            else:
+        if "worldwide" in regions:
+            # Per-source "days" pins from the UI. Unpinned boards keep the
+            # scraper's own default window (wider than the scout window —
+            # several remote boards keep ads live for weeks).
+            pinned_days = load_discovery_settings().get("source_days") or {}
+            for sid in US_FEED_SOURCE_IDS:
+                if sid not in enabled or sid in skip_ids:
+                    continue
+                listing = _source_listing_path(today, sid)
+                script = US_FEED_SOURCE_SCRIPTS[sid]
                 cmd = _feed_scrape_cmd(
-                    listing, US_FEED_SOURCE_SCRIPTS[sid],
+                    listing, script,
                     skip_urls_file=skip_urls_file,
+                    max_days=pinned_days.get(sid),
+                    source_id=sid,
                 )
-            pre_ats_jobs.append(
-                (sid, listing, cmd, US_FEED_SOURCE_TIMEOUT_S,
-                 f"scrape_{sid}.log", "us_feed"))
-        # India-only sources: only meaningful when the India region is on.
+                primary_jobs.append(
+                    (sid, listing, cmd, US_FEED_SOURCE_TIMEOUT_S,
+                     f"scrape_{sid}.log", "ww_feed"))
+        # India-only sources: only when the India lane is on.
         if "india" in regions:
             for sid in INDIA_ONLY_SOURCE_IDS:
                 if sid not in enabled or sid in skip_ids:
@@ -2951,21 +3047,12 @@ def run_scout_scrape_then_dedup() -> None:
                     cmd = _feed_scrape_cmd(
                         listing, INDIA_SOURCE_SCRIPTS[sid],
                         skip_urls_file=skip_urls_file,
+                        source_id=sid,
                     )
-                pre_ats_jobs.append(
+                primary_jobs.append(
                     (sid, listing, cmd, INDIA_SOURCE_TIMEOUT_S,
                      f"scrape_{sid}.log", "india"))
-        for sid in ATS_SOURCE_IDS:
-            if sid not in enabled or sid in skip_ids:
-                continue
-            listing = _source_listing_path(today, sid)
-            cmd = _ats_scrape_cmd(
-                listing, sid, skip_urls_file=skip_urls_file,
-            )
-            ats_jobs.append(
-                (sid, listing, cmd, ATS_SOURCE_TIMEOUT_S,
-                 f"scrape_ats_{sid}.log", "ats"))
-        source_jobs = pre_ats_jobs + ats_jobs
+        source_jobs = primary_jobs
 
         if skip_ids:
             # Keep completed rows visible; clarify they were resumed/skipped.
@@ -2991,7 +3078,7 @@ def run_scout_scrape_then_dedup() -> None:
         _flush_discovery_checkpoint("running")
 
         # Tracker once before first merge (skip-companies for write_discovered_jobs).
-        # Deliberately NOT under listings/ — scrape_ats --seed-from globs *.json there.
+        # Deliberately NOT under listings/ (listing globs pick up *.json there).
         skip_file = ROOT / "logs" / "tracked-companies-skip.json"
         _set_discovery_phase("tracker")
         tracker_exit, tracker_log = _run_subprocess_step(
@@ -3075,13 +3162,9 @@ def run_scout_scrape_then_dedup() -> None:
 
         def _run_source_batch(
             batch: list[tuple[str, Path, list[str], int, str, str]],
-            *,
-            phase_label: str | None = None,
         ) -> None:
             if not batch:
                 return
-            if phase_label:
-                _set_discovery_phase("ats" if phase_label == "ats" else "scraping")
             workers = max(1, len(batch))
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = [
@@ -3102,19 +3185,33 @@ def run_scout_scrape_then_dedup() -> None:
                     _try_merge(sid, listing)
                     _flush_discovery_checkpoint("running")
 
-        if pre_ats_jobs:
-            _run_source_batch(pre_ats_jobs)
-        if ats_jobs and not _discovery_abort_requested():
-            _run_source_batch(ats_jobs, phase_label="ats")
+        if primary_jobs:
+            _run_source_batch(primary_jobs)
 
         # After all sources settle: still merge any leftover partial files
         # (global abort must not skip flushing completed/partial listings).
+        # This is the safety net that makes Stop non-destructive — whatever a
+        # scraper managed to write before it was killed still gets deduped and
+        # written into jobs.json, so it shows up in the job list.
+        _set_discovery_phase("write")
+        flushed = 0
+        stranded: list[str] = []
         for sid, listing, *_ in source_jobs:
             if sid not in scrape_results:
                 _finalize_discovery_source(
                     sid, DISCOVERY_ABORT_EXIT, listing,
                     aborted=True)
-            _try_merge(sid, listing)
+            try:
+                if _try_merge(sid, listing):
+                    flushed += 1
+            except Exception as merge_exc:  # noqa: BLE001
+                # One bad source must not strand the remaining ones.
+                stranded.append(sid)
+                print(f"warn: final flush failed for {sid}: {merge_exc}")
+        if flushed or stranded:
+            print(f"discovery final flush: merged {flushed} leftover listing "
+                  f"file(s) into jobs.json" +
+                  (f"; failed: {', '.join(stranded)}" if stranded else ""))
 
         _mark_incomplete_sources_stopped()
         aborted = _discovery_abort_requested()
@@ -3137,9 +3234,11 @@ def run_scout_scrape_then_dedup() -> None:
 
         if aborted:
             if merges_ok > 0:
+                # Stopped, but the scraped rows were flushed — that is a
+                # partial success, not a discarded run.
                 _finish_discovery(True)
             else:
-                _finish_discovery(False, "Aborted by user")
+                _finish_discovery(False, "Stopped — no listings had been scraped yet")
             return
 
         _finish_discovery(True)
@@ -3229,6 +3328,13 @@ def runtime_status() -> dict:
             }
         running_jobs.append(dict(snap))
     disc = _discovery_status_in_memory()
+    # The lane switches must ride along. /api/status is what the UI polls, and
+    # app.js reads disc.discover_india — an absent key reads as "on", so the
+    # UI showed both lanes enabled no matter what was saved and wrote that
+    # back on the next save, silently undoing a worldwide-only choice.
+    _lanes = load_discovery_settings()
+    disc["discover_india"] = _lanes["discover_india"]
+    disc["discover_worldwide"] = _lanes["discover_worldwide"]
     discovery_running = disc.get("running") or (DISCOVERY_SESSION_KEY in running_keys)
     aj = None
     if running_jobs:
@@ -3277,6 +3383,34 @@ def _recover_jobs_json_from_backup() -> dict | None:
         except OSError as e:
             print(f"warn: could not restore jobs.json from {bak.name}: {e}")
     return None
+
+
+def read_jobs_nonblocking() -> dict | None:
+    """read_jobs() that gives up instead of waiting for the jobs lock.
+
+    Returns None when a writer holds LOCK_EX. Used by the /api/jobs list path
+    so a long discovery merge cannot hang first paint.
+    """
+    if not JOBS_FILE.exists():
+        return {"jobs": []}
+    JOBS_LOCK_FILE.touch(exist_ok=True)
+    try:
+        lockfile = open(JOBS_LOCK_FILE, "r+")
+    except OSError:
+        return None
+    try:
+        try:
+            fcntl.flock(lockfile, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:
+            return None  # writer holds it — caller serves the cached body
+        try:
+            return _parse_jobs_payload(JOBS_FILE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None  # let the blocking path handle recovery/quarantine
+        finally:
+            fcntl.flock(lockfile, fcntl.LOCK_UN)
+    finally:
+        lockfile.close()
 
 
 def read_jobs() -> dict:
@@ -3705,6 +3839,7 @@ def _cached_jobs_list_response() -> tuple[bytes, str]:
     return _cached_jobs_list_response_impl(
         jobs_file=JOBS_FILE,
         read_jobs=read_jobs,
+        read_jobs_nonblocking=read_jobs_nonblocking,
         fill_hold_active=_fill_hold_browser_active,
         build_response=lambda data, hold: jobs_list_response(data, fill_hold=hold),
         cache=_jobs_list_cache,
@@ -8837,12 +8972,11 @@ class Handler(BaseHTTPRequestHandler):
         payload = payload if isinstance(payload, dict) else {}
         parsed = _parse_enabled_sources(payload)
         enabled = set(DISCOVERY_SOURCE_IDS) if parsed is None else parsed
-        # Persist any region toggles / Built In days included in the POST so a
+        # Persist any region toggles / source days included in the POST so a
         # discovery kicked off from the popover uses the just-picked regions.
         settings_patch = {
             k: payload[k]
-            for k in ("builtin_days_since_updated", "discover_us", "discover_india",
-                      "source_days")
+            for k in ("discover_worldwide", "discover_us", "discover_india", "source_days")
             if k in payload
         }
         if settings_patch:
@@ -8854,10 +8988,24 @@ class Handler(BaseHTTPRequestHandler):
                     400,
                 )
                 return
-        # Gate India-only sources: they never run unless the India region is on.
+        # Gate lane-specific sources.
         regions = enabled_discovery_regions()
         if "india" not in regions:
             enabled = {sid for sid in enabled if sid not in INDIA_ONLY_SOURCE_IDS}
+        if "worldwide" not in regions:
+            enabled = {
+                sid for sid in enabled
+                if sid not in US_FEED_SOURCE_IDS
+            }
+        # Drop catalog/blocked boards — UI lists them; Discover only runs scrapers.
+        from discovery_sources import DISCOVERY_SOURCE_META, RUNNABLE_STATUSES
+        enabled = {
+            sid for sid in enabled
+            if sid in SCOUT_SOURCE_IDS
+            or sid in INDIA_ONLY_SOURCE_IDS
+            or sid in US_FEED_SOURCE_IDS
+            or DISCOVERY_SOURCE_META.get(sid, {}).get("scrape_status") in RUNNABLE_STATUSES
+        }
         if not enabled:
             self._send_json(
                 {"error": "enable at least one discovery source", "discovery": discovery_status()},
@@ -9506,10 +9654,16 @@ def _backfill_clearance_us_person_loop() -> None:
 
 
 def _backfill_salary_loop() -> None:
-    """Stamp salary_min/max (+ fallbacks) from full JD. Display only — never prune."""
+    """Stamp salary (+ INR / native currency / lane) from full JD. Display only."""
     _wait_jobs_list_boot()
     try:
-        from discovery_filters import extract_salary, extract_salary_fallback
+        from discovery_filters import (
+            extract_inr_salary,
+            extract_native_salary,
+            extract_salary,
+            extract_salary_fallback,
+            lane_for_job,
+        )
     except Exception as e:
         print(f"warn: discovery_filters import failed (salary): {e}")
         return
@@ -9526,6 +9680,7 @@ def _backfill_salary_loop() -> None:
                     or "salary_max" not in j
                     or "salary_min_fallback" not in j
                     or "salary_max_fallback" not in j
+                    or "lane" not in j
                     for j in jobs
                 )
                 if not needs:
@@ -9536,6 +9691,7 @@ def _backfill_salary_loop() -> None:
                         or "salary_max" not in job
                         or "salary_min_fallback" not in job
                         or "salary_max_fallback" not in job
+                        or "lane" not in job
                     )
                     undetermined = job.get("salary_min") is None
                     refresh = force and _has_jd_full_for_backfill(job)
@@ -9543,14 +9699,45 @@ def _backfill_salary_loop() -> None:
                         continue
                     title = job.get("title") or ""
                     desc = _job_desc_for_backfill(job)
+                    location = job.get("location")
+                    work_mode = job.get("work_mode")
+                    lane = lane_for_job(
+                        location,
+                        work_mode=work_mode,
+                        title=title,
+                        description=desc,
+                    )
+                    job["lane"] = lane
+                    job["region"] = lane
+                    inr = extract_inr_salary(title=title, description=desc)
+                    if inr:
+                        job["salary_inr_display"] = inr.get("display")
+                        job["salary_inr_min_lpa"] = inr.get("min_lpa")
+                        job["salary_inr_max_lpa"] = inr.get("max_lpa")
+                    native = None
+                    if lane != "india":
+                        native = extract_native_salary(title=title, description=desc)
                     sal = extract_salary(title=title, description=desc)
                     sal_fb = (
                         extract_salary_fallback(title=title, description=desc)
                         if sal is None
                         else None
                     )
-                    new_min = (sal or {}).get("min")
-                    new_max = (sal or {}).get("max")
+                    if lane == "india" and inr:
+                        new_min = inr.get("min")
+                        new_max = inr.get("max")
+                        job["salary_currency"] = "INR"
+                        job["salary_display"] = inr.get("display")
+                    elif native:
+                        new_min = native.get("min")
+                        new_max = native.get("max")
+                        job["salary_currency"] = native.get("currency")
+                        job["salary_display"] = native.get("display")
+                    else:
+                        new_min = (sal or {}).get("min")
+                        new_max = (sal or {}).get("max")
+                        if sal:
+                            job["salary_currency"] = "USD"
                     new_fb_min = (sal_fb or {}).get("min")
                     new_fb_max = (sal_fb or {}).get("max")
                     prev = (
@@ -9823,7 +10010,13 @@ def _auto_delete_sweep_once(reasons: set[str] | None = None) -> int:
             with locked_jobs_for_write() as data:
                 now_dt = datetime.now(timezone.utc)
                 now = now_dt.isoformat()
-                regions = enabled_discovery_regions()
+                # Retention is NOT scoped to the lanes currently toggled on.
+                # The lane switches choose which boards Discover *scrapes*;
+                # using them here made turning India off delete every India
+                # job already found — and block_deleted_job tombstoned their
+                # URLs, so re-discovery would skip them forever. Sweep against
+                # every valid lane so a filter toggle only hides rows.
+                regions = VALID_DISCOVERY_LANES
                 for job in data.get("jobs") or []:
                     if job.get("status") != "discovered":
                         continue
@@ -10158,6 +10351,25 @@ def main():
     # CDP starts on demand via _ensure_openclaw_managed_browser() when a
     # Start/tailor path needs it; CfT is launched by Playwright fill.
     _install_lifecycle_signal_handlers()
+    try:
+        _migrate_discovery_settings_file_if_needed()
+    except Exception as e:
+        print(f"warn: discovery settings migrate: {e}")
+
+    def _lane_backfill_once() -> None:
+        """Run after jobs-list prewarm so cold /api/jobs wins the lock first."""
+        try:
+            _wait_jobs_list_boot(timeout=60.0)
+            import subprocess
+            subprocess.run(
+                [PYTHON_BIN, "-u", str(ROOT / "scripts" / "backfill_lanes.py")],
+                cwd=str(ROOT),
+                timeout=120,
+                check=False,
+            )
+        except Exception as e:
+            print(f"warn: lane backfill: {e}")
+
     # Listen ASAP. Orphan reconcile / triage / list prewarm run as daemons
     # so Refresh and cold open are not blocked on jobs.json sweeps.
     threading.Thread(
@@ -10252,11 +10464,18 @@ def main():
             "Cmd+Q) or POST /api/restart (Refresh). Idle heartbeat stall "
             "does not shut down the stack."
         )
+    else:
+        print(
+            "UI lifecycle off: browser refresh/close will not stop :8787 "
+            "(JOB_HUNTER_UI_LIFECYCLE=0). Use start_dashboard.sh for durable local runs."
+        )
     threading.Thread(
         target=_prewarm_jobs_list_cache,
         daemon=True,
         name="jobs-list-prewarm",
     ).start()
+    # Lane stamp after prewarm (waits on _jobs_list_boot_ready).
+    threading.Thread(target=_lane_backfill_once, daemon=True, name="lane-backfill").start()
     try:
         server.serve_forever()
     finally:

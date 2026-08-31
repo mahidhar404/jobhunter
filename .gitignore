@@ -115,3 +115,10 @@ skyvern_runtime/*_profile/
 export_build/
 *.export.zip
 scripts/fastfill/learning_store/llm_traces.jsonl
+india_boards_chrome_profile/
+
+# Scrape archive — 19MB of derived data, rebuildable with:
+#   python3 scripts/listings_db.py backfill
+listings.db
+listings.db-wal
+listings.db-shm

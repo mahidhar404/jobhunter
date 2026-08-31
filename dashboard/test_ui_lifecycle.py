@@ -38,7 +38,8 @@ def _reset() -> None:
     srv._restart_requested = False
     srv._preserve_fill_cft_on_exit = False
     srv._running_procs.clear()
-    os.environ.pop("JOB_HUNTER_UI_LIFECYCLE", None)
+    # Tests exercise the Dock lifecycle path; production default is OFF.
+    os.environ["JOB_HUNTER_UI_LIFECYCLE"] = "1"
     srv._kill_jh_associated_browsers = _noop_jh_browsers  # type: ignore[assignment]
     try:
         if srv.RESTART_FLAG_PATH.exists():

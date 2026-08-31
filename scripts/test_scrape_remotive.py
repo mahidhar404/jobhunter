@@ -38,6 +38,8 @@ class RemotiveTests(unittest.TestCase):
         self.assertIn("Build models", jobs[0]["description"])
 
     def test_scrape_fixture(self):
+        from datetime import date
+        today_iso = date.today().isoformat()
         payload = {
             "jobs": [{
                 "id": 9,
@@ -45,7 +47,7 @@ class RemotiveTests(unittest.TestCase):
                 "company_name": "Lab",
                 "url": "https://remotive.com/remote-jobs/data-9",
                 "description": "<p>Analyze</p>",
-                "publication_date": "2026-08-01",
+                "publication_date": today_iso,
             }],
         }
         with mock.patch.object(sr, "fetch_json", return_value=payload), \

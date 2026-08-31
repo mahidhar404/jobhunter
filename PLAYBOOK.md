@@ -1,7 +1,9 @@
 # Job Hunter Playbook
 
-You find and prepare (but never submit) full-time US AI/ML/Data Science/Data
-Engineering job applications for the user. You are one agent; only spawn a
+You find and prepare (but never submit) full-time AI/ML/Data Science/Data
+Engineering/Software job applications for the user — **India** lane (any
+India-related role) and **Worldwide** lane (non-India locations plus US
+*remote*; US onsite/hybrid are dropped). You are one agent; only spawn a
 subagent for a step that genuinely benefits from an isolated context (the
 PartyRock resume wait, or a single application's browser session) — don't
 fan out more than that.
@@ -79,7 +81,7 @@ fan out more than that.
 - Start → tailor + compile + form fill (never Submit)
 - CAPTCHA, EEO answers, final human review / submit
 - Opt-in LinkedIn CDP resolve (`LINKEDIN_ALLOW_CDP=1`) — not part of Discover
-- India region toggle, Discover source pins, prune reason/interval prefs
+- India / Worldwide lane toggles, Discover source pins, prune reason/interval prefs
 
 ## Pipeline
 
@@ -88,47 +90,19 @@ fan out more than that.
    these yourself during a normal discovery run:
    - `scripts/scout.py` pulls fresh listings from Indeed/LinkedIn into
      `listings/<date>.json`.
-   - `scripts/scrape_ats.py` fetches full company job boards directly from
-     Greenhouse/Lever/Ashby/Recruitee/Personio/SmartRecruiters/Workable/
-     Rippling/Breezy/BambooHR public board JSON (or Personio XML) into
-     `listings/<date>-ats.json`. It self-expands its own company registry
-     (`ats_companies.json`) by scanning listings for known-platform URLs
-     it hasn't seen before - this is how it catches roles a company never
-     syndicated to Indeed at all (observed: one company's own board had
-     24x the qualifying roles Indeed had indexed for them). Coverage still
-     depends on having (or guessing) each employer's board slug.
-     **Still excluded from board scrape:** Workday and iCIMS (Akamai /
-     CAPTCHA - see Hard Rules; never bypass); Jobvite, Gem, Dover, Comeet
-     (HTML SPA or token-gated; no free unauthenticated board list);
-     ZipRecruiter / Glassdoor (aggregators / anti-bot / paid); Taleo,
-     SuccessFactors, Avature (no public cross-company board API).
-     Teamtailor `/jobs.json` per-site feeds (wired in `scrape_ats.py`); JazzHR
-     `{slug}.applytojob.com/apply` SSR boards; Pinpoint `{slug}.pinpointhq.com/postings.json`.
+   - Worldwide Remote feeds (`scripts/scrape_remoteok.py`, `scripts/scrape_remotive.py`,
+     `scripts/scrape_jobicy.py`, `scripts/scrape_rss_feeds.py`, `scripts/scrape_ww_boards.py`)
+     fetch public remote job listings into `listings/<date>-<source>.json`.
+   - India job boards (`scripts/scrape_internshala.py`, `scripts/scrape_hirist.py`,
+     `scripts/scrape_cutshort.py`, `scripts/scrape_shine.py`, `scripts/scrape_freshersworld.py`,
+     `scripts/scrape_naukri.py`, `scripts/scrape_adzuna.py`) pull active roles across India.
      Discovery passes known URL/posting_key keys so scrapers skip detail fetches
-     for jobs already in `jobs.json` (board list still runs to find new roles).
-   - `scripts/scrape_builtin.py` scrapes Built In (builtin.com) directly -
-     no public API and no JobSpy support, so this reverse-engineers the
-     site's own server-rendered search pages and a JSON init blob each
-     job page embeds (`Builtin.jobPostInit(...)`) for company/title/real
-     apply URL, into `listings/<date>-builtin.json`. Unconditionally
-     skips any posting where Built In's own `isEasyApply` flag is true -
-     never use Built In's hosted apply form, only a real external ATS
-     link (same policy as LinkedIn's Easy Apply below). Search requests
-     apply Built In's own recency filter (`daysSinceUpdated`, default **7**,
-     never 1 — that window hid jobs) and
-     experience-level filters (entry-level/junior/mid-level/senior,
-     excluding internship and Expert/Leader 9+ years) server-side -
-     Built In's relevance-only search ranking has no date sort, so a
-     real, valid posting can otherwise rank many pages deep and never
-     get fetched at all (this happened live: a real Intel Data Scientist
-     req ranked page 9 of an unfiltered search). Narrowing the search
-     itself keeps the per-term result set bounded and recent instead of
-     paging deeper into an unbounded ranking.
+     for jobs already in `jobs.json`.
      **Adaptive recency:** if the last *successful* Discover finished N days
      ago, lookback is **N+1** days (safety), floored at 7 and capped at **10**.
      Per-source 1–10 day pins in Discover override adaptive for that source.
      Scout JobSpy gets `hours_old = days*24`; Adzuna gets `max_days` when
-     keys exist; Built In gets `daysSinceUpdated` 1–10. RemoteOK / Remotive /
+     keys exist. RemoteOK / Remotive /
      Jobicy / RSS have no recency query
      param — they return the current public feed (do not client-drop older
      unseen rows). ATS boards are full-board fetches (no date filter);
@@ -179,8 +153,8 @@ fan out more than that.
    this before your turn starts, the same way discovery's scraping runs
    before that turn starts:
    - `scripts/tailor_resume.py` drives the PartyRock app
-     (Test Mode → Ultron-Resume-v3-Testing; Real → Ultron-Resume-v3;
-     URLs in `partyrock.json`) over OpenClaw's managed Chrome-for-Testing
+     (Test/Real URLs in `partyrock.json` — currently the same Ultron-Resume-v3-share
+     app) over OpenClaw's managed Chrome-for-Testing
      CDP (`~/.openclaw/browser/openclaw/user-data`, port `:18800`). That is
      the **same** profile/`./open_partyrock.sh` uses — not Cursor's IDE
      browser tool and not daily Google Chrome. Re-auth there if you see a
@@ -329,17 +303,13 @@ fan out more than that.
 - Application tracker (replaces Notion): `application_tracker.xlsx` +
   `scripts/tracker.py`
 - PartyRock resume tailoring app (URLs in `partyrock.json`):
-  - Test: https://partyrock.aws/u/yo68749/qmkzfuEtp/Ultron-Resume-v3-Testing
-  - Real: https://partyrock.aws/u/yo68749/VLnKjx0N6/Ultron-Resume-v3
+  - Test + Real (same app for now): https://partyrock.aws/u/mahidhar40/9owPIgZn3/Ultron-Resume-v3-share
   - Resolver: `scripts/partyrock_config.py`; **canonical human login:** `./open_partyrock.sh` only (OpenClaw CfT + `:18800` — not raw `openclaw browser start`, not IDE browser)
 - Applicant profile: `profile.json`
 - ATS autofill passwords: `web_keys.json` (via `scripts/fastfill/web_keys.py`)
 - Site login credentials (manual/legacy): `credentials.json`
 - Aggregator scraper: `scripts/scout.py` (venv at `.venv/`)
-- Direct-ATS scraper: `scripts/scrape_ats.py` + its company registry
-  `ats_companies.json` (Greenhouse/Lever/Ashby/Recruitee/Personio/
-  SmartRecruiters/Workable/Rippling/Breezy/BambooHR)
-- Built In scraper (no public API, no JobSpy support): `scripts/scrape_builtin.py`
+- Remote & India scrapers: `scripts/scrape_remoteok.py`, `scripts/scrape_remotive.py`, `scripts/scrape_jobicy.py`, `scripts/scrape_rss_feeds.py`, `scripts/scrape_ww_boards.py`, `scripts/scrape_internshala.py`, `scripts/scrape_hirist.py`, `scripts/scrape_cutshort.py`, `scripts/scrape_shine.py`, `scripts/scrape_freshersworld.py`, `scripts/scrape_naukri.py`, `scripts/scrape_adzuna.py`
 - Manual-add URL extractor (runs automatically, no agent involved - see
   User-added jobs above): `scripts/extract_job_posting.py`
 - Dedup/qualify filter: `scripts/dedup_listings.py`
@@ -364,7 +334,11 @@ fan out more than that.
   job-specific note (fill paths that still inject platform notes read these
   files directly; the old dashboard `ats_notes_for_url` helper was removed)
 - Command-center dashboard: `dashboard/server.py` (start with
-  `python3 dashboard/server.py`, view at http://127.0.0.1:8787 — **Ops `/` only**; Classic is frozen and `/classic` redirects here)
+  `bash start_dashboard.sh` — installs a launchd LaunchAgent
+  (`com.jobhunter.dashboard`) that auto-respawns the server within ~5s if it
+  ever dies; view at http://127.0.0.1:8787 — **Ops `/` only**; Classic is
+  frozen and `/classic` redirects here. UI Quit stays quit; UI Refresh is a
+  soft reload. See docs/INDIA_WORLDWIDE_LANES.md "Runtime" for details.)
 - **Dummy autofill (never submit):** `PRODUCTION.md` + `./scripts/fastfill/run_fill_visible.sh`
   for headed fills; `scripts/fastfill/fast_fill.py` for batch/CI. Real applications use
   dashboard **Start** (agent + `profile.json`), not fastfill.

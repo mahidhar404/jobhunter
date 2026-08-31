@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
-"""Scrape full-time AI/ML/DS/DE job postings via JobSpy.
+"""Scrape full-time AI/ML/DS/DE/SWE job postings via JobSpy.
 
-Usage: python3 scout.py [--out PATH] [--regions us,india]
+Usage: python3 scout.py [--out PATH] [--regions india,worldwide]
 
 Writes a JSON array of listings (deduped by job_url) to --out
 (default: ../listings/<date>.json), each with title/company/site/job_url/
 description/date_posted/job_type/location.
 
-Region-aware: US discovery is the default; India is opt-in. When India is
-enabled it runs an extra JobSpy pass with location="India" /
-country_indeed="india". Both passes accumulate into the SAME --out file
-in one process (written once per term), so US and India results never
-clobber each other and the dashboard's per-source listing path / status
-counting stays unchanged. Regions come from --regions or, when omitted, the
-JOBHUNTER_DISCOVERY_REGIONS env var the dashboard sets (US-only default).
-The discovery region gate (discovery_filters) still keeps/drops by location
-downstream — this only controls which geographies JobSpy is queried for.
+Lane-aware: India and Worldwide (legacy ``us`` → worldwide). India runs
+JobSpy with India metros; Worldwide prefers Remote so US onsite/hybrid
+are less common (still pruned downstream). Regions come from --regions or
+JOBHUNTER_DISCOVERY_REGIONS.
 """
 import argparse
 import gc
@@ -32,14 +27,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from discovery_filters import enabled_regions_from_env, normalize_regions  # noqa: E402
 from known_job_urls import load_skip_urls_file, url_is_known  # noqa: E402
 
-# JobSpy query params per enabled region. Keep in sync with
-# discovery_filters region ids. LinkedIn India is brittle/low-priority
-# (guest scrape often blocked); the Easy-Apply skip is JobSpy's default
-# behavior and is preserved (we never automate LinkedIn apply).
+# JobSpy query params per enabled lane. Legacy "us" normalizes to worldwide.
 REGION_QUERY = {
-    "us": {"location": "United States", "country_indeed": "USA"},
+    "worldwide": {"location": "Remote", "country_indeed": "USA"},
+    "us": {"location": "Remote", "country_indeed": "USA"},  # legacy alias
     "india": {"location": "India", "country_indeed": "india"},
 }
+
+# Rotate metros for India JobSpy passes (Indeed responds better to cities).
+INDIA_LOCATION_ROTATION = (
+    "Bengaluru",
+    "Hyderabad",
+    "Mumbai",
+    "Pune",
+    "Chennai",
+    "Delhi",
+    "Noida",
+    "Gurgaon",
+    "Remote",
+    "India",
+)
 
 
 def log(msg: str, *, err: bool = False) -> None:
@@ -51,6 +58,11 @@ SEARCH_TERMS = [
     "ai engineer",
     "data scientist",
     "data engineer",
+    "data analyst",
+    "software engineer",
+    "software developer",
+    "backend engineer",
+    "full stack engineer",
     "mlops engineer",
     "applied scientist",
     "computer vision engineer",
@@ -61,6 +73,7 @@ SEARCH_TERMS = [
     "analytics engineer",
     "ai research scientist",
     "ml platform engineer",
+    "python developer",
 ]
 
 # Scraped one site at a time (not a single combined site_name=[...] call) -
@@ -94,14 +107,16 @@ def scrape_one(
     term: str,
     results_wanted: int,
     *,
-    region: str = "us",
+    region: str = "worldwide",
     hours_old: int | None = None,
+    location_override: str | None = None,
 ):
-    q = REGION_QUERY.get(region, REGION_QUERY["us"])
+    q = REGION_QUERY.get(region, REGION_QUERY["worldwide"])
+    location = location_override or q["location"]
     kwargs = dict(
         site_name=[site],
         search_term=term,
-        location=q["location"],
+        location=location,
         results_wanted=results_wanted,
         job_type="fulltime",
         country_indeed=q["country_indeed"],
@@ -122,8 +137,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--regions", default=None,
-        help="Comma-separated regions to query (us,india). Default: "
-             "JOBHUNTER_DISCOVERY_REGIONS env / US-only.",
+        help="Comma-separated lanes to query (india,worldwide). Default: "
+             "JOBHUNTER_DISCOVERY_REGIONS env.",
     )
     parser.add_argument(
         "--hours-old", type=int, default=None,
@@ -143,7 +158,7 @@ def main() -> None:
 
     regions = normalize_regions(args.regions) if args.regions else enabled_regions_from_env()
     if not regions:
-        regions = ("us",)
+        regions = ("india", "worldwide")
 
     out_path = Path(args.out) if args.out else Path(__file__).parent.parent / "listings" / f"{date.today().isoformat()}.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,12 +188,22 @@ def main() -> None:
             # US then India (when enabled): separate JobSpy passes, one shared
             # in-memory list, one file write per term → no US/IN clobber.
             for region in regions:
+                loc_override = None
+                if region == "india":
+                    # Rotate metros so Indeed India isn't stuck on a dead query shape.
+                    loc_override = INDIA_LOCATION_ROTATION[
+                        SEARCH_TERMS.index(term) % len(INDIA_LOCATION_ROTATION)
+                    ]
                 for site in sites:
-                    log(f"scraping {site}: {term} [{region}]...")
+                    label = f"{site}: {term} [{region}"
+                    if loc_override:
+                        label += f"/{loc_override}"
+                    log(f"scraping {label}]...")
                 futures = {
                     site: pool.submit(
                         scrape_one, site, term, args.results_per_term,
                         region=region, hours_old=args.hours_old,
+                        location_override=loc_override,
                     )
                     for site in sites
                 }

@@ -26,7 +26,10 @@ from apply_urls import is_aggregator_url, is_known_ats_url  # noqa: E402
 from jd_fingerprint import jd_fingerprint, normalize_jd_text  # noqa: E402
 
 # Public-search unit tests stay offline — never launch LinkedIn CfT profile.
-rau.try_linkedin_session_resolve = lambda *a, **k: None  # type: ignore[assignment]
+def _disabled_linkedin_session(job: dict, *, headless: bool = False) -> dict | None:
+    return None
+
+rau.try_linkedin_session_resolve = _disabled_linkedin_session  # type: ignore[assignment]
 
 
 LINKEDIN_URL = "https://www.linkedin.com/jobs/view/4452248501"

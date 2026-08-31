@@ -27,21 +27,36 @@ from india_scrape_common import (
     ROOT,
     dedup_by_url,
     fetch_json,
+    is_within_days,
     log,
     polite_sleep,
     write_listings,
 )
 from known_job_urls import filter_out_known_listings, load_skip_urls_file  # noqa: E402
 
-# Reuse the ATS scraper's keyword list — dedup_listings applies the same filter
+# Reuse shared keyword list — dedup_listings applies the same filter
 # downstream, but filtering here keeps volume sane on a broad remote feed.
-from scrape_ats import RELEVANT_KEYWORDS, clean_html_content  # noqa: E402
+from extract_job_posting import RELEVANT_KEYWORDS, clean_html_content  # noqa: E402
 
 SITE = "remoteok"
+# Recency window. These boards keep ads live for weeks, so the old
+# hardcoded 10 days silently discarded most of what they returned
+# (RemoteOK: 38 relevant roles found, 1 inside 10 days).
+DEFAULT_MAX_DAYS = 21
+_MAX_DAYS = DEFAULT_MAX_DAYS
+
 API_URL = "https://remoteok.com/api"
 REQUEST_DELAY_S = 0.35
 # Documented: ?tag=dev or ?tags=dev,python. One tag per request, then union.
-TAGS = ("ai", "python", "data", "devops", "ml", "datascience")
+# RemoteOK's bare /api is its *general* feed (bell captain, sandwich artist);
+# the tech roles only surface under tags, and its tag filter is loose enough
+# that RELEVANT_KEYWORDS still has to do the real work. More tags = more
+# unique relevant rows after the union: 10 tags -> 24, these 18 -> 38.
+TAGS = (
+    "dev", "engineer", "software", "backend", "frontend", "fullstack",
+    "python", "java", "javascript", "react", "golang", "rust",
+    "ai", "data", "ml", "devops", "cloud", "aws", "sql", "analytics",
+)
 
 
 def is_relevant(title: str) -> bool:
@@ -76,6 +91,9 @@ def normalize_jobs(rows: list) -> list[dict]:
         url = job.get("url") or job.get("apply_url")
         if not url:
             continue
+        posted = _parse_date(job.get("date"))
+        if posted and not is_within_days(posted, max_days=_MAX_DAYS):
+            continue
         company = job.get("company") or ""
         description = clean_html_content(job.get("description") or "")
         out.append({
@@ -85,10 +103,10 @@ def normalize_jobs(rows: list) -> list[dict]:
             "job_url": url,
             "job_url_direct": url,
             "description": description,
-            "date_posted": _parse_date(job.get("date")),
+            "date_posted": posted,
             "job_type": "fulltime",
             "location": job.get("location"),
-            "search_term": f"us:{SITE}",
+            "search_term": f"ww:{SITE}",
         })
     return out
 
@@ -114,7 +132,13 @@ def main() -> None:
         "--skip-urls", default=None,
         help="JSON array of URL keys to drop (jobs.json / blocked / prior listing)",
     )
+    parser.add_argument(
+        "--max-days", type=int, default=DEFAULT_MAX_DAYS,
+        help=f"Recency window in days (default {DEFAULT_MAX_DAYS})")
     args = parser.parse_args()
+
+    global _MAX_DAYS
+    _MAX_DAYS = max(1, int(args.max_days))
 
     out_path = (
         Path(args.out) if args.out

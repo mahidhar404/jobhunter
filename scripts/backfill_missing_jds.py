@@ -63,7 +63,7 @@ from discovery_filters import (  # noqa: E402
     stamp_clearance_us_person_tags,
 )
 from blocked_urls import block_deleted_job  # noqa: E402
-from scrape_ats import (  # noqa: E402
+from extract_job_posting import (  # noqa: E402
     TransientFetchError,
     fetch_json,
     fetch_html,
@@ -75,8 +75,6 @@ from scrape_ats import (  # noqa: E402
     workable_compose_description,
     pinpoint_compose_description,
     clean_html_content,
-)
-from extract_job_posting import (  # noqa: E402
     extract as extract_posting,
     posting_url,
     jd_fetch_urls,

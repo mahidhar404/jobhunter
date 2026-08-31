@@ -89,12 +89,12 @@ class TestDedupMergeDeletesLoser(unittest.TestCase):
             },
             {
                 "id": "l",
-                "company": "Acme",
+                "company": "Acme Inc",
                 "title": "Software Engineer",
                 "status": "discovered",
                 "apply_url": "https://www.linkedin.com/jobs/view/1",
                 "job_url": "https://www.linkedin.com/jobs/view/1",
-                "job_description": "y" * 50,
+                "job_description": "x" * 400,
                 "created_at": "2026-01-02T00:00:00+00:00",
             },
         ]
@@ -450,10 +450,15 @@ class TestCancelResetAndSkipDelete(unittest.TestCase):
                 }
             ]
         }
+
+        @contextmanager
+        def _fake_locked(*, allow_purge=False):
+            yield jobs
+
         handler = srv.Handler.__new__(srv.Handler)
-        with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-            srv, "write_jobs"
-        ), mock.patch.object(srv, "block_deleted_job", return_value=[]), mock.patch.object(
+        with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked), mock.patch.object(
+            srv, "block_deleted_job", return_value=[]
+        ), mock.patch.object(
             handler, "_send_json"
         ) as send:
             handler._handle_skip("s1", {})
@@ -475,10 +480,15 @@ class TestCancelResetAndSkipDelete(unittest.TestCase):
                 }
             ]
         }
+
+        @contextmanager
+        def _fake_locked(*, allow_purge=False):
+            yield jobs
+
         handler = srv.Handler.__new__(srv.Handler)
-        with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-            srv, "write_jobs"
-        ), mock.patch.object(srv, "block_deleted_job", return_value=[]), mock.patch.object(
+        with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked), mock.patch.object(
+            srv, "block_deleted_job", return_value=[]
+        ), mock.patch.object(
             handler, "_send_json"
         ) as send:
             handler._handle_skip("c2c", {"reason": "contract"})
@@ -517,10 +527,15 @@ class TestCancelResetAndSkipDelete(unittest.TestCase):
                 },
             ]
         }
+
+        @contextmanager
+        def _fake_locked(*, allow_purge=False):
+            yield jobs
+
         handler = srv.Handler.__new__(srv.Handler)
-        with mock.patch.object(srv, "read_jobs", return_value=jobs), mock.patch.object(
-            srv, "write_jobs"
-        ), mock.patch.object(handler, "_send_json") as send:
+        with mock.patch.object(srv, "locked_jobs_for_write", _fake_locked), mock.patch.object(
+            handler, "_send_json"
+        ) as send:
             handler._handle_skip("dup-li", {"reason": "duplicate"})
         by_id = {j["id"]: j for j in jobs["jobs"]}
         self.assertEqual(by_id["dup-li"]["status"], "deleted")

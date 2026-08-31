@@ -105,18 +105,32 @@ def cached_jobs_list_response(
     build_response: Callable[[dict, bool], dict],
     cache: dict | None = None,
     lock: threading.Lock | None = None,
+    read_jobs_nonblocking: Callable[[], dict | None] | None = None,
 ) -> tuple[bytes, str]:
     """Build or reuse the slim /api/jobs body. Never takes a global jobs lock.
 
     Cache key is the mtime observed *before* ``read_jobs``. If the file
     changes during the read, we retry once so we never store a stale body
     under a newer mtime (TOCTOU).
+
+    ``read_jobs_nonblocking`` returns None when a writer holds the jobs lock.
+    A discovery merge holds that lock for minutes (it fetches a JD per job)
+    *and* bumps jobs.json's mtime on every write, so the mtime cache key
+    misses on every poll — which used to make the list endpoint block for the
+    entire merge. Serving the previous body is strictly better than hanging:
+    the next poll after the writer finishes refreshes it.
     """
     target = cache if cache is not None else _jobs_list_cache
     cache_lock = lock or _jobs_list_cache_lock
     fill_hold = fill_hold_active()
     last_data: dict | None = None
     last_mtime = -1
+
+    def _stale_body() -> tuple[bytes, str] | None:
+        with cache_lock:
+            body = target.get("body_bytes")
+            etag = target.get("etag")
+        return (body, str(etag)) if body is not None and etag else None
 
     for _attempt in range(2):
         try:
@@ -132,7 +146,17 @@ def cached_jobs_list_response(
             ):
                 return cached_body, str(target["etag"])
 
-        data = read_jobs()
+        if read_jobs_nonblocking is not None:
+            data = read_jobs_nonblocking()
+            if data is None:
+                # A writer holds the jobs lock. Serve what we already have
+                # rather than blocking the UI for the length of the write.
+                stale = _stale_body()
+                if stale is not None:
+                    return stale
+                data = read_jobs()  # cold cache — nothing to serve but a wait
+        else:
+            data = read_jobs()
         last_data = data
         last_mtime = mtime
         try:
@@ -161,9 +185,19 @@ def cached_jobs_list_response(
             )
         return body, etag
 
-    # Unstable mtime after retry: return a correct body for this request
-    # without poisoning the cache under a mismatched key.
-    data = last_data if last_data is not None else read_jobs()
+    # Unstable mtime after retry (a writer is actively landing rows): return a
+    # correct body for this request without poisoning the cache under a
+    # mismatched key. Prefer the snapshot we already read over another
+    # potentially blocking one.
+    data = last_data
+    if data is None and read_jobs_nonblocking is not None:
+        data = read_jobs_nonblocking()
+        if data is None:
+            stale = _stale_body()
+            if stale is not None:
+                return stale
+    if data is None:
+        data = read_jobs()
     revision = int(data.get("revision") or 0)
     body = json.dumps(
         build_response(data, fill_hold), separators=(",", ":")

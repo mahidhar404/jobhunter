@@ -28,15 +28,22 @@ from india_scrape_common import (
     ROOT,
     dedup_by_url,
     fetch_json,
+    is_within_days,
     log,
     polite_sleep,
     write_listings,
 )
 from known_job_urls import filter_out_known_listings, load_skip_urls_file  # noqa: E402
 
-from scrape_ats import RELEVANT_KEYWORDS, clean_html_content  # noqa: E402
+from extract_job_posting import RELEVANT_KEYWORDS, clean_html_content  # noqa: E402
 
 SITE = "jobicy"
+# Recency window. These boards keep ads live for weeks, so the old
+# hardcoded 10 days silently discarded most of what they returned
+# (RemoteOK: 38 relevant roles found, 1 inside 10 days).
+DEFAULT_MAX_DAYS = 21
+_MAX_DAYS = DEFAULT_MAX_DAYS
+
 API_URL = "https://jobicy.com/api/v2/remote-jobs"
 # API max per request; there is no page= / offset=.
 COUNT = 100
@@ -56,16 +63,32 @@ def is_relevant(title: str) -> bool:
     return any(kw in t for kw in RELEVANT_KEYWORDS)
 
 
-def api_query_url(*, industry: str | None = None) -> str:
+# The API has no paging, so breadth comes from querying independent axes and
+# unioning the results. industry / geo / tag each return up to COUNT rows.
+GEOS = ("usa", "canada", "europe", "uk", "germany", "india", "anywhere")
+TAGS = ("python", "java", "javascript", "react", "aws", "sql", "machine-learning")
+
+
+def api_query_url(*, industry: str | None = None, geo: str | None = None,
+                  tag: str | None = None) -> str:
     params = {"count": str(COUNT)}
     if industry:
         params["industry"] = industry
+    if geo:
+        params["geo"] = geo
+    if tag:
+        params["tag"] = tag
     return f"{API_URL}?{urlencode(params)}"
 
 
 def query_urls() -> list[str]:
-    """Latest 100 (any industry) plus targeted industry feeds, then union."""
-    return [api_query_url()] + [api_query_url(industry=ind) for ind in INDUSTRIES]
+    """Latest 100 plus industry / geo / tag feeds, unioned by URL."""
+    return [
+        api_query_url(),
+        *[api_query_url(industry=i) for i in INDUSTRIES],
+        *[api_query_url(geo=g) for g in GEOS],
+        *[api_query_url(tag=t) for t in TAGS],
+    ]
 
 
 def _parse_date(raw: str | None) -> str | None:
@@ -86,6 +109,9 @@ def normalize_jobs(rows: list) -> list[dict]:
         url = job.get("url")
         if not url:
             continue
+        posted = _parse_date(job.get("pubDate"))
+        if posted and not is_within_days(posted, max_days=_MAX_DAYS):
+            continue
         company = job.get("companyName") or ""
         description = clean_html_content(
             job.get("jobDescription") or job.get("jobExcerpt") or ""
@@ -102,10 +128,10 @@ def normalize_jobs(rows: list) -> list[dict]:
             "job_url": url,
             "job_url_direct": url,
             "description": description,
-            "date_posted": _parse_date(job.get("pubDate")),
+            "date_posted": posted,
             "job_type": job_type,
             "location": job.get("jobGeo"),
-            "search_term": f"us:{SITE}",
+            "search_term": f"ww:{SITE}",
         })
     return out
 
@@ -141,7 +167,13 @@ def main() -> None:
         "--skip-urls", default=None,
         help="JSON array of URL keys to drop (jobs.json / blocked / prior listing)",
     )
+    parser.add_argument(
+        "--max-days", type=int, default=DEFAULT_MAX_DAYS,
+        help=f"Recency window in days (default {DEFAULT_MAX_DAYS})")
     args = parser.parse_args()
+
+    global _MAX_DAYS
+    _MAX_DAYS = max(1, int(args.max_days))
 
     out_path = (
         Path(args.out) if args.out

@@ -1,47 +1,43 @@
 <!doctype html>
-<html lang="en" style="color-scheme:dark;background:#000000">
+<html lang="en" style="color-scheme:dark;background:#0a0e12">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#0a0e12">
 <title>OmniDex</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700&text=OmniDex&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Orbitron:wght@700&text=OmniDex&display=swap" rel="stylesheet">
 <style>
   :root {
     color-scheme: dark;
     supported-color-schemes: dark;
-    /* Pitch black — no charcoal elevation cascade */
-    --bg: #000000;
-    --bg-elev: #000000;
-    --panel: #000000;
-    --panel-2: #000000;
-    --hover: #ffffff08;
-    --border: #222222;
-    --border-hi: #333333;
-    --text: #d2d6dc;
-    --text-dim: #7a828c;
-    --text-mute: #525860;
-    /* Soft radius scale */
+    /* India + Worldwide ops board — deep ink, teal lane, ember pay */
+    --bg: #0a0e12;
+    --bg-elev: #0f1419;
+    --panel: #0c1117;
+    --panel-2: #121820;
+    --hover: #2dd4bf0c;
+    --border: #1e2a36;
+    --border-hi: #2a3a4a;
+    --text: #e8eef4;
+    --text-dim: #8b9aab;
+    --text-mute: #5c6b7a;
     --radius-sm: 4px;
     --radius-md: 8px;
     --radius-lg: 12px;
-    /* Accent palette: blue / orange / red / green */
-    --blue: #3b9eff;
-    --blue-dim: #3b9eff1a;
-    --blue-mid: #3b9eff40;
-    --blue-edge: #1a3550;
-    --orange: #e8913a;
-    --orange-dim: #e8913a28;
-    --orange-group: #e8913a42;
+    --blue: #2dd4bf;
+    --blue-dim: #2dd4bf1a;
+    --blue-mid: #2dd4bf40;
+    --blue-edge: #0d3d38;
+    --orange: #f0a060;
+    --orange-dim: #f0a06028;
+    --orange-group: #f0a06042;
     --orange-edge: #5a3818;
-    /* Salary tag — deeper red-orange, distinct from YOE / Stuck orange */
-    --blood-orange: #e04a1a;
-    --blood-orange-dim: #e04a1a28;
+    --blood-orange: #e86a2a;
+    --blood-orange-dim: #e86a2a28;
     --blood-orange-edge: #5a2210;
-    /* Expanded unselected children — grey wash vs pitch-black base */
     --nested-dim: #ffffff0c;
     --green: #3dbf8a;
     --green-dim: #3dbf8a1a;
@@ -49,15 +45,14 @@
     --red: #e05555;
     --red-dim: #e0555528;
     --red-edge: #5a2020;
-    --trash-bg: #000000;
-    --trash-header: #0a0000;
-    /* Legacy aliases (existing rules) */
+    --trash-bg: #0a0e12;
+    --trash-header: #120808;
     --cyan: var(--blue);
     --cyan-dim: var(--blue-dim);
     --cyan-mid: var(--blue-mid);
     --amber: var(--orange);
     --amber-dim: var(--orange-dim);
-    --mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    --mono: "IBM Plex Mono", "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
     --sans: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
   }
   * { box-sizing: border-box; }
@@ -2986,10 +2981,10 @@
                 <option value="">All</option>
                 <option value="has">Has salary</option>
                 <option value="unknown">Unknown</option>
-                <option value="ge100">≥$100K</option>
-                <option value="ge150">≥$150K</option>
-                <option value="ge200">≥$200K</option>
-                <option value="le120">≤$120K</option>
+                <option value="ge100">≥$100K / ≥₹15 LPA</option>
+                <option value="ge150">≥$150K / ≥₹25 LPA</option>
+                <option value="ge200">≥$200K / ≥₹40 LPA</option>
+                <option value="le120">≤$120K / ≤₹20 LPA</option>
               </select>
             </div>
           </div>
@@ -3006,11 +3001,11 @@
               </select>
             </div>
             <div class="list-filter-group">
-              <label for="region-filter">Region</label>
-              <select id="region-filter" aria-label="Filter by region" tabindex="11">
+              <label for="region-filter">Lane</label>
+              <select id="region-filter" aria-label="Filter by lane" tabindex="11">
                 <option value="">All</option>
-                <option value="us">US</option>
                 <option value="india">India</option>
+                <option value="worldwide">Worldwide</option>
               </select>
             </div>
           </div>

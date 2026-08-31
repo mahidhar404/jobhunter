@@ -394,20 +394,14 @@ show closed-page HTML prune with concrete reasons (`dead/404`, `closed/lever`,
 first; soft failures / LinkedIn authwalls never prune). Manual:
 `python3 scripts/link_liveness.py --write --limit 40 --concurrency 6`.
 
-### Discovery — ATS board scrape (`scrape_ats.py`)
+### Discovery — Remote and India Scrapers
 
 Dashboard **Discover** continues from `logs/discovery_checkpoint.json` by default
 (completed sources skipped; **Fresh run** in the popover clears the checkpoint).
 Last outcome (`success`/`failed`/`interrupted`/`partial`) lives in
 `dashboard/discovery_last_run.json` and shows in the Discover popover.
 Scrapers get `logs/discovery_skip_urls.json` so known jobs.json/blocked URLs
-(and posting_keys) are not re-fetched; Built In / ATS detail platforms skip
-per-URL detail GETs, scout/feeds drop known rows after the bulk list.
-`run_scout_scrape_then_dedup` runs `scripts/scrape_ats.py`
-after scout. **Per-platform timeout is 1800s** (300s was killing Greenhouse/
-Ashby mid-fetch). Known slugs are fetched first; `--max-guesses` (default 80)
-runs afterward with `--guess-budget-s` (default 180) so guessing cannot steal
-the whole budget. **Still excluded:** Workday/iCIMS (never scrape / never CAPTCHA).
+(and posting_keys) are not re-fetched; scout/feeds drop known rows after the bulk list.
 
 **Adaptive recency** (`scripts/adaptive_recency.py`): last successful Discover
 N days ago → lookback **N+1**, floor **7**, cap **10**. Discover popover lets
@@ -415,58 +409,38 @@ you pin **1–10 days** per date-filter source (`source_days` in
 `logs/discovery_settings.json`); a pin beats adaptive. Unpinned sources use
 the adaptive window. Persisted as `last_successful_discover_at` in
 `logs/discovery_settings.json` when a run ends with outcome `success`.
-Scout `--hours-old` = days×24. Built In `--days-since-updated` is any int 1–10.
-Adzuna `--max-days` when keys exist.
+Scout `--hours-old` = days×24. Adzuna `--max-days` when keys exist.
 
-US feed scrapers (PRE_ATS phase, like scout): `scrape_remoteok.py` (untagged
+Worldwide Remote feed scrapers: `scrape_remoteok.py` (untagged
 feed + `?tag=` union for ai/python/data/devops/ml), `scrape_remotive.py`
 (category feeds: software-development/data/AI/devops/…, no limit),
 `scrape_jobicy.py` (`count=100` API max, industry union; no pagination),
 `scrape_rss_feeds.py` (WWR programming+devops+backend, split Authentic Jobs
-keyword feeds, Jobspresso). **None of those APIs expose a days/max_days
+keyword feeds, Jobspresso), and multi-board scrapers in `scrape_ww_boards.py`.
+**None of those APIs expose a days/max_days
 param** — they dump the current public feed; we do not drop older items
 client-side. All still title-filter via `RELEVANT_KEYWORDS`.
-Adzuna US (`scrape_adzuna.py --country us`): 50 results/page × 3 pages/term;
-**0 listings without API keys** (never invent keys).
 
-| Platform | Endpoint pattern |
-|----------|------------------|
-| Greenhouse / Lever / Ashby / Recruitee / Personio | existing |
-| SmartRecruiters | `api.smartrecruiters.com/v1/companies/{slug}/postings` |
-| Workable | `apply.workable.com/api/v1/widget/accounts/{slug}` (+ v2 detail for JD) |
-| Rippling | `ats.rippling.com/api/v1/board/{slug}/jobs` |
-| Breezy HR | `{slug}.breezy.hr/json` |
-| BambooHR | `{slug}.bamboohr.com/careers/list` (+ `/detail` for JD) |
-| Teamtailor | `{hostname}.teamtailor.com/jobs.json` |
-| JazzHR | `{slug}.applytojob.com/apply` (SSR board + ld+json detail) |
-| Pinpoint | `{slug}.pinpointhq.com/postings.json` |
+### Discovery — India region
 
-Registry: `ats_companies.json` (self-expands from listing URLs + slug guesses).
-**Still excluded:** Workday/iCIMS (Akamai/CAPTCHA), Jobvite/Gem/Dover/Comeet
-(no reliable free board JSON), Zip/Glassdoor (aggregators), Taleo/SuccessFactors/Avature.
-Self-test: `python3 scripts/test_scrape_ats_platforms.py` (fixtures + optional `--live`).
-
-### Discovery — India region (opt-in)
-
-US is the default; India is opt-in via the Discover popover
-(`discover_us`/`discover_india` in `logs/discovery_settings.json`, never both
-false; server exports `JOBHUNTER_DISCOVERY_REGIONS` to scrapers). Region gate
+India is supported via the Discover popover
+(`discover_worldwide`/`discover_india` in `logs/discovery_settings.json`;
+server exports `JOBHUNTER_DISCOVERY_REGIONS` to scrapers). Region gate
 lives in `scripts/discovery_filters.py` (mirrored in `app.js` — keep in sync).
 When India is on: `scout.py` adds an India pass (`location=India`,
-`country_indeed=india`, same `--out` file), the ATS boards keep India roles
-(India-heavy slugs seeded in `ats_companies.json`), and the India-only sources
+`country_indeed=india`, same `--out` file), and the India-only sources
 run — `scripts/scrape_internshala.py`, `scripts/scrape_hirist.py`,
-`scripts/scrape_cutshort.py`, `scripts/scrape_adzuna.py` (shared helpers in
+`scripts/scrape_cutshort.py`, `scripts/scrape_shine.py`, `scripts/scrape_freshersworld.py`,
+`scripts/scrape_naukri.py`, `scripts/scrape_adzuna.py` (shared helpers in
 `scripts/india_scrape_common.py`). Adzuna needs `ADZUNA_APP_ID`/`ADZUNA_APP_KEY`
 (env wins) or the same values as `adzuna_app_id`/`adzuna_app_key` in git-ignored
 repo-root `web_keys.json`; with no keys it skips loud (UI shows skipped / missing
-keys, no crash — do not invent credentials). Built In stays US-only. Ops
-**Region** filter = `All`/`US`/`India`; jobs carry a `region` stamp; INR/LPA
-parsed display-only (never prunes). Full notes + Wave B backlog:
-`ats_notes/INDIA_DISCOVERY.md`.
+keys, no crash — do not invent credentials). Ops
+**Region** filter = `All`/`Worldwide`/`India`; jobs carry a `region` stamp; INR/LPA
+parsed display-only (never prunes).
 
-### Discovery — Built In + JD extract
-`scripts/scrape_builtin.py` uses adaptive HTTP pacing (delay grows on 429, cools on success) and a **headless Playwright** HTML fallback only after 429 retries are exhausted (`scripts/pw_fetch_html.py`). `scripts/extract_job_posting.py` (manual-add / missing-JD backfill) adds the same Playwright tier when HTTP HTML is missing or too thin. Never used for Workday/iCIMS/LinkedIn; never solves CAPTCHA.
+### Job Description Extraction
+`scripts/extract_job_posting.py` (manual-add / missing-JD backfill) uses HTTP fetching with JSON-LD / HTML extraction, falling back to **headless Playwright** (`scripts/pw_fetch_html.py`) when HTTP HTML is missing or too thin. Never used for Workday/iCIMS/LinkedIn; never solves CAPTCHA.
 
 ## Manager bridge (Claude Manager ↔ Cursor Executor)
 

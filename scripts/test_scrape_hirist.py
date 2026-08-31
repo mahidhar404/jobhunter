@@ -14,6 +14,8 @@ import scrape_hirist as sh  # noqa: E402
 
 class NormalizeTests(unittest.TestCase):
     def test_normalize_jobs_envelope(self):
+        from datetime import date
+        today_iso = date.today().isoformat()
         data = {
             "data": [
                 {
@@ -23,7 +25,7 @@ class NormalizeTests(unittest.TestCase):
                     "description": "Build APIs.",
                     "salary": "12-18 LPA",
                     "url": "/j/backend-developer-999",
-                    "postedDate": "2026-08-02T00:00:00Z",
+                    "postedDate": f"{today_iso}T00:00:00Z",
                 },
                 {
                     "jobTitle": "Data Engineer",
@@ -43,7 +45,7 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(a["site"], "hirist")
         self.assertEqual(a["job_url"], "https://www.hirist.tech/j/backend-developer-999")
         self.assertIn("12-18 LPA", a["description"])  # salary appended for LPA parse
-        self.assertEqual(a["date_posted"], "2026-08-02")
+        self.assertEqual(a["date_posted"], today_iso)
         # Second: company dict + slug/id url synthesis
         b = jobs[1]
         self.assertEqual(b["company"], "DataWorks")

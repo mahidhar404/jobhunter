@@ -47,29 +47,329 @@ Usage:
 import argparse
 import json
 import re
+import html
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+from bs4 import BeautifulSoup
+
 sys.path.insert(0, str(Path(__file__).parent))
-from scrape_ats import (  # noqa: E402
-    fetch_json,
-    fetch_xml,
-    TransientFetchError,
-    clean_html_content,
-    lever_compose_description,
-    smartrecruiters_description_from_detail,
-    rippling_description_from_detail,
-    description_from_jobposting_ldjson,
-    description_from_job_html,
-)
 from apply_urls import (  # noqa: E402
     extract_ats_urls_from_text,
     is_aggregator_url,
     prefer_apply_url,
 )
+
+RELEVANT_KEYWORDS = [
+    # Machine learning / AI - engineering & research
+    "machine learning", "ml engineer", "mle", "ml ops", "mlops",
+    "ml platform", "ml infrastructure", "ml research", "ai engineer",
+    "ai infrastructure", "artificial intelligence", "ai researcher",
+    "ai/ml", "applied scientist", "research scientist", "research engineer",
+    "deep learning", "reinforcement learning", "computer vision",
+    "nlp", "natural language processing", "llm", "generative ai", "genai",
+    "prompt engineer", "conversational ai", "foundation model",
+    "recommender system", "recommendation system", "ranking engineer",
+    "search relevance", "speech recognition", "speech scientist",
+    "ai safety", "responsible ai", "feature engineering",
+    "perception engineer", "model training", "model deployment",
+    "predictive analytics", "predictive model", "time series",
+    "anomaly detection", "data annotation", "data labeling",
+
+    # Data science / analysis
+    "data scientist", "data science", "data analyst", "data analysis",
+    "data analytics", "analytics engineer", "statistician",
+    "business intelligence",
+
+    # Data engineering / infrastructure
+    "data engineer", "data engineering", "data platform",
+    "data infrastructure", "data pipeline", "data architect",
+    "data warehouse", "data lake", "data modeling", "database engineer",
+    "etl", "elt", "dataops", "big data", "data cleaning", "data quality",
+    "data wrangling",
+]
+
+
+class TransientFetchError(Exception):
+    """Rate-limited, server error, or timeout."""
+
+
+def clean_html_content(raw: str) -> str:
+    """Strip HTML markup and entities to plain text."""
+    if not raw:
+        return raw
+    return BeautifulSoup(html.unescape(raw), "html.parser").get_text(separator="\n", strip=True)
+
+
+def fetch_html(url: str) -> str | None:
+    """Plain HTML GET. Returns None on hard miss / transport failure."""
+    req = Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (compatible; job-hunter-agent/1.0)",
+        "Accept": "text/html,application/xhtml+xml",
+    })
+    try:
+        with urlopen(req, timeout=20) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        if exc.code in (404, 403):
+            return None
+        return None
+    except URLError:
+        return None
+
+
+def fetch_json(
+    url: str,
+    method: str = "GET",
+    body: bytes | None = None,
+    *,
+    not_found_codes: tuple[int, ...] = (404,),
+    require_json_content_type: bool = False,
+    headers: dict | None = None,
+) -> dict | list | None:
+    hdrs = {
+        "User-Agent": "Mozilla/5.0 (compatible; job-hunter-agent/1.0)",
+        "Accept": "application/json",
+    }
+    if headers:
+        hdrs.update(headers)
+    req = Request(url, data=body, method=method, headers=hdrs)
+    try:
+        with urlopen(req, timeout=20) as resp:
+            raw = resp.read()
+            if require_json_content_type:
+                ct = (resp.headers.get("Content-Type") or "").lower()
+                if "json" not in ct:
+                    return None
+            return json.loads(raw)
+    except HTTPError as exc:
+        if exc.code in not_found_codes:
+            return None
+        raise TransientFetchError(str(exc)) from exc
+    except json.JSONDecodeError:
+        if require_json_content_type:
+            return None
+        raise TransientFetchError(f"non-JSON body from {url}")
+    except URLError as exc:
+        raise TransientFetchError(str(exc)) from exc
+
+
+def fetch_xml(url: str) -> ET.Element | None:
+    req = Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (compatible; job-hunter-agent/1.0)",
+        "Accept": "application/xml",
+    })
+    try:
+        with urlopen(req, timeout=20) as resp:
+            return ET.fromstring(resp.read())
+    except HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise TransientFetchError(str(exc)) from exc
+    except (URLError, ET.ParseError) as exc:
+        raise TransientFetchError(str(exc)) from exc
+
+
+def _iter_jobposting_nodes(data):
+    if isinstance(data, list):
+        for item in data:
+            yield from _iter_jobposting_nodes(item)
+        return
+    if not isinstance(data, dict):
+        return
+    types = data.get("@type")
+    type_names = types if isinstance(types, list) else [types]
+    if "JobPosting" in type_names:
+        yield data
+    graph = data.get("@graph")
+    if isinstance(graph, list):
+        for item in graph:
+            yield from _iter_jobposting_nodes(item)
+
+
+def description_from_jobposting_ldjson(html_text: str) -> str:
+    if not html_text:
+        return ""
+    for block in re.findall(
+        r'<script type="application/ld\+json"[^>]*>(.*?)</script>',
+        html_text,
+        re.S | re.I,
+    ):
+        try:
+            data = json.loads(block.strip())
+        except json.JSONDecodeError:
+            continue
+        for item in _iter_jobposting_nodes(data):
+            text = clean_html_content(item.get("description") or "")
+            if text.strip():
+                return text
+    return ""
+
+
+def description_from_job_html(html_text: str) -> str:
+    from_json = (description_from_jobposting_ldjson(html_text) or "").strip()
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    node = soup.find(id="job-description")
+    if node is None:
+        node = soup.select_one(".job-details .job-description")
+    from_html = clean_html_content(str(node)) if node is not None else ""
+    from_html = from_html.strip()
+    if len(from_html) > len(from_json) + 40:
+        return from_html
+    return from_json or from_html
+
+
+def _lever_plain_intro(job: dict) -> str:
+    plain = (job.get("descriptionPlain") or "").strip()
+    if plain:
+        return plain
+    html_desc = job.get("description") or ""
+    if isinstance(html_desc, str) and html_desc.strip():
+        return clean_html_content(html_desc)
+    parts: list[str] = []
+    for key in ("openingPlain", "descriptionBodyPlain"):
+        val = (job.get(key) or "").strip()
+        if not val:
+            raw = job.get(key.replace("Plain", "")) or ""
+            if isinstance(raw, str) and raw.strip():
+                val = clean_html_content(raw)
+        if val:
+            parts.append(val)
+    return "\n\n".join(parts).strip()
+
+
+def _lever_lists_and_additional(job: dict) -> list[str]:
+    parts: list[str] = []
+    for item in job.get("lists") or []:
+        if not isinstance(item, dict):
+            continue
+        title = (item.get("text") or "").strip()
+        content = clean_html_content(item.get("content") or "")
+        if title and content:
+            parts.append(f"{title}\n{content}")
+        elif content:
+            parts.append(content)
+        elif title:
+            parts.append(title)
+    additional = (job.get("additionalPlain") or "").strip()
+    if not additional:
+        additional = clean_html_content(job.get("additional") or "")
+    if additional:
+        parts.append(additional)
+    return parts
+
+
+def lever_compose_description(job: dict) -> str:
+    parts: list[str] = []
+    intro = _lever_plain_intro(job)
+    if intro:
+        parts.append(intro)
+    parts.extend(_lever_lists_and_additional(job))
+    return "\n\n".join(p for p in parts if p).strip()
+
+
+def smartrecruiters_description_from_detail(detail: dict) -> str:
+    sections = ((detail.get("jobAd") or {}).get("sections") or {})
+    if not isinstance(sections, dict):
+        return ""
+    preferred = (
+        "jobDescription",
+        "qualifications",
+        "companyDescription",
+        "additionalInformation",
+    )
+    parts: list[str] = []
+    seen: set[str] = set()
+    for key in preferred:
+        block = sections.get(key)
+        if not isinstance(block, dict):
+            continue
+        seen.add(key)
+        title = (block.get("title") or "").strip()
+        text = clean_html_content(block.get("text") or "")
+        if not text:
+            continue
+        parts.append(f"{title}\n{text}".strip() if title else text)
+    for key, block in sections.items():
+        if key in seen or not isinstance(block, dict):
+            continue
+        title = (block.get("title") or "").strip()
+        text = clean_html_content(block.get("text") or "")
+        if not text:
+            continue
+        parts.append(f"{title}\n{text}".strip() if title else text)
+    return "\n\n".join(parts).strip()
+
+
+def rippling_description_from_detail(detail: dict) -> str:
+    desc = detail.get("description")
+    if isinstance(desc, str):
+        return clean_html_content(desc)
+    if isinstance(desc, dict):
+        preferred = ("company", "role", "responsibilities", "requirements", "benefits")
+        parts: list[str] = []
+        seen: set[str] = set()
+        for key in preferred:
+            raw = desc.get(key)
+            if isinstance(raw, str) and raw.strip():
+                seen.add(key)
+                parts.append(clean_html_content(raw))
+        for key, raw in desc.items():
+            if key in seen or not isinstance(raw, str) or not raw.strip():
+                continue
+            parts.append(clean_html_content(raw))
+        return "\n\n".join(parts).strip()
+    return ""
+
+
+def workable_compose_description(detail: dict) -> str:
+    if not isinstance(detail, dict):
+        return ""
+    parts: list[str] = []
+    intro = clean_html_content(detail.get("description") or "")
+    if intro:
+        parts.append(intro)
+    for key, heading in (
+        ("requirements", "Requirements"),
+        ("benefits", "Benefits"),
+    ):
+        text = clean_html_content(detail.get(key) or "")
+        if not text:
+            continue
+        if heading.lower() not in text[:80].lower():
+            parts.append(f"{heading}\n{text}")
+        else:
+            parts.append(text)
+    return "\n\n".join(p for p in parts if p).strip()
+
+
+def pinpoint_compose_description(item: dict) -> str:
+    if not isinstance(item, dict):
+        return ""
+    parts: list[str] = []
+    intro = clean_html_content(item.get("description") or "")
+    if intro:
+        parts.append(intro)
+    for body_key, header_key, fallback in (
+        ("key_responsibilities", "key_responsibilities_header", "Key responsibilities"),
+        (
+            "skills_knowledge_expertise",
+            "skills_knowledge_expertise_header",
+            "Skills, knowledge and expertise",
+        ),
+        ("benefits", "benefits_header", "Benefits"),
+    ):
+        text = clean_html_content(item.get(body_key) or "")
+        if not text:
+            continue
+        heading = (item.get(header_key) or fallback).strip()
+        parts.append(f"{heading}\n{text}" if heading else text)
+    return "\n\n".join(p for p in parts if p).strip()
+
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 MIN_DESCRIPTION_CHARS = 200  # below this, treat a generic-fallback extraction as noise, not a real JD

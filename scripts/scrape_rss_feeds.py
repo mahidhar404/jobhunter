@@ -21,12 +21,19 @@ from datetime import date
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from india_scrape_common import ROOT, dedup_by_url, log, write_listings
+from india_scrape_common import ROOT, dedup_by_url, is_within_days, log, write_listings
 from known_job_urls import filter_out_known_listings, load_skip_urls_file  # noqa: E402
+from bs4 import BeautifulSoup
 
-from scrape_ats import RELEVANT_KEYWORDS, clean_html_content  # noqa: E402
+from extract_job_posting import RELEVANT_KEYWORDS, clean_html_content  # noqa: E402
 
 SITE = "rss_feeds"
+# Recency window. These boards keep ads live for weeks, so the old
+# hardcoded 10 days silently discarded most of what they returned
+# (RemoteOK: 38 relevant roles found, 1 inside 10 days).
+DEFAULT_MAX_DAYS = 21
+_MAX_DAYS = DEFAULT_MAX_DAYS
+
 AJ_NS = "https://authenticjobs.com"
 AJ_BASE = (
     "https://authenticjobs.com/?feed=job_feed&search_location=remote"
@@ -97,15 +104,30 @@ def _parse_date(raw: str | None) -> str | None:
 
 def fetch_rss(url: str) -> ET.Element | None:
     req = Request(url, headers={
-        "User-Agent": "Mozilla/5.0 (compatible; job-hunter-agent/1.0)",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "application/rss+xml, application/xml, text/xml, */*",
     })
     try:
         with urlopen(req, timeout=25) as resp:
-            return ET.fromstring(resp.read())
-    except Exception as exc:
-        log(f"warn: RSS fetch failed for {url}: {exc}", err=True)
-        return None
+            data = resp.read()
+            return ET.fromstring(data)
+    except Exception:
+        try:
+            with urlopen(req, timeout=25) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+                soup = BeautifulSoup(text, "html.parser")
+                # Synthesize a minimal ET.Element from BS4 parsed items
+                root = ET.Element("rss")
+                channel = ET.SubElement(root, "channel")
+                for item_node in soup.find_all("item"):
+                    item_el = ET.SubElement(channel, "item")
+                    for child in item_node.find_all(recursive=False):
+                        c_el = ET.SubElement(item_el, child.name)
+                        c_el.text = child.get_text()
+                return root
+        except Exception as exc:
+            log(f"warn: RSS fetch failed for {url}: {exc}", err=True)
+            return None
 
 
 def _item_text(item: ET.Element, tag: str) -> str:
@@ -146,6 +168,9 @@ def parse_weworkremotely(root: ET.Element) -> list[dict]:
         job_url = _item_text(item, "link")
         if not job_url:
             continue
+        posted = _parse_date(_item_text(item, "pubDate"))
+        if posted and not is_within_days(posted, max_days=_MAX_DAYS):
+            continue
         region = _item_text(item, "region")
         description = clean_html_content(_content_encoded(item))
         out.append({
@@ -155,10 +180,10 @@ def parse_weworkremotely(root: ET.Element) -> list[dict]:
             "job_url": job_url,
             "job_url_direct": job_url,
             "description": description,
-            "date_posted": _parse_date(_item_text(item, "pubDate")),
+            "date_posted": posted,
             "job_type": "fulltime",
-            "location": region or None,
-            "search_term": "us:rss:weworkremotely",
+            "location": region or "Remote",
+            "search_term": "ww:rss:weworkremotely",
         })
     return out
 
@@ -172,6 +197,9 @@ def parse_authenticjobs(root: ET.Element) -> list[dict]:
         job_url = _item_text(item, "link")
         if not job_url:
             continue
+        posted = _parse_date(_item_text(item, "pubDate"))
+        if posted and not is_within_days(posted, max_days=_MAX_DAYS):
+            continue
         company = _aj_field(item, "company")
         location = _aj_field(item, "location")
         description = clean_html_content(_content_encoded(item))
@@ -182,10 +210,10 @@ def parse_authenticjobs(root: ET.Element) -> list[dict]:
             "job_url": job_url,
             "job_url_direct": job_url,
             "description": description,
-            "date_posted": _parse_date(_item_text(item, "pubDate")),
+            "date_posted": posted,
             "job_type": (_aj_field(item, "job_type") or "fulltime").lower(),
-            "location": location or None,
-            "search_term": "us:rss:authenticjobs",
+            "location": location or "Remote",
+            "search_term": "ww:rss:authenticjobs",
         })
     return out
 
@@ -202,6 +230,9 @@ def parse_jobspresso(root: ET.Element) -> list[dict]:
         job_url = _item_text(item, "link")
         if not job_url:
             continue
+        posted = _parse_date(_item_text(item, "pubDate"))
+        if posted and not is_within_days(posted, max_days=_MAX_DAYS):
+            continue
         description = clean_html_content(_content_encoded(item))
         out.append({
             "title": title,
@@ -210,10 +241,10 @@ def parse_jobspresso(root: ET.Element) -> list[dict]:
             "job_url": job_url,
             "job_url_direct": job_url,
             "description": description,
-            "date_posted": _parse_date(_item_text(item, "pubDate")),
+            "date_posted": posted,
             "job_type": "fulltime",
-            "location": None,
-            "search_term": "us:rss:jobspresso",
+            "location": "Remote",
+            "search_term": "ww:rss:jobspresso",
         })
     return out
 
@@ -249,7 +280,13 @@ def main() -> None:
         "--skip-urls", default=None,
         help="JSON array of URL keys to drop (jobs.json / blocked / prior listing)",
     )
+    parser.add_argument(
+        "--max-days", type=int, default=DEFAULT_MAX_DAYS,
+        help=f"Recency window in days (default {DEFAULT_MAX_DAYS})")
     args = parser.parse_args()
+
+    global _MAX_DAYS
+    _MAX_DAYS = max(1, int(args.max_days))
 
     out_path = (
         Path(args.out) if args.out

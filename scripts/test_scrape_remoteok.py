@@ -40,9 +40,11 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(j["company"], "Acme")
         self.assertEqual(j["date_posted"], "2026-08-18")
         self.assertIn("Build models", j["description"])
-        self.assertTrue(j["search_term"].startswith("us:remoteok"))
+        self.assertTrue(j["search_term"].startswith("ww:remoteok"))
 
     def test_scrape_fixture(self):
+        from datetime import date
+        today_iso = date.today().isoformat()
         payload = [
             {"legal": "terms"},
             {
@@ -51,7 +53,7 @@ class NormalizeTests(unittest.TestCase):
                 "company": "Lab",
                 "url": "https://remoteOK.com/remote-jobs/data-9",
                 "description": "<p>Analyze</p>",
-                "date": "2026-08-01",
+                "date": today_iso,
             },
         ]
         with mock.patch.object(sr, "fetch_json", return_value=payload), \

@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jobhunter.dashboard</string>
+
+  <!-- Venv python directly: /bin/bash is TCC-denied in ~/Desktop under
+       launchd, the venv python is not. launchd_run.py re-points stdout to
+       the repo log (launchd's own StandardOutPath cannot be in ~/Desktop). -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>
+    <string>-u</string>
+    <string>__ROOT__/dashboard/launchd_run.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__ROOT__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>JOB_HUNTER_UI_LIFECYCLE</key>
+    <string>0</string>
+    <key>JOBHUNTER_DASHBOARD_HOST</key>
+    <string>127.0.0.1</string>
+    <key>JOBHUNTER_DASHBOARD_PORT</key>
+    <string>8787</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <!-- Respawn whenever the process dies, as long as the keepalive flag file
+       exists. UI Quit (force shutdown) deletes the flag so launchd lets the
+       server stay down. Flag lives OUTSIDE ~/Desktop: launchd itself cannot
+       stat TCC-protected folders (spawn fails with EX_CONFIG). -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>PathState</key>
+    <dict>
+      <key>__FLAG__</key>
+      <true/>
+    </dict>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+
+  <!-- Catches wrapper-level failures only; server output goes to
+       logs/dashboard_server.out via launchd_run.sh. Must NOT be in ~/Desktop. -->
+  <key>StandardOutPath</key>
+  <string>/tmp/jobhunter_launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/jobhunter_launchd.log</string>
+</dict>
+</plist>

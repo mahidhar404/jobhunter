@@ -28,6 +28,7 @@ from india_scrape_common import (
     ROOT,
     dedup_by_url,
     fetch_html,
+    is_within_days,
     log,
     polite_sleep,
     write_listings,
@@ -47,7 +48,7 @@ CATEGORY_SLUGS = [
     "backend-development",
     "artificial-intelligence",
 ]
-REQUEST_DELAY_S = 1.5
+REQUEST_DELAY_S = 1.0
 
 
 def _first_text(node, selectors: list[str]) -> str:
@@ -88,6 +89,9 @@ def parse_html(html: str, *, search_term: str = "") -> list[dict]:
         location = _first_text(card, [
             ".locations a", ".location_link", ".locations span", ".row-1-item .location_link",
         ])
+        salary = _first_text(card, [
+            ".desktop-text", ".stipend", ".salary", ".item_body span.salary",
+        ])
         # Detail link: an anchor to /job/detail/... or the card's data-href.
         href = ""
         link = card.select_one("a.job-title-href") or card.select_one("a[href*='/job/detail']")
@@ -98,13 +102,14 @@ def parse_html(html: str, *, search_term: str = "") -> list[dict]:
         url = _abs_url(href)
         if not (title and url):
             continue
+        desc = f"Salary: {salary}" if salary else ""
         out.append({
             "title": title,
             "company": company or "",
             "site": SITE,
             "job_url": url,
             "job_url_direct": url,
-            "description": "",
+            "description": desc,
             "date_posted": None,
             "job_type": "fulltime",
             "location": location or "India",
@@ -113,7 +118,7 @@ def parse_html(html: str, *, search_term: str = "") -> list[dict]:
     return out
 
 
-def scrape(*, max_pages: int) -> list[dict]:
+def scrape(*, max_pages: int = 3) -> list[dict]:
     listings: list[dict] = []
     for slug in CATEGORY_SLUGS:
         for page in range(1, max_pages + 1):
@@ -132,7 +137,7 @@ def scrape(*, max_pages: int) -> list[dict]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default=None)
-    parser.add_argument("--max-pages", type=int, default=2)
+    parser.add_argument("--max-pages", type=int, default=3)
     parser.add_argument(
         "--skip-urls", default=None,
         help="JSON array of URL keys to drop (jobs.json / blocked / prior listing)",

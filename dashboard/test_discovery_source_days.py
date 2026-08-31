@@ -203,6 +203,8 @@ def test_load_clamps_legacy_thirty_builtin_days() -> None:
         loaded = srv.load_discovery_settings()
     assert loaded["builtin_days_since_updated"] == 10
     assert loaded["source_days"].get("builtin") == 10
+    assert loaded.get("discover_worldwide") is True
+    assert "discover_us" not in loaded or loaded.get("discover_worldwide") is True
 
 
 if __name__ == "__main__":
